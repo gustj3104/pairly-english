@@ -1,12 +1,12 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { env } from '../config/env.js';
-import { createDevAiGate, type DevAiGateOptions } from '../plugins/dev-ai-gate.js';
+import { createAuthGate, type AuthGateOptions } from '../plugins/auth-gate.js';
 import { compareReflectionsRequestSchema } from '../services/reflections/schema.js';
 import { compareReflections } from '../services/reflections/reflection-comparison-service.js';
 import type { ReflectionComparisonOutcome } from '../services/reflections/reflection-comparison-service.js';
 
 export interface ReflectionsRoutesOptions {
-  devAiGateOptions?: DevAiGateOptions;
+  authGateOptions?: AuthGateOptions;
 }
 
 /**
@@ -34,17 +34,17 @@ export async function reflectionsRoutes(
   app: FastifyInstance,
   options: ReflectionsRoutesOptions = {},
 ): Promise<void> {
-  const devAiGate = createDevAiGate(
-    options.devAiGateOptions ?? {
+  const authGate = createAuthGate(
+    options.authGateOptions ?? {
       nodeEnv: env.NODE_ENV,
+      sessionSecret: env.SESSION_SECRET,
       devAccessToken: env.AI_DEV_ACCESS_TOKEN,
-      frontendOrigin: env.FRONTEND_ORIGIN,
     },
   );
 
   app.post(
     '/reflections/compare',
-    { preHandler: devAiGate, config: { rateLimit: REFLECTIONS_COMPARE_RATE_LIMIT } },
+    { preHandler: authGate, config: { rateLimit: REFLECTIONS_COMPARE_RATE_LIMIT } },
     async (request, reply) => {
       const parsed = compareReflectionsRequestSchema.safeParse(request.body);
       if (!parsed.success) {

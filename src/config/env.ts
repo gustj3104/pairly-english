@@ -20,10 +20,11 @@ const envSchema = z
     MINDLOGIC_MODEL: z.string().default('claude-haiku-4-5-20251001'),
     MINDLOGIC_MONTHLY_CREDIT_LIMIT: z.coerce.number().int().positive().default(5000),
     /**
-     * Temporary pre-auth gate for AI routes until real authentication
-     * exists. Optional so env parsing itself never requires it — the
-     * routes fail closed on their own when it's unset (see
-     * src/plugins/dev-ai-gate.ts). Never bundled into the frontend.
+     * Static bearer token for the CLI smoke script only
+     * (scripts/mindlogic-smoke-test*.ts) — real browser sessions use
+     * POST /api/v1/auth/login instead (see src/plugins/auth-gate.ts).
+     * Optional so env parsing itself never requires it; never accepted in
+     * production regardless. Never bundled into the frontend.
      */
     AI_DEV_ACCESS_TOKEN: z.string().min(1).optional(),
     /**
@@ -37,6 +38,20 @@ const envSchema = z
      * billing status is never retried no matter what this is set to).
      */
     MINDLOGIC_MAX_RETRIES: z.coerce.number().int().min(0).optional(),
+    /**
+     * Shared password both users log in with (no per-user accounts).
+     * Required — never defaulted, so the app can't boot with an
+     * accidentally-empty password. Never logged (see redactedEnvSummary).
+     */
+    APP_SHARED_PASSWORD: z.string().min(8, 'APP_SHARED_PASSWORD must be at least 8 characters'),
+    /**
+     * HMAC signing key for session JWTs (src/services/auth/session.ts).
+     * 32+ chars so it's a reasonable HS256 key floor. Required — never
+     * defaulted. Never logged.
+     */
+    SESSION_SECRET: z.string().min(32, 'SESSION_SECRET must be at least 32 characters'),
+    /** Session cookie/JWT lifetime. Defaults to 30 days. */
+    SESSION_MAX_AGE_SECONDS: z.coerce.number().int().positive().default(2592000),
   })
   .superRefine((value, ctx) => {
     if (value.FRONTEND_ORIGIN === '*') {
@@ -75,7 +90,10 @@ export function parseEnv(source: NodeJS.ProcessEnv): Env {
 
 export const env: Env = parseEnv(process.env);
 
-/** Safe-to-log summary: never includes DATABASE_URL or MINDLOGIC_API_KEY. */
+/**
+ * Safe-to-log summary: never includes DATABASE_URL, MINDLOGIC_API_KEY,
+ * APP_SHARED_PASSWORD, or SESSION_SECRET.
+ */
 export function redactedEnvSummary(value: Env = env) {
   return {
     nodeEnv: value.NODE_ENV,
@@ -86,5 +104,6 @@ export function redactedEnvSummary(value: Env = env) {
     mindlogicModel: value.MINDLOGIC_MODEL,
     monthlyCreditLimit: value.MINDLOGIC_MONTHLY_CREDIT_LIMIT,
     mindlogicMaxRetries: value.MINDLOGIC_MAX_RETRIES,
+    sessionMaxAgeSeconds: value.SESSION_MAX_AGE_SECONDS,
   };
 }

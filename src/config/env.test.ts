@@ -4,6 +4,8 @@ import { parseEnv } from './env.js';
 const validBase: NodeJS.ProcessEnv = {
   DATABASE_URL: 'postgres://user:pass@localhost:5432/db',
   MINDLOGIC_API_KEY: 'super-secret-key',
+  APP_SHARED_PASSWORD: 'a-shared-password',
+  SESSION_SECRET: 'a-session-secret-at-least-32-characters-long',
 };
 
 describe('parseEnv', () => {
@@ -16,6 +18,38 @@ describe('parseEnv', () => {
     expect(result.MINDLOGIC_BASE_URL).toBe('https://factchat-cloud.mindlogic.ai/v1/gateway');
     expect(result.MINDLOGIC_MODEL).toBe('claude-haiku-4-5-20251001');
     expect(result.MINDLOGIC_MONTHLY_CREDIT_LIMIT).toBe(5000);
+    expect(result.SESSION_MAX_AGE_SECONDS).toBe(2592000);
+  });
+
+  it('throws when APP_SHARED_PASSWORD is missing', () => {
+    const { APP_SHARED_PASSWORD: _omit, ...rest } = validBase;
+    expect(() => parseEnv(rest)).toThrow(/APP_SHARED_PASSWORD/);
+  });
+
+  it('throws when APP_SHARED_PASSWORD is too short', () => {
+    expect(() => parseEnv({ ...validBase, APP_SHARED_PASSWORD: 'short' })).toThrow(
+      /APP_SHARED_PASSWORD/,
+    );
+  });
+
+  it('throws when SESSION_SECRET is missing', () => {
+    const { SESSION_SECRET: _omit, ...rest } = validBase;
+    expect(() => parseEnv(rest)).toThrow(/SESSION_SECRET/);
+  });
+
+  it('throws when SESSION_SECRET is shorter than 32 characters', () => {
+    expect(() => parseEnv({ ...validBase, SESSION_SECRET: 'too-short' })).toThrow(/SESSION_SECRET/);
+  });
+
+  it('never includes the offending secret value in the error message for APP_SHARED_PASSWORD/SESSION_SECRET', () => {
+    try {
+      parseEnv({ ...validBase, SESSION_SECRET: 'short' });
+      throw new Error('expected parseEnv to throw');
+    } catch (error) {
+      const message = (error as Error).message;
+      expect(message).toContain('SESSION_SECRET');
+      expect(message).not.toContain(validBase.APP_SHARED_PASSWORD);
+    }
   });
 
   it('throws when DATABASE_URL is missing', () => {

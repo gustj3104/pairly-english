@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyInstance } from 'fastify';
 import rateLimit from '@fastify/rate-limit';
+import cookie from '@fastify/cookie';
 import { env } from './config/env.js';
 import { registerCors } from './plugins/cors.js';
 import { registerErrorHandler } from './plugins/error-handler.js';
-import type { DevAiGateOptions } from './plugins/dev-ai-gate.js';
+import type { AuthGateOptions } from './plugins/auth-gate.js';
 import { healthRoutes } from './routes/health.js';
 import { usageRoutes } from './routes/usage.js';
+import { authRoutes, type AuthRoutesOptions } from './routes/auth.js';
 import { reflectionsRoutes } from './routes/reflections.js';
 import { checkDatabaseConnection as defaultCheckDatabaseConnection } from './db/client.js';
 import { db } from './db/client.js';
@@ -28,7 +30,8 @@ export interface BuildAppOptions {
   creditService?: CreditService;
   checkDatabaseConnection?: () => Promise<boolean>;
   mindlogicClient?: MindlogicClient;
-  devAiGateOptions?: DevAiGateOptions;
+  authGateOptions?: AuthGateOptions;
+  authRoutesOptions?: AuthRoutesOptions;
   /** Test-only: redirect Pino output somewhere inspectable instead of silent/stdout. */
   loggerStream?: NodeJS.WritableStream;
 }
@@ -55,8 +58,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   registerErrorHandler(app);
   registerCors(app, options.corsOrigin ?? env.FRONTEND_ORIGIN);
   // `global: false`: no route is rate-limited unless it explicitly opts in
-  // via `config: { rateLimit: ... }` (see REFLECTIONS_COMPARE_RATE_LIMIT).
+  // via `config: { rateLimit: ... }` (see REFLECTIONS_COMPARE_RATE_LIMIT,
+  // LOGIN_RATE_LIMIT).
   app.register(rateLimit, { global: false });
+  app.register(cookie);
 
   app.decorate(
     'creditService',
@@ -71,9 +76,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   app.register(healthRoutes);
   app.register(usageRoutes, { prefix: '/api/v1' });
+  app.register(authRoutes, {
+    prefix: '/api/v1',
+    ...(options.authRoutesOptions ?? {
+      nodeEnv: env.NODE_ENV,
+      sharedPassword: env.APP_SHARED_PASSWORD,
+      sessionSecret: env.SESSION_SECRET,
+      sessionMaxAgeSeconds: env.SESSION_MAX_AGE_SECONDS,
+    }),
+  });
   app.register(reflectionsRoutes, {
     prefix: '/api/v1',
-    devAiGateOptions: options.devAiGateOptions,
+    authGateOptions: options.authGateOptions,
   });
 
   return app;

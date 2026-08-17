@@ -61,17 +61,21 @@ copied into this project.
 cp .env.example .env.local
 ```
 
-| Variable                         | Required | Default                                          | Notes                                                                                                |
-| -------------------------------- | -------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
-| `NODE_ENV`                       | no       | `development`                                    | `development` \| `test` \| `production`                                                              |
-| `PORT`                           | no       | `3001`                                           |                                                                                                      |
-| `HOST`                           | no       | `127.0.0.1`                                      |                                                                                                      |
-| `DATABASE_URL`                   | **yes**  | —                                                | PostgreSQL connection string                                                                         |
-| `FRONTEND_ORIGIN`                | no       | `http://localhost:5173`                          | Single CORS origin — wildcards are rejected in every environment                                     |
-| `MINDLOGIC_API_KEY`              | **yes**  | —                                                | Never logged, never returned in any response                                                         |
-| `MINDLOGIC_BASE_URL`             | no       | `https://factchat-cloud.mindlogic.ai/v1/gateway` |                                                                                                      |
-| `MINDLOGIC_MODEL`                | no       | `claude-haiku-4-5-20251001`                      | Must be a key in `MODEL_CREDIT_RATES` (`src/services/mindlogic/credit-rates.ts`) — validated at boot |
-| `MINDLOGIC_MONTHLY_CREDIT_LIMIT` | no       | `5000`                                           |                                                                                                      |
+| Variable                         | Required | Default                                          | Notes                                                                                                      |
+| -------------------------------- | -------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`                       | no       | `development`                                    | `development` \| `test` \| `production`                                                                    |
+| `PORT`                           | no       | `3001`                                           |                                                                                                            |
+| `HOST`                           | no       | `127.0.0.1`                                      |                                                                                                            |
+| `DATABASE_URL`                   | **yes**  | —                                                | PostgreSQL connection string                                                                               |
+| `FRONTEND_ORIGIN`                | no       | `http://localhost:5173`                          | Single CORS origin — wildcards are rejected in every environment                                           |
+| `MINDLOGIC_API_KEY`              | **yes**  | —                                                | Never logged, never returned in any response                                                               |
+| `MINDLOGIC_BASE_URL`             | no       | `https://factchat-cloud.mindlogic.ai/v1/gateway` |                                                                                                            |
+| `MINDLOGIC_MODEL`                | no       | `claude-haiku-4-5-20251001`                      | Must be a key in `MODEL_CREDIT_RATES` (`src/services/mindlogic/credit-rates.ts`) — validated at boot       |
+| `MINDLOGIC_MONTHLY_CREDIT_LIMIT` | no       | `5000`                                           |                                                                                                            |
+| `APP_SHARED_PASSWORD`            | **yes**  | —                                                | Shared password both users log in with (see [Authentication](#authentication)). Min 8 chars. Never logged. |
+| `SESSION_SECRET`                 | **yes**  | —                                                | HMAC key for session JWTs. Min 32 chars. Never logged.                                                     |
+| `SESSION_MAX_AGE_SECONDS`        | no       | `2592000` (30 days)                              | Session cookie / JWT lifetime                                                                              |
+| `AI_DEV_ACCESS_TOKEN`            | no       | —                                                | CLI smoke-script-only bearer token; never accepted in production (see [Authentication](#authentication))   |
 
 Validation happens in `src/config/env.ts` via Zod. Invalid configuration throws at startup
 with the field name and a generic reason — **secret values are never included in the error
@@ -83,6 +87,48 @@ project never uses, so real secrets in `.env.local` were silently never loaded. 
 this was caught while wiring up the first real Mindlogic connectivity check.
 
 `.env`, `.env.local`, and `.env.*.local` are git-ignored. Only `.env.example` is tracked.
+
+## Authentication
+
+MVP-scoped, intentionally minimal: **one shared password, no per-user accounts, no email, no
+invite codes.** Both learners log in with their own display name plus the same
+`APP_SHARED_PASSWORD`.
+
+- **`POST /api/v1/auth/login`** — body `{ name, password }`. `name` is trimmed, 1–40 chars,
+  rejected if it contains control characters (`src/services/auth/schema.ts`); it is a
+  **display-only value, never an authorization check** — two people can log in with the same
+  name. `password` is compared against `APP_SHARED_PASSWORD` with a timing-safe comparison
+  (`src/services/auth/password.ts`): both sides are SHA-256 hashed to a fixed 32-byte digest
+  before `crypto.timingSafeEqual`, so a length mismatch in the submitted password can't itself
+  leak through comparison timing (`timingSafeEqual` throws on differing lengths, which is
+  otherwise a non-constant-time early exit). On success, sets an HttpOnly session cookie and
+  returns `{ name }`. On failure, `400` for a malformed body or `401` for a wrong password —
+  the same generic `"Invalid name or password"` message and `INVALID_CREDENTIALS` code either
+  way, regardless of what name was submitted, since there's no per-user record to distinguish
+  against in the first place. Rate-limited to 5 requests/minute/caller (`LOGIN_RATE_LIMIT` in
+  `src/routes/auth.ts`) — separate from, and stricter than, the reflections route's limit.
+- **`GET /api/v1/auth/session`** — returns `{ authenticated: true, name }` for a valid,
+  unexpired, correctly-signed session cookie, or `{ authenticated: false }` for anything else
+  (missing, expired, tampered, wrong secret) — never an error status, so the frontend can poll
+  this on load to restore session state after a refresh.
+- **`POST /api/v1/auth/logout`** — clears the session cookie, returns `204`.
+- **Session shape** (`src/services/auth/session.ts`): a **stateless** JWT (HS256, via the
+  `jsonwebtoken` library — no hand-rolled crypto) carrying `{ name, exp }`, signed with
+  `SESSION_SECRET`. Nothing is stored server-side, so a server restart never invalidates
+  existing sessions. Defaults to a 30-day lifetime (`SESSION_MAX_AGE_SECONDS`).
+- **Cookie**: `HttpOnly` always; `Secure` only when `NODE_ENV=production` (a `Secure` cookie is
+  silently dropped by the browser over the plain `http://localhost` this app uses in local
+  dev); `SameSite=Lax`; `Path=/`. The password itself is never put in the cookie, only ever
+  compared server-side and discarded.
+- **Protecting the AI route**: `POST /api/v1/reflections/compare` requires a valid session (see
+  `src/plugins/auth-gate.ts`, described further below) in every environment, including
+  production. The session's `name` is available as an internal reference but is still treated
+  as display-only, never as an authorization check — holding _any_ valid session is sufficient,
+  matching the "one shared household password" threat model this MVP targets.
+- **What this is not**: there is no per-user identity, no rate limiting _per person_ (only per
+  IP), and nothing stops one logged-in browser from spending the other user's share of the
+  shared 5,000-credit/month budget. See the security-notes warning further below before
+  considering any public deployment.
 
 ## Mindlogic connectivity check
 
@@ -520,23 +566,12 @@ difficulty: 'Intermediate' | 'Advanced' }[] (exactly 3) }`. Deliberately uses `m
   Reflection text, article body, display names, the API key, the `Authorization` header, and
   the model's raw response are never logged — verified by
   `tests/reflections.test.ts`'s log-capture test.
-- **Pre-auth gate** (`src/plugins/dev-ai-gate.ts`): real authentication doesn't exist yet, so
-  this (and any future AI route) fails closed in every direction:
-  - **Always 404 in production**, regardless of any token or Origin.
-  - **In development, a request whose `Origin` header exactly equals `FRONTEND_ORIGIN` is let
-    through with no token at all.** This is what lets the browser frontend call this route
-    directly — it never needs to hold any secret. The `Origin` header is **not an
-    authentication mechanism**: it's client-supplied and any non-browser caller (curl, a
-    script) can set it to anything. This bypass exists purely to stop a *browser* pointed at
-    the wrong environment from silently reaching this route without a token; CORS
-    (`src/plugins/cors.ts`) separately and independently enforces the same single origin for
-    actual cross-origin browser requests, which is the real defense a browser can't route
-    around.
-  - **Everything else** (development with a missing/mismatched Origin, or any other
-    `NODE_ENV`) still requires `Authorization: Bearer <AI_DEV_ACCESS_TOKEN>` matching a
-    server-only env var; if that var isn't set at all, the route refuses with 503 rather than
-    defaulting to open access. This is the path the CLI smoke script uses. The token is never
-    bundled into the frontend build, and no `VITE_*`-prefixed equivalent exists.
+- **Auth gate** (`src/plugins/auth-gate.ts`): requires a valid session cookie (see
+  [Authentication](#authentication)) in **every** environment, including production — the
+  earlier "always 404 in production" placeholder is gone now that real login exists. The one
+  exception is the CLI smoke script's static `AI_DEV_ACCESS_TOKEN` bearer token, which still
+  works in development/test but is refused outright in production even if correct, so a leaked
+  static token alone can never reach a public deployment.
 - **Rate limiting** (`@fastify/rate-limit`, registered with `global: false` in `src/app.ts`):
   `POST /api/v1/reflections/compare` is the only route that opts in
   (`REFLECTIONS_COMPARE_RATE_LIMIT` in `src/routes/reflections.ts`), capped at 10 requests per
@@ -571,9 +606,11 @@ change here would fail loudly on the frontend instead of silently mismatching.
   **not** call Mindlogic.
 - `GET /api/v1/usage` — returns a `UsageSummary` computed entirely from our own database
   ledger (`credit_periods` / `credit_usage_records`). No outbound Mindlogic call.
+- `POST /api/v1/auth/login`, `GET /api/v1/auth/session`, `POST /api/v1/auth/logout` — see
+  [Authentication](#authentication).
 - `POST /api/v1/reflections/compare` — the reflection-comparison AI feature described above.
-  Gated by the dev pre-auth gate (Origin bypass for the browser frontend, token for everything
-  else) and rate-limited to 10 requests/minute/caller; disabled entirely in production.
+  Requires a valid session (or the CLI dev token outside production) and is rate-limited to 10
+  requests/minute/caller.
 
 ## Security notes
 
@@ -586,19 +623,18 @@ change here would fail loudly on the frontend instead of silently mismatching.
   correlation.
 - Pino redacts `Authorization` and `Cookie` headers from logs (`src/app.ts`). The Mindlogic
   client never logs or returns the API key (see `src/services/mindlogic/client.test.ts` for
-  the corresponding test).
-- **No real authentication/authorization exists yet.** `/health`, `/ready`, and
-  `/api/v1/usage` remain fully open. `/api/v1/reflections/compare` — the one route that can
-  spend real money — has the temporary fail-closed dev pre-auth gate (Origin bypass for the
-  browser + token for everything else) described above, plus a per-caller rate limit; every
-  future AI route should reuse `createDevAiGate` until real auth lands.
-- **This gate is not a substitute for real auth, and must never be deployed publicly as-is.**
-  Anyone who can reach this server in development (same machine, same LAN, a misconfigured
-  public dev deploy) can call `/api/v1/reflections/compare` from a browser tab pointed at
-  `FRONTEND_ORIGIN` — there is no per-user identity, so nothing stops one visitor from spending
-  another's share of the shared 5,000-credit/month budget. The Origin bypass only narrows *who
-  can reach the route without a token*, not *who is allowed to*. Real user auth is still the
-  documented next step (see [Next steps](#next-steps-not-yet-implemented)).
+  the corresponding test), and the login route never logs the submitted or shared password
+  (see `tests/auth.test.ts`'s log-capture test).
+- **Auth is real but intentionally minimal — see [Authentication](#authentication) for the
+  full picture.** `/health`, `/ready`, and `/api/v1/usage` remain fully open (no user data,
+  nothing billable). `/api/v1/reflections/compare` — the one route that can spend real money —
+  requires a valid session in every environment.
+- **This is a shared-password MVP, not multi-tenant auth, and that has a real limit even once
+  deployed.** There is no per-user identity: holding _any_ valid session (from either learner)
+  is sufficient to call the AI route, so nothing stops one logged-in browser from spending the
+  other's share of the shared 5,000-credit/month budget. That's an accepted tradeoff for two
+  people who already trust each other with one password, not a gap to "fix" without changing
+  the product's whole approach to accounts. See [Next steps](#next-steps-not-yet-implemented).
 
 ## Relationship to the frontend repository
 
@@ -646,21 +682,24 @@ before any real generative call, pending separate approval.
 ## Manual browser verification (frontend ↔ backend wiring only, no real Mindlogic call)
 
 Before the smoke test above (and before setting `VITE_USE_MOCK_AI=false` for real), confirm the
-browser can actually reach this server through the dev Origin bypass, still against a mocked
-Mindlogic client if you want to avoid spending credits, or against the real one once you're
-ready:
+login → session → AI-route flow actually works end to end through a real browser, still against
+a mocked Mindlogic client if you want to avoid spending credits, or against the real one once
+you're ready:
 
-1. `pnpm dev` here (backend) with `.env.local` set, `FRONTEND_ORIGIN=http://localhost:5173` (or
-   whatever port the frontend actually runs on), and `DATABASE_URL` pointing at a running
-   Postgres.
-2. In the frontend repo, `pnpm dev` with `.env.local` set to
-   `VITE_API_BASE_URL=http://localhost:3001` and `VITE_USE_MOCK_AI=false`.
-3. Open the frontend in an actual browser tab (not curl — the Origin bypass only ever applies
-   to a real browser request, since it depends on the browser setting the `Origin` header
-   itself). Walk the flow to `AIComparisonPage` and confirm the request succeeds with **no**
-   `Authorization` header sent (check the Network tab) and **no** CORS error in the console.
-4. Confirm a request from a *different* origin (e.g. open the same page served from a different
-   port) is rejected — this proves the bypass isn't accidentally wide open.
+1. `pnpm dev` here (backend) with `.env.local` set — `APP_SHARED_PASSWORD`, `SESSION_SECRET`,
+   `FRONTEND_ORIGIN` matching the frontend's actual dev origin, and `DATABASE_URL` pointing at a
+   running Postgres.
+2. In the frontend repo, `pnpm dev` (the Vite dev server proxies `/api/*` to this server — see
+   that repo's README).
+3. In an actual browser tab, log in with any display name and `APP_SHARED_PASSWORD`. Confirm in
+   the Network tab: the `Set-Cookie` response header on `POST /api/auth/login` has `HttpOnly`
+   (and, once served over https, `Secure`); no request anywhere sends an `Authorization` header;
+   no CORS error appears in the console.
+4. Refresh the page and confirm the session is restored (still logged in) via
+   `GET /api/auth/session`.
+5. Walk the flow to `AIComparisonPage` and confirm `POST /api/reflections/compare` succeeds.
+6. Log out and confirm `GET /api/auth/session` now reports `authenticated: false`, and that
+   `POST /api/reflections/compare` now returns `401`.
 
 ## Next steps (not yet implemented)
 
@@ -670,9 +709,11 @@ ready:
   `response_format`, `usage.{prompt,completion}_tokens`, `choices[].message.content`) is
   inferred from the confirmed `/models/`/`/credits/` convention and general OpenAI-compatible
   norms — **never verified against the real endpoint**.
-- Real authentication/authorization for `/api/v1/*`, replacing the temporary dev pre-auth gate
-  (Origin bypass + token) entirely — see the security-notes warning above about why the current
-  gate must never be exposed publicly as-is.
+- **Per-user identity**, if the product ever needs to distinguish the two learners
+  server-side (e.g. per-person rate limiting, per-person usage attribution, revoking one
+  person's access without the other's). The current shared-password session
+  (see [Authentication](#authentication)) is a deliberate MVP tradeoff, not an oversight — see
+  the security-notes warning above.
 - CI wiring for `pnpm test:integration` (Docker-in-CI) — not yet added; see
   [Tests](#tests) for the scripts this would run.
 - **Automatic reconciliation.** `evaluateReconciliation()` (decision logic) and

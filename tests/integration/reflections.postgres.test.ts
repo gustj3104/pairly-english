@@ -89,7 +89,11 @@ describe('POST /api/v1/reflections/compare — real PostgreSQL + mocked Mindlogi
       checkDatabaseConnection: async () => true,
       creditService,
       mindlogicClient,
-      devAiGateOptions: { nodeEnv: 'development', devAccessToken: DEV_TOKEN },
+      authGateOptions: {
+        nodeEnv: 'development',
+        sessionSecret: 'integration-test-session-secret-at-least-32c',
+        devAccessToken: DEV_TOKEN,
+      },
     });
 
     const response = await app.inject({
@@ -123,7 +127,11 @@ describe('POST /api/v1/reflections/compare — real PostgreSQL + mocked Mindlogi
       checkDatabaseConnection: async () => true,
       creditService,
       mindlogicClient,
-      devAiGateOptions: { nodeEnv: 'development', devAccessToken: DEV_TOKEN },
+      authGateOptions: {
+        nodeEnv: 'development',
+        sessionSecret: 'integration-test-session-secret-at-least-32c',
+        devAccessToken: DEV_TOKEN,
+      },
     });
 
     const response = await app.inject({
@@ -158,7 +166,11 @@ describe('POST /api/v1/reflections/compare — real PostgreSQL + mocked Mindlogi
       checkDatabaseConnection: async () => true,
       creditService,
       mindlogicClient,
-      devAiGateOptions: { nodeEnv: 'development', devAccessToken: DEV_TOKEN },
+      authGateOptions: {
+        nodeEnv: 'development',
+        sessionSecret: 'integration-test-session-secret-at-least-32c',
+        devAccessToken: DEV_TOKEN,
+      },
     });
 
     const response = await app.inject({

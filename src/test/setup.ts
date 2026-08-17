@@ -11,3 +11,6 @@ process.env.MINDLOGIC_BASE_URL ??= 'https://factchat-cloud.mindlogic.ai/v1/gatew
 process.env.MINDLOGIC_MODEL ??= 'claude-haiku-4-5-20251001';
 process.env.MINDLOGIC_MONTHLY_CREDIT_LIMIT ??= '5000';
 process.env.AI_DEV_ACCESS_TOKEN ??= 'test-fake-dev-access-token';
+process.env.APP_SHARED_PASSWORD ??= 'test-fake-shared-password';
+process.env.SESSION_SECRET ??= 'test-fake-session-secret-at-least-32-characters-long';
+process.env.SESSION_MAX_AGE_SECONDS ??= '2592000';

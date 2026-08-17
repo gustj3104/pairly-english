@@ -4,6 +4,7 @@ import { buildApp } from '../src/app.js';
 import { CreditService } from '../src/services/credits/credit-service.js';
 import { InMemoryCreditRepository } from './helpers/in-memory-credit-repository.js';
 import { MindlogicClient } from '../src/services/mindlogic/client.js';
+import { SESSION_COOKIE_NAME, signSession } from '../src/services/auth/session.js';
 
 const VALID_REFLECTION =
   'I found this article compelling because it connects Korean cultural investment to genuine artistic ambition, and I appreciated how it grounded the claim in specific examples from film and television.';
@@ -15,6 +16,12 @@ const VALID_BODY = {
 };
 
 const DEV_TOKEN = 'test-http-layer-dev-token';
+const SESSION_SECRET = 'test-http-layer-session-secret-at-least-32-chars-long';
+
+function validSessionCookie(name = 'Alex') {
+  const token = signSession({ name }, SESSION_SECRET, 2592000);
+  return `${SESSION_COOKIE_NAME}=${token}`;
+}
 
 function validComparisonBody() {
   return {
@@ -58,42 +65,100 @@ function buildTestApp(overrides: Parameters<typeof buildApp>[0] = {}) {
   const mindlogicClient = overrides.mindlogicClient ?? successfulMindlogicClient();
   return buildApp({
     checkDatabaseConnection: async () => true,
-    devAiGateOptions: { nodeEnv: 'development', devAccessToken: DEV_TOKEN },
+    authGateOptions: {
+      nodeEnv: 'development',
+      sessionSecret: SESSION_SECRET,
+      devAccessToken: DEV_TOKEN,
+    },
     ...overrides,
     creditService,
     mindlogicClient,
   });
 }
 
-describe('POST /api/v1/reflections/compare — pre-auth gate', () => {
-  it('is always 404 in production, even with a correct token', async () => {
-    const app = buildTestApp({
-      devAiGateOptions: { nodeEnv: 'production', devAccessToken: DEV_TOKEN },
-    });
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/v1/reflections/compare',
-      headers: { authorization: `Bearer ${DEV_TOKEN}` },
-      payload: VALID_BODY,
-    });
-    expect(response.statusCode).toBe(404);
-    await app.close();
-  });
-
-  it('refuses with 503 in development when no dev access token is configured (fail closed)', async () => {
-    const app = buildTestApp({
-      devAiGateOptions: { nodeEnv: 'development', devAccessToken: undefined },
-    });
+describe('POST /api/v1/reflections/compare — auth gate', () => {
+  it('rejects a request with neither a session cookie nor a token with 401', async () => {
+    const app = buildTestApp();
     const response = await app.inject({
       method: 'POST',
       url: '/api/v1/reflections/compare',
       payload: VALID_BODY,
     });
-    expect(response.statusCode).toBe(503);
+    expect(response.statusCode).toBe(401);
     await app.close();
   });
 
-  it('rejects a missing or incorrect token with 401', async () => {
+  it('accepts a valid session cookie', async () => {
+    const app = buildTestApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/reflections/compare',
+      headers: { cookie: validSessionCookie() },
+      payload: VALID_BODY,
+    });
+    expect(response.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it('accepts a valid session cookie in production too — the old blanket-404-in-production policy is gone', async () => {
+    const app = buildTestApp({
+      authGateOptions: { nodeEnv: 'production', sessionSecret: SESSION_SECRET },
+    });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/reflections/compare',
+      headers: { cookie: validSessionCookie() },
+      payload: VALID_BODY,
+    });
+    expect(response.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it('rejects a tampered session cookie with 401', async () => {
+    const app = buildTestApp();
+    const cookie = validSessionCookie();
+    const tampered = cookie.endsWith('a') ? `${cookie.slice(0, -1)}b` : `${cookie.slice(0, -1)}a`;
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/reflections/compare',
+      headers: { cookie: tampered },
+      payload: VALID_BODY,
+    });
+    expect(response.statusCode).toBe(401);
+    await app.close();
+  });
+
+  it('rejects a session cookie signed with the wrong secret with 401', async () => {
+    const app = buildTestApp();
+    const wrongSecretToken = signSession(
+      { name: 'Alex' },
+      'a-completely-different-32-char-secret!!',
+      2592000,
+    );
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/reflections/compare',
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${wrongSecretToken}` },
+      payload: VALID_BODY,
+    });
+    expect(response.statusCode).toBe(401);
+    await app.close();
+  });
+
+  it('rejects an expired session cookie with 401', async () => {
+    const app = buildTestApp();
+    const expiredToken = signSession({ name: 'Alex' }, SESSION_SECRET, -1);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/reflections/compare',
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${expiredToken}` },
+      payload: VALID_BODY,
+    });
+    expect(response.statusCode).toBe(401);
+    await app.close();
+  });
+
+  it('rejects a missing or incorrect CLI dev token with 401 (no session cookie either)', async () => {
     const app = buildTestApp();
 
     const noToken = await app.inject({
@@ -114,7 +179,7 @@ describe('POST /api/v1/reflections/compare — pre-auth gate', () => {
     await app.close();
   });
 
-  it('accepts the correct token in development', async () => {
+  it('accepts the correct CLI dev token in development (no session cookie needed)', async () => {
     const app = buildTestApp();
     const response = await app.inject({
       method: 'POST',
@@ -125,90 +190,22 @@ describe('POST /api/v1/reflections/compare — pre-auth gate', () => {
     expect(response.statusCode).toBe(200);
     await app.close();
   });
-});
 
-const ALLOWED_ORIGIN = 'http://localhost:5173';
-
-describe('POST /api/v1/reflections/compare — browser dev-origin bypass', () => {
-  it('allows a matching Origin in development with no token at all', async () => {
+  it('refuses the CLI dev token in production, even if correct — only a real session works there', async () => {
     const app = buildTestApp({
-      devAiGateOptions: { nodeEnv: 'development', frontendOrigin: ALLOWED_ORIGIN },
-    });
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/v1/reflections/compare',
-      headers: { origin: ALLOWED_ORIGIN },
-      payload: VALID_BODY,
-    });
-    expect(response.statusCode).toBe(200);
-    await app.close();
-  });
-
-  it('does not bypass for a mismatched Origin — still falls through to the token gate', async () => {
-    const app = buildTestApp({
-      devAiGateOptions: {
-        nodeEnv: 'development',
-        frontendOrigin: ALLOWED_ORIGIN,
+      authGateOptions: {
+        nodeEnv: 'production',
+        sessionSecret: SESSION_SECRET,
         devAccessToken: DEV_TOKEN,
       },
     });
     const response = await app.inject({
       method: 'POST',
       url: '/api/v1/reflections/compare',
-      headers: { origin: 'https://evil.example.com' },
+      headers: { authorization: `Bearer ${DEV_TOKEN}` },
       payload: VALID_BODY,
     });
     expect(response.statusCode).toBe(401);
-    await app.close();
-  });
-
-  it('does not bypass outside NODE_ENV=development, even with a matching Origin (test still requires the token)', async () => {
-    const app = buildTestApp({
-      devAiGateOptions: {
-        nodeEnv: 'test',
-        frontendOrigin: ALLOWED_ORIGIN,
-        devAccessToken: DEV_TOKEN,
-      },
-    });
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/v1/reflections/compare',
-      headers: { origin: ALLOWED_ORIGIN },
-      payload: VALID_BODY,
-    });
-    expect(response.statusCode).toBe(401);
-    await app.close();
-  });
-
-  it('is always 404 in production, even with a matching Origin', async () => {
-    const app = buildTestApp({
-      devAiGateOptions: { nodeEnv: 'production', frontendOrigin: ALLOWED_ORIGIN },
-    });
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/v1/reflections/compare',
-      headers: { origin: ALLOWED_ORIGIN },
-      payload: VALID_BODY,
-    });
-    expect(response.statusCode).toBe(404);
-    await app.close();
-  });
-
-  it('refuses with 503 for a matching Origin outside development when no token is configured either', async () => {
-    const app = buildTestApp({
-      devAiGateOptions: {
-        nodeEnv: 'test',
-        frontendOrigin: ALLOWED_ORIGIN,
-        devAccessToken: undefined,
-      },
-    });
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/v1/reflections/compare',
-      headers: { origin: ALLOWED_ORIGIN },
-      payload: VALID_BODY,
-    });
-    expect(response.statusCode).toBe(503);
     await app.close();
   });
 });
