@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { Page } from '../App'
+import { useLearning } from '../state/LearningContext'
 
 interface Props { setPage: (p: Page) => void }
 
@@ -32,6 +33,8 @@ const CORRECTIONS = [
 ]
 
 export default function ReviewPage({ setPage }: Props) {
+  const { state } = useLearning()
+  const partnerName = state.partner.partnerName || 'Jisoo'
   const [tab, setTab] = useState<Tab>('records')
   const [search, setSearch] = useState('')
 
@@ -41,7 +44,7 @@ export default function ReviewPage({ setPage }: Props) {
     <div style={{ paddingTop: 32 }}>
       <div style={{ marginBottom: 28 }}>
         <h1 style={{ fontFamily: 'DM Serif Display, Georgia, serif', fontSize: 30, color: '#1c1917', margin: '0 0 6px' }}>Review Archive</h1>
-        <p style={{ color: '#78716c', fontSize: 15, margin: 0 }}>Your complete learning history with Jisoo.</p>
+        <p style={{ color: '#78716c', fontSize: 15, margin: 0 }}>Your complete learning history with {partnerName}.</p>
       </div>
 
       {/* Tabs */}

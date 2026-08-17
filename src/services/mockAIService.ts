@@ -1,7 +1,7 @@
 /**
  * Mock stand-ins for the Mindlogic AI endpoints. Each function keeps the
  * shape (args in, Promise<Result> out) that the real API call will have,
- * so swapping the body for a fetch() later doesn't touch any caller.
+ * so swapping the body for a real request later doesn't touch any caller.
  */
 
 export interface DiscussionTopic {
@@ -83,12 +83,12 @@ export function compareReflections(_myReflection: string, _partnerReflection: st
     topics: [
       {
         question: "Is K-culture's global rise a result of genuine artistic quality, or primarily effective marketing strategy?",
-        reason: 'Both reflections touch on this tension differently — Hyunji emphasized artistic merit, while Jisoo focused on systematic commercial strategy.',
+        reason: 'Both reflections touch on this tension differently — one side emphasized artistic merit, the other focused on systematic commercial strategy.',
         difficulty: 'Intermediate',
       },
       {
         question: 'Should governments subsidize cultural industries as a form of soft power? What are the risks?',
-        reason: "Jisoo's reflection raised concerns about government-directed art losing authenticity. Hyunji suggested economic benefits outweigh the risks.",
+        reason: 'One reflection raised concerns about government-directed art losing authenticity, while the other suggested economic benefits outweigh the risks.',
         difficulty: 'Advanced',
       },
       {
@@ -100,7 +100,53 @@ export function compareReflections(_myReflection: string, _partnerReflection: st
   })
 }
 
-export function analyzeAudio(_fileName: string): Promise<FeedbackResult> {
+/** Extensions accepted for a discussion recording, until Mindlogic specifies its own list. */
+export const SUPPORTED_AUDIO_EXTENSIONS = ['mp3', 'wav', 'm4a', 'webm']
+
+/** Common MIME types browsers report for the extensions above. */
+export const SUPPORTED_AUDIO_MIME_TYPES = [
+  'audio/mpeg', 'audio/mp3',
+  'audio/wav', 'audio/x-wav', 'audio/wave',
+  'audio/mp4', 'audio/x-m4a', 'audio/m4a',
+  'audio/webm',
+]
+
+/** Temporary cap until Mindlogic's upload endpoint specifies its own limit. */
+export const MAX_AUDIO_FILE_SIZE_BYTES = 100 * 1024 * 1024
+
+export interface AudioValidationResult {
+  valid: boolean
+  error?: string
+}
+
+export function validateAudioFile(file: File): AudioValidationResult {
+  const extension = file.name.split('.').pop()?.toLowerCase() ?? ''
+  const extensionOk = SUPPORTED_AUDIO_EXTENSIONS.includes(extension)
+  const mimeOk = SUPPORTED_AUDIO_MIME_TYPES.includes(file.type.toLowerCase())
+
+  if (!extensionOk && !mimeOk) {
+    return { valid: false, error: `Unsupported audio format. Use ${SUPPORTED_AUDIO_EXTENSIONS.join(', ')}.` }
+  }
+  if (file.size === 0) {
+    return { valid: false, error: 'The selected file is empty.' }
+  }
+  if (file.size > MAX_AUDIO_FILE_SIZE_BYTES) {
+    return { valid: false, error: `File is too large. Max size is ${Math.round(MAX_AUDIO_FILE_SIZE_BYTES / (1024 * 1024))}MB.` }
+  }
+  return { valid: true }
+}
+
+/**
+ * Only the file's metadata (name/size/type) informs the mock response —
+ * the bytes are never read or sent anywhere, matching the "preview only,
+ * no external transfer" requirement for audio in this mock phase.
+ */
+export function analyzeAudio(file: File): Promise<FeedbackResult> {
+  const validation = validateAudioFile(file)
+  if (!validation.valid) {
+    return Promise.reject(new Error(validation.error))
+  }
+
   return delay({
     duration: '14:32',
     utterances: 48,

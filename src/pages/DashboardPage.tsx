@@ -1,38 +1,36 @@
 import type { Page } from '../App'
-import { useLearning } from '../state/LearningContext'
+import { useLearning, getInitials } from '../state/LearningContext'
+import { getWeekRecords, withLiveCompletion, TODAY_DATE_KEY } from '../services/mockWeekService'
 
 interface Props { setPage: (p: Page) => void }
 
 export default function DashboardPage({ setPage }: Props) {
   const { state } = useLearning()
   const todayDone = state.today.completed
+  const myName = state.partner.myName || 'Hyunji'
+  const partnerName = state.partner.partnerName || 'Jisoo'
 
-  const WEEK = [
-    { day: 'Mon', date: 11, topic: 'Technology', done: true, partner: true },
-    { day: 'Tue', date: 12, topic: 'Society', done: true, partner: true },
-    { day: 'Wed', date: 13, topic: 'Business', done: true, partner: false },
-    { day: 'Thu', date: 14, topic: 'Culture', done: todayDone, today: true, partner: false, inProgress: !todayDone },
-    { day: 'Fri', date: 15, topic: 'Environment', done: false, locked: true },
-    { day: 'Sat', date: 16, topic: 'Lifestyle', done: false, locked: true },
-    { day: 'Sun', date: 17, topic: 'Sports', done: false, locked: true },
-  ]
+  const WEEK = withLiveCompletion(getWeekRecords(), TODAY_DATE_KEY, todayDone)
+  const completedCount = WEEK.filter(d => d.done).length
 
   return (
     <div style={{ paddingTop: 32 }}>
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 32 }}>
         <div>
-          <h1 style={{ fontFamily: 'DM Serif Display, Georgia, serif', fontSize: 32, color: '#1c1917', margin: '0 0 6px' }}>Good evening, {state.partner.myName || 'Hyunji'} ✨</h1>
+          <h1 style={{ fontFamily: 'DM Serif Display, Georgia, serif', fontSize: 32, color: '#1c1917', margin: '0 0 6px' }}>Good evening, {myName} ✨</h1>
           <p style={{ color: '#78716c', fontSize: 15, margin: 0 }}>Thursday, August 14, 2025 · 🔥 {state.today.streak}-day streak</p>
         </div>
         <div style={{ backgroundColor: 'white', borderRadius: 14, padding: '14px 20px', border: '1px solid #e7e5e4', textAlign: 'right' }}>
           <div style={{ fontSize: 12, color: '#78716c', marginBottom: 6 }}>This week's progress</div>
           <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-            {[1, 1, 1, todayDone ? 1 : 0.4, 0, 0, 0].map((v, i) => (
-              <div key={i} style={{ width: 20, height: 6, borderRadius: 3, backgroundColor: v === 1 ? '#10b981' : v === 0.4 ? '#4f46e5' : '#e7e5e4' }} />
-            ))}
+            {WEEK.map(d => {
+              const isToday = d.date === TODAY_DATE_KEY
+              const color = d.done ? '#10b981' : isToday ? '#4f46e5' : '#e7e5e4'
+              return <div key={d.date} style={{ width: 20, height: 6, borderRadius: 3, backgroundColor: color }} />
+            })}
           </div>
-          <div style={{ fontSize: 12, color: '#44403c', marginTop: 6, fontWeight: 600 }}>{todayDone ? 4 : 3} / 5 days completed</div>
+          <div style={{ fontSize: 12, color: '#44403c', marginTop: 6, fontWeight: 600 }}>{completedCount} / 5 days completed</div>
         </div>
       </div>
 
@@ -90,20 +88,24 @@ export default function DashboardPage({ setPage }: Props) {
           <div style={{ backgroundColor: 'white', borderRadius: 20, padding: '22px 24px', border: '1px solid #e7e5e4' }}>
             <h3 style={{ fontSize: 16, fontWeight: 700, color: '#1c1917', margin: '0 0 18px' }}>This Week</h3>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 8 }}>
-              {WEEK.map(d => (
-                <div key={d.day} style={{
-                  borderRadius: 12, padding: '12px 8px', textAlign: 'center',
-                  backgroundColor: d.today ? '#eef2ff' : d.done ? '#ecfdf5' : '#f5f5f4',
-                  border: d.today ? '2px solid #4f46e5' : d.done ? '1px solid #a7f3d0' : '1px solid #e7e5e4',
-                  opacity: d.locked ? 0.5 : 1,
-                }}>
-                  <div style={{ fontSize: 11, fontWeight: 500, color: d.today ? '#4f46e5' : d.done ? '#059669' : '#a8a29e', marginBottom: 4 }}>{d.day}</div>
-                  <div style={{ fontSize: 16, fontWeight: 700, color: d.today ? '#4f46e5' : '#1c1917', marginBottom: 4 }}>{d.date}</div>
-                  <div style={{ fontSize: 9, color: d.done ? '#10b981' : d.today ? '#4f46e5' : '#a8a29e', marginBottom: 6, lineHeight: 1.3 }}>{d.topic}</div>
-                  {d.done && <div style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#10b981', margin: '0 auto' }} />}
-                  {d.inProgress && <div style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#4f46e5', margin: '0 auto' }} />}
-                </div>
-              ))}
+              {WEEK.map(d => {
+                const isToday = d.date === TODAY_DATE_KEY
+                const inProgress = isToday && !d.done
+                return (
+                  <div key={d.date} style={{
+                    borderRadius: 12, padding: '12px 8px', textAlign: 'center',
+                    backgroundColor: isToday ? '#eef2ff' : d.done ? '#ecfdf5' : '#f5f5f4',
+                    border: isToday ? '2px solid #4f46e5' : d.done ? '1px solid #a7f3d0' : '1px solid #e7e5e4',
+                    opacity: d.locked ? 0.5 : 1,
+                  }}>
+                    <div style={{ fontSize: 11, fontWeight: 500, color: isToday ? '#4f46e5' : d.done ? '#059669' : '#a8a29e', marginBottom: 4 }}>{d.day}</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: isToday ? '#4f46e5' : '#1c1917', marginBottom: 4 }}>{d.dateNum}</div>
+                    <div style={{ fontSize: 9, color: d.done ? '#10b981' : isToday ? '#4f46e5' : '#a8a29e', marginBottom: 6, lineHeight: 1.3 }}>{d.topic}</div>
+                    {d.done && <div style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#10b981', margin: '0 auto' }} />}
+                    {inProgress && <div style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#4f46e5', margin: '0 auto' }} />}
+                  </div>
+                )
+              })}
             </div>
           </div>
         </div>
@@ -119,11 +121,11 @@ export default function DashboardPage({ setPage }: Props) {
 
             {[
               {
-                name: 'Me', init: 'HJ', color: '#4f46e5', bg: '#eef2ff', label: 'Me',
+                name: myName, init: getInitials(myName), color: '#4f46e5', bg: '#eef2ff', label: 'Me',
                 step: 'Write', words: 12, reflection: false, audio: false, stepIdx: 2,
               },
               {
-                name: 'Jisoo', init: 'J', color: '#10b981', bg: '#ecfdf5', label: 'Partner',
+                name: partnerName, init: getInitials(partnerName), color: '#10b981', bg: '#ecfdf5', label: 'Partner',
                 step: 'Vocabulary', words: 9, reflection: false, audio: false, stepIdx: 1,
               },
             ].map(u => (

@@ -1,4 +1,5 @@
 import type { Page } from '../App'
+import { useLearning, getInitials } from '../state/LearningContext'
 
 interface Props {
   page: Page
@@ -12,6 +13,9 @@ const NAV_LINKS: { label: string; page: Page }[] = [
 ]
 
 export default function TopNav({ page, setPage }: Props) {
+  const { state } = useLearning()
+  const myInitials = getInitials(state.partner.myName || 'Hyunji')
+
   return (
     <nav style={{
       position: 'sticky',
@@ -75,7 +79,7 @@ export default function TopNav({ page, setPage }: Props) {
           </button>
           {/* Avatar */}
           <div style={{ width: 34, height: 34, borderRadius: '50%', background: 'linear-gradient(135deg, #4f46e5, #7c3aed)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-            HJ
+            {myInitials}
           </div>
         </div>
       </div>

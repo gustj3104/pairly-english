@@ -1,23 +1,30 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Page } from '../App'
 import { useLearning } from '../state/LearningContext'
-import { getTodayArticle, getVocabularyDictionary, findVocabWord, VOCAB_GOAL, type VocabWord } from '../services/mockNewsService'
+import { newsService } from '../services'
+import { findVocabWord, getVocabGoals, type Article, type VocabWord } from '../services/mockNewsService'
 
 interface Props { setPage: (p: Page) => void }
-
-const article = getTodayArticle()
-const dictionary = getVocabularyDictionary()
-const CLICKABLE_WORDS = dictionary.map(w => w.word)
-const VOCAB_TOTAL = dictionary.length
 
 export default function NewsReaderPage({ setPage }: Props) {
   const { state, update } = useLearning()
   const savedWords = state.vocabulary.savedWords
+  const [article, setArticle] = useState<Article | null>(null)
   const [popup, setPopup] = useState<{ word: VocabWord; x: number; y: number } | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    newsService.getTodayArticle().then(a => { if (!cancelled) setArticle(a) })
+    return () => { cancelled = true }
+  }, [])
+
+  const clickableWords = article ? article.vocabulary.map(w => w.word) : []
+  const goals = article ? getVocabGoals(article) : { total: 0, selectGoal: 0, memorizeGoal: 0, reflectionUseGoal: 0 }
 
   const handleWordClick = (word: string, e: React.MouseEvent) => {
     e.stopPropagation()
-    const found = findVocabWord(word)
+    if (!article) return
+    const found = findVocabWord(article.vocabulary, word)
     if (found) {
       setPopup({ word: found, x: e.clientX, y: e.clientY })
     }
@@ -36,7 +43,7 @@ export default function NewsReaderPage({ setPage }: Props) {
     const words = text.split(/(\s+|[,.:;!?—–])/)
     return words.map((w, i) => {
       const lower = w.toLowerCase().replace(/[^a-z]/g, '')
-      if (CLICKABLE_WORDS.includes(lower)) {
+      if (clickableWords.includes(lower)) {
         const saved = isSaved(lower)
         return (
           <span key={i} onClick={e => handleWordClick(w, e)} style={{ cursor: 'pointer', backgroundColor: saved ? '#e0e7ff' : '#fef9c3', borderRadius: 3, padding: '1px 2px', fontWeight: saved ? 500 : undefined, color: saved ? '#4338ca' : undefined, transition: 'background 0.2s' }}>
@@ -46,6 +53,15 @@ export default function NewsReaderPage({ setPage }: Props) {
       }
       return <span key={i}>{w}</span>
     })
+  }
+
+  if (!article) {
+    return (
+      <div style={{ paddingTop: 28, display: 'flex', justifyContent: 'center', minHeight: 300, alignItems: 'center' }}>
+        <div style={{ width: 32, height: 32, borderRadius: '50%', border: '3px solid #e7e5e4', borderTopColor: '#4f46e5', animation: 'spin 0.8s linear infinite' }} />
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    )
   }
 
   return (
@@ -107,19 +123,19 @@ export default function NewsReaderPage({ setPage }: Props) {
           <div style={{ backgroundColor: 'white', borderRadius: 20, padding: '22px', border: '1px solid #e7e5e4', marginBottom: 16 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
               <h3 style={{ fontSize: 16, fontWeight: 700, color: '#1c1917', margin: 0 }}>My Vocabulary</h3>
-              <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, fontWeight: 600, color: savedWords.length >= VOCAB_TOTAL ? '#10b981' : '#4f46e5', backgroundColor: savedWords.length >= VOCAB_TOTAL ? '#ecfdf5' : '#eef2ff', padding: '3px 10px', borderRadius: 20 }}>
-                {savedWords.length}/{VOCAB_TOTAL}
+              <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, fontWeight: 600, color: savedWords.length >= goals.total ? '#10b981' : '#4f46e5', backgroundColor: savedWords.length >= goals.total ? '#ecfdf5' : '#eef2ff', padding: '3px 10px', borderRadius: 20 }}>
+                {savedWords.length}/{goals.total}
               </span>
             </div>
 
             {/* Progress bar */}
             <div style={{ height: 5, backgroundColor: '#f5f5f4', borderRadius: 4, marginBottom: 18 }}>
-              <div style={{ height: '100%', borderRadius: 4, backgroundColor: savedWords.length >= VOCAB_TOTAL ? '#10b981' : '#4f46e5', width: `${Math.min((savedWords.length / VOCAB_TOTAL) * 100, 100)}%`, transition: 'width 0.3s' }} />
+              <div style={{ height: '100%', borderRadius: 4, backgroundColor: savedWords.length >= goals.total ? '#10b981' : '#4f46e5', width: `${Math.min((savedWords.length / goals.total) * 100, 100)}%`, transition: 'width 0.3s' }} />
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 320, overflowY: 'auto', marginBottom: 18 }}>
               {savedWords.map(word => {
-                const w = findVocabWord(word)
+                const w = findVocabWord(article.vocabulary, word)
                 if (!w) return null
                 return (
                   <div key={w.word} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', backgroundColor: '#f5f5f4', borderRadius: 10 }}>
@@ -144,13 +160,13 @@ export default function NewsReaderPage({ setPage }: Props) {
 
             <button
               onClick={() => setPage('vocabulary')}
-              disabled={savedWords.length < VOCAB_GOAL}
-              style={{ width: '100%', padding: '12px', borderRadius: 12, backgroundColor: savedWords.length >= VOCAB_GOAL ? '#4f46e5' : '#e7e5e4', color: savedWords.length >= VOCAB_GOAL ? 'white' : '#a8a29e', fontSize: 14, fontWeight: 600, border: 'none', cursor: savedWords.length >= VOCAB_GOAL ? 'pointer' : 'not-allowed' }}>
+              disabled={savedWords.length < goals.selectGoal}
+              style={{ width: '100%', padding: '12px', borderRadius: 12, backgroundColor: savedWords.length >= goals.selectGoal ? '#4f46e5' : '#e7e5e4', color: savedWords.length >= goals.selectGoal ? 'white' : '#a8a29e', fontSize: 14, fontWeight: 600, border: 'none', cursor: savedWords.length >= goals.selectGoal ? 'pointer' : 'not-allowed' }}>
               Continue to Vocabulary →
             </button>
-            {savedWords.length < VOCAB_GOAL && (
+            {savedWords.length < goals.selectGoal && (
               <p style={{ textAlign: 'center', fontSize: 11, color: '#a8a29e', marginTop: 8, margin: '8px 0 0' }}>
-                Add {VOCAB_GOAL - savedWords.length} more words to continue
+                Add {goals.selectGoal - savedWords.length} more words to continue
               </p>
             )}
           </div>

@@ -1,36 +1,66 @@
 import { useEffect, useState } from 'react'
 import type { Page } from '../App'
 import { useLearning } from '../state/LearningContext'
-import { analyzeAudio, type FeedbackResult } from '../services/mockAIService'
+import { aiService } from '../services'
+import type { FeedbackResult } from '../services/mockAIService'
 
 interface Props { setPage: (p: Page) => void }
 
 type Tab = 'transcript' | 'grammar' | 'expressions' | 'vocabulary'
 
 export default function SpeakingFeedbackPage({ setPage }: Props) {
-  const { state, update } = useLearning()
+  const { state, update, audioFile } = useLearning()
   const [tab, setTab] = useState<Tab>('transcript')
   const [selected, setSelected] = useState<number | null>(null)
   const [saved, setSaved] = useState<Set<number>>(new Set())
   const [loading, setLoading] = useState(true)
   const [result, setResult] = useState<FeedbackResult | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    if (!audioFile) {
+      setLoading(false)
+      return
+    }
     let cancelled = false
     setLoading(true)
-    analyzeAudio(state.discussion.audioFileName ?? 'discussion.mp3').then(r => {
-      if (!cancelled) {
-        setResult(r)
-        setLoading(false)
-      }
-    })
+    aiService.analyzeAudio(audioFile)
+      .then(r => { if (!cancelled) setResult(r) })
+      .catch((err: Error) => { if (!cancelled) setError(err.message) })
+      .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [audioFile])
 
   const handleMarkComplete = () => {
     update({ today: { completed: true, streak: state.today.streak + 1 } })
     setPage('completed')
+  }
+
+  if (!audioFile) {
+    return (
+      <div style={{ paddingTop: 28, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 400, gap: 16, textAlign: 'center' }}>
+        <div style={{ fontSize: 32 }}>🎙️</div>
+        <p style={{ color: '#78716c', fontSize: 14, maxWidth: 360 }}>
+          No audio file is available in this session{state.discussion.audioFileName ? ` (previously selected "${state.discussion.audioFileName}")` : ''}.
+          Please go back to the Discussion Room and select it again.
+        </p>
+        <button onClick={() => setPage('discussion')} style={{ padding: '10px 24px', borderRadius: 10, backgroundColor: '#4f46e5', color: 'white', fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer' }}>
+          ← Back to Discussion Room
+        </button>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div style={{ paddingTop: 28, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 400, gap: 16, textAlign: 'center' }}>
+        <div style={{ fontSize: 32 }}>⚠️</div>
+        <p style={{ color: '#991b1b', fontSize: 14, maxWidth: 360 }}>{error}</p>
+        <button onClick={() => setPage('discussion')} style={{ padding: '10px 24px', borderRadius: 10, backgroundColor: '#4f46e5', color: 'white', fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer' }}>
+          ← Back to Discussion Room
+        </button>
+      </div>
+    )
   }
 
   if (loading || !result) {

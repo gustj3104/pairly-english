@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { Page } from '../App'
 import { useLearning } from '../state/LearningContext'
-import { connectPartner } from '../services/mockPartnerService'
+import { partnerService } from '../services'
 
 interface Props { setPage: (p: Page) => void }
 
@@ -14,7 +14,7 @@ export default function LandingPage({ setPage }: Props) {
 
   const handleSimulateJoin = async () => {
     setConnecting(true)
-    const { partnerName } = await connectPartner('PRL-7829')
+    const { partnerName } = await partnerService.connectPartner('PRL-7829')
     update({ partner: { connected: true, myName: name || 'Hyunji', partnerName } })
     setConnecting(false)
     setConnected(true)

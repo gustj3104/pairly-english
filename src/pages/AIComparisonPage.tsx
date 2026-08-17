@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react'
 import type { Page } from '../App'
-import { useLearning } from '../state/LearningContext'
-import { compareReflections, type ComparisonResult } from '../services/mockAIService'
+import { useLearning, getInitials } from '../state/LearningContext'
+import { aiService } from '../services'
+import type { ComparisonResult } from '../services/mockAIService'
 
 interface Props { setPage: (p: Page) => void }
 
 export default function AIComparisonPage({ setPage }: Props) {
   const { state, update } = useLearning()
+  const myName = state.partner.myName || 'Hyunji'
+  const partnerName = state.partner.partnerName || 'Jisoo'
   const [loading, setLoading] = useState(true)
   const [result, setResult] = useState<ComparisonResult | null>(null)
   const [selectedTopic, setSelectedTopic] = useState<number | null>(state.discussion.selectedTopicIndex)
@@ -14,7 +17,7 @@ export default function AIComparisonPage({ setPage }: Props) {
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    compareReflections(state.reflection.body, '').then(r => {
+    aiService.compareReflections(state.reflection.body, '').then(r => {
       if (!cancelled) {
         setResult(r)
         setLoading(false)
@@ -65,17 +68,17 @@ export default function AIComparisonPage({ setPage }: Props) {
         {/* Pair display */}
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 16, padding: '14px 24px', backgroundColor: 'white', borderRadius: 20, border: '1px solid #e7e5e4' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'linear-gradient(135deg, #4f46e5, #7c3aed)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: 14, fontWeight: 700 }}>HJ</div>
+            <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'linear-gradient(135deg, #4f46e5, #7c3aed)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: 14, fontWeight: 700 }}>{getInitials(myName)}</div>
             <div style={{ textAlign: 'left' }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#1c1917' }}>{state.partner.myName || 'Hyunji'}</div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#1c1917' }}>{myName}</div>
               <div style={{ fontSize: 11, color: '#4f46e5' }}>Me · {state.reflection.body.trim() ? state.reflection.body.trim().split(/\s+/).length : 243} words</div>
             </div>
           </div>
           <span style={{ fontSize: 18, color: '#d6d3d1' }}>vs</span>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'linear-gradient(135deg, #10b981, #059669)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: 14, fontWeight: 700 }}>J</div>
+            <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'linear-gradient(135deg, #10b981, #059669)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: 14, fontWeight: 700 }}>{getInitials(partnerName)}</div>
             <div style={{ textAlign: 'left' }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#1c1917' }}>{state.partner.partnerName || 'Jisoo'}</div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#1c1917' }}>{partnerName}</div>
               <div style={{ fontSize: 11, color: '#10b981' }}>Partner · 198 words</div>
             </div>
           </div>
@@ -102,11 +105,11 @@ export default function AIComparisonPage({ setPage }: Props) {
                 <div style={{ fontSize: 13, fontWeight: 600, color: '#166534', lineHeight: 1.5, marginBottom: 14 }}>{item.point}</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <div style={{ padding: '10px 12px', backgroundColor: 'rgba(79,70,229,0.08)', borderRadius: 10, borderLeft: '3px solid #4f46e5' }}>
-                    <div style={{ fontSize: 10, color: '#4f46e5', fontWeight: 600, marginBottom: 4 }}>HYUNJI</div>
+                    <div style={{ fontSize: 10, color: '#4f46e5', fontWeight: 600, marginBottom: 4 }}>{myName.toUpperCase()}</div>
                     <div style={{ fontSize: 12, color: '#44403c', fontStyle: 'italic', lineHeight: 1.5 }}>{item.hj}</div>
                   </div>
                   <div style={{ padding: '10px 12px', backgroundColor: 'rgba(16,185,129,0.08)', borderRadius: 10, borderLeft: '3px solid #10b981' }}>
-                    <div style={{ fontSize: 10, color: '#10b981', fontWeight: 600, marginBottom: 4 }}>JISOO</div>
+                    <div style={{ fontSize: 10, color: '#10b981', fontWeight: 600, marginBottom: 4 }}>{partnerName.toUpperCase()}</div>
                     <div style={{ fontSize: 12, color: '#44403c', fontStyle: 'italic', lineHeight: 1.5 }}>{item.js}</div>
                   </div>
                 </div>
@@ -134,14 +137,14 @@ export default function AIComparisonPage({ setPage }: Props) {
                   <div style={{ padding: '14px', borderRight: '1px solid #f5f5f4' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
                       <div style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#4f46e5', marginTop: 3 }} />
-                      <span style={{ fontSize: 11, fontWeight: 700, color: '#4f46e5' }}>HYUNJI · {item.hj.stance}</span>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: '#4f46e5' }}>{myName.toUpperCase()} · {item.hj.stance}</span>
                     </div>
                     <div style={{ fontSize: 12, color: '#57534e', fontStyle: 'italic', lineHeight: 1.6 }}>{item.hj.quote}</div>
                   </div>
                   <div style={{ padding: '14px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
                       <div style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#10b981', marginTop: 3 }} />
-                      <span style={{ fontSize: 11, fontWeight: 700, color: '#10b981' }}>JISOO · {item.js.stance}</span>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: '#10b981' }}>{partnerName.toUpperCase()} · {item.js.stance}</span>
                     </div>
                     <div style={{ fontSize: 12, color: '#57534e', fontStyle: 'italic', lineHeight: 1.6 }}>{item.js.quote}</div>
                   </div>

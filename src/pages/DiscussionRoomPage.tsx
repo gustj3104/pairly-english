@@ -1,16 +1,23 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Page } from '../App'
 import { useLearning } from '../state/LearningContext'
+import { validateAudioFile, SUPPORTED_AUDIO_EXTENSIONS } from '../services/mockAIService'
 
 interface Props { setPage: (p: Page) => void }
 
 export default function DiscussionRoomPage({ setPage }: Props) {
-  const { state, update } = useLearning()
+  const { state, update, audioFile, setAudioFile } = useLearning()
+  const myName = state.partner.myName || 'Hyunji'
+  const partnerName = state.partner.partnerName || 'Jisoo'
   const [seconds, setSeconds] = useState(0)
   const [running, setRunning] = useState(false)
-  const [audioFile, setAudioFile] = useState<File | null>(null)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // A File can't be persisted to localStorage; if a filename survived a
+  // refresh but the File object didn't, the learner needs to reselect it.
+  const needsReselect = !audioFile && !!state.discussion.audioFileName
 
   useEffect(() => {
     if (!running) return
@@ -28,6 +35,16 @@ export default function DiscussionRoomPage({ setPage }: Props) {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
+
+    const validation = validateAudioFile(file)
+    if (!validation.valid) {
+      setError(validation.error ?? 'This file could not be used.')
+      setAudioFile(null)
+      update({ discussion: { ...state.discussion, audioFileName: null } })
+      return
+    }
+
+    setError(null)
     if (audioUrl) URL.revokeObjectURL(audioUrl)
     setAudioFile(file)
     setAudioUrl(URL.createObjectURL(file))
@@ -75,7 +92,7 @@ export default function DiscussionRoomPage({ setPage }: Props) {
             <div style={{ marginBottom: 18 }}>
               <div style={{ fontSize: 12, color: '#4f46e5', fontWeight: 600, marginBottom: 10 }}>Opening Question</div>
               <div style={{ padding: '12px 16px', backgroundColor: '#eef2ff', borderRadius: 10, fontSize: 14, color: '#1c1917', lineHeight: 1.6 }}>
-                "Jisoo, from your reading, what was the single most compelling piece of evidence that K-culture's success was intentionally engineered rather than organically grown?"
+                "{partnerName}, from your reading, what was the single most compelling piece of evidence that K-culture's success was intentionally engineered rather than organically grown?"
               </div>
             </div>
             <div>
@@ -122,11 +139,11 @@ export default function DiscussionRoomPage({ setPage }: Props) {
             <h3 style={{ fontSize: 16, fontWeight: 700, color: '#1c1917', margin: '0 0 16px' }}>Your Key Positions</h3>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <div style={{ padding: '14px', backgroundColor: '#eef2ff', borderRadius: 12, borderLeft: '3px solid #4f46e5' }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: '#4f46e5', marginBottom: 6 }}>HYUNJI</div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#4f46e5', marginBottom: 6 }}>{myName.toUpperCase()}</div>
                 <p style={{ fontSize: 13, color: '#1c1917', lineHeight: 1.6, margin: 0 }}>"Artistic quality and commercial strategy are not mutually exclusive — Korean creators proved both can coexist."</p>
               </div>
               <div style={{ padding: '14px', backgroundColor: '#ecfdf5', borderRadius: 12, borderLeft: '3px solid #10b981' }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: '#10b981', marginBottom: 6 }}>JISOO</div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#10b981', marginBottom: 6 }}>{partnerName.toUpperCase()}</div>
                 <p style={{ fontSize: 13, color: '#1c1917', lineHeight: 1.6, margin: 0 }}>"The systematic government investment raises questions about whether culture can retain authenticity when designed for export."</p>
               </div>
             </div>
@@ -140,6 +157,18 @@ export default function DiscussionRoomPage({ setPage }: Props) {
             <p style={{ fontSize: 13, color: '#78716c', margin: '0 0 20px', lineHeight: 1.5 }}>
               Record your conversation offline, then select the audio file to preview it here. The file stays in your browser — nothing is uploaded.
             </p>
+
+            {needsReselect && (
+              <div style={{ padding: '12px 14px', backgroundColor: '#fffbeb', borderRadius: 10, marginBottom: 16, fontSize: 12, color: '#92400e', lineHeight: 1.5, border: '1px solid #fde68a' }}>
+                ⚠️ "{state.discussion.audioFileName}" was selected before the page refreshed. Browsers don't keep file contents across a reload — please choose it again.
+              </div>
+            )}
+
+            {error && (
+              <div style={{ padding: '12px 14px', backgroundColor: '#fef2f2', borderRadius: 10, marginBottom: 16, fontSize: 12, color: '#991b1b', lineHeight: 1.5, border: '1px solid #fca5a5' }}>
+                ⚠️ {error}
+              </div>
+            )}
 
             <input
               ref={fileInputRef}
@@ -155,7 +184,7 @@ export default function DiscussionRoomPage({ setPage }: Props) {
                 <div style={{ fontSize: 32, marginBottom: 12 }}>🎙️</div>
                 <div style={{ fontSize: 14, fontWeight: 600, color: '#4f46e5', marginBottom: 6 }}>Choose audio file</div>
                 <div style={{ fontSize: 12, color: '#78716c', marginBottom: 14 }}>Click to browse your device</div>
-                <div style={{ fontSize: 11, color: '#a8a29e' }}>MP3, WAV, M4A</div>
+                <div style={{ fontSize: 11, color: '#a8a29e' }}>{SUPPORTED_AUDIO_EXTENSIONS.join(', ').toUpperCase()}</div>
               </div>
             ) : (
               <>

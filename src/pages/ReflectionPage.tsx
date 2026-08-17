@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react'
 import type { Page } from '../App'
 import { useLearning } from '../state/LearningContext'
-import { getVocabularyDictionary } from '../services/mockNewsService'
+import { newsService } from '../services'
+import { getVocabGoals, type Article } from '../services/mockNewsService'
 
 interface Props { setPage: (p: Page) => void }
 
-const WORDS = getVocabularyDictionary().map(w => w.word)
 const GUIDE = [
   'What was the main point of the article?',
   'What did you find most interesting?',
@@ -15,11 +15,21 @@ const GUIDE = [
 
 export default function ReflectionPage({ setPage }: Props) {
   const { state, update } = useLearning()
+  const partnerName = state.partner.partnerName || 'Jisoo'
+  const [article, setArticle] = useState<Article | null>(null)
   const [title, setTitle] = useState(state.reflection.title)
   const [body, setBody] = useState(state.reflection.body)
   const [saved, setSaved] = useState(true)
   const [showModal, setShowModal] = useState(false)
 
+  useEffect(() => {
+    let cancelled = false
+    newsService.getTodayArticle().then(a => { if (!cancelled) setArticle(a) })
+    return () => { cancelled = true }
+  }, [])
+
+  const WORDS = article ? article.vocabulary.map(w => w.word) : []
+  const reflectionUseGoal = article ? getVocabGoals(article).reflectionUseGoal : 0
   const usedWords = WORDS.filter(w => body.toLowerCase().includes(w))
   const wordCount = body.trim() ? body.trim().split(/\s+/).length : 0
 
@@ -50,11 +60,20 @@ export default function ReflectionPage({ setPage }: Props) {
     setPage('waiting')
   }
 
+  if (!article) {
+    return (
+      <div style={{ paddingTop: 28, display: 'flex', justifyContent: 'center', minHeight: 300, alignItems: 'center' }}>
+        <div style={{ width: 32, height: 32, borderRadius: '50%', border: '3px solid #e7e5e4', borderTopColor: '#4f46e5', animation: 'spin 0.8s linear infinite' }} />
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    )
+  }
+
   return (
     <div style={{ paddingTop: 28 }}>
       <div style={{ marginBottom: 22 }}>
         <h2 style={{ fontFamily: 'DM Serif Display, Georgia, serif', fontSize: 28, color: '#1c1917', margin: '0 0 4px' }}>Write Your Reflection</h2>
-        <p style={{ color: '#78716c', fontSize: 14, margin: 0 }}>Use your vocabulary words to share your thoughts on the article.</p>
+        <p style={{ color: '#78716c', fontSize: 14, margin: 0 }}>Use at least {reflectionUseGoal} of your vocabulary words to share your thoughts on the article.</p>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: 24, alignItems: 'start' }}>
@@ -64,10 +83,10 @@ export default function ReflectionPage({ setPage }: Props) {
           <div style={{ backgroundColor: 'white', borderRadius: 16, padding: '18px', border: '1px solid #e7e5e4' }}>
             <div style={{ fontSize: 11, color: '#a8a29e', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Today's Article</div>
             <div style={{ fontFamily: 'DM Serif Display, Georgia, serif', fontSize: 15, color: '#1c1917', lineHeight: 1.4, marginBottom: 10 }}>
-              The Quiet Revolution: How K-Culture Is Rewriting Hollywood's Playbook
+              {article.title}
             </div>
             <p style={{ fontSize: 12, color: '#78716c', lineHeight: 1.6, margin: 0 }}>
-              Korean cultural exports have quietly dismantled the assumption that global entertainment flows in one direction, reshaping the grammar of global entertainment.
+              {article.summary}
             </p>
           </div>
 
@@ -117,7 +136,7 @@ export default function ReflectionPage({ setPage }: Props) {
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: '#78716c' }}>Vocab:</span>
-                  <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, fontWeight: 600, color: usedWords.length >= 5 ? '#059669' : '#4f46e5' }}>{usedWords.length}/{WORDS.length}</span>
+                  <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, fontWeight: 600, color: usedWords.length >= reflectionUseGoal ? '#059669' : '#4f46e5' }}>{usedWords.length}/{WORDS.length}</span>
                 </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: saved ? '#10b981' : '#f59e0b' }}>
@@ -176,7 +195,7 @@ export default function ReflectionPage({ setPage }: Props) {
             <div style={{ backgroundColor: '#fffbeb', borderRadius: 12, padding: '14px 16px', marginBottom: 24, border: '1px solid #fde68a' }}>
               <div style={{ fontSize: 13, color: '#92400e', display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                 <span>⏳</span>
-                <span>Jisoo hasn't submitted yet. You'll wait here until both reflections are ready for comparison.</span>
+                <span>{partnerName} hasn't submitted yet. You'll wait here until both reflections are ready for comparison.</span>
               </div>
             </div>
 

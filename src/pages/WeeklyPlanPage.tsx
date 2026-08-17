@@ -1,4 +1,5 @@
 import type { Page } from '../App'
+import { useLearning, getInitials } from '../state/LearningContext'
 
 interface Props { setPage: (p: Page) => void }
 
@@ -19,6 +20,10 @@ const STATS = [
 ]
 
 export default function WeeklyPlanPage({ setPage }: Props) {
+  const { state } = useLearning()
+  const myName = state.partner.myName || 'Hyunji'
+  const partnerName = state.partner.partnerName || 'Jisoo'
+
   return (
     <div style={{ paddingTop: 32 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 28 }}>
@@ -85,8 +90,8 @@ export default function WeeklyPlanPage({ setPage }: Props) {
                 {/* Partner status */}
                 <div style={{ display: 'flex', gap: 12 }}>
                   {[
-                    { label: 'Me', init: 'HJ', color: '#4f46e5', done: d.me },
-                    { label: 'Jisoo', init: 'J', color: '#10b981', done: d.partner },
+                    { label: myName, init: getInitials(myName), color: '#4f46e5', done: d.me },
+                    { label: partnerName, init: getInitials(partnerName), color: '#10b981', done: d.partner },
                   ].map(u => (
                     <div key={u.label} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       <div style={{ width: 22, height: 22, borderRadius: '50%', backgroundColor: u.done ? u.color : '#e7e5e4', display: 'flex', alignItems: 'center', justifyContent: 'center', color: u.done ? 'white' : '#a8a29e', fontSize: 9, fontWeight: 700 }}>{u.init}</div>

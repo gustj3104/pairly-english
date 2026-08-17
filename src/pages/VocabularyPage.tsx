@@ -1,19 +1,25 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Page } from '../App'
 import { useLearning } from '../state/LearningContext'
-import { getVocabularyDictionary, VOCAB_GOAL } from '../services/mockNewsService'
+import { newsService } from '../services'
+import { getVocabGoals, type Article } from '../services/mockNewsService'
 
 interface Props { setPage: (p: Page) => void }
-
-const WORDS = getVocabularyDictionary()
 
 export default function VocabularyPage({ setPage }: Props) {
   const { state, update } = useLearning()
   const checked = state.vocabulary.checkedWords
   const userExamples = state.vocabulary.userExamples
+  const [article, setArticle] = useState<Article | null>(null)
   const [mode, setMode] = useState<'list' | 'flashcard'>('list')
   const [cardIdx, setCardIdx] = useState(0)
   const [flipped, setFlipped] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    newsService.getTodayArticle().then(a => { if (!cancelled) setArticle(a) })
+    return () => { cancelled = true }
+  }, [])
 
   const toggleCheck = (w: string) => {
     const next = checked.includes(w) ? checked.filter(c => c !== w) : [...checked, w]
@@ -24,7 +30,18 @@ export default function VocabularyPage({ setPage }: Props) {
     update({ vocabulary: { ...state.vocabulary, userExamples: { ...userExamples, [word]: value } } })
   }
 
-  const goalMet = checked.length >= VOCAB_GOAL
+  if (!article) {
+    return (
+      <div style={{ paddingTop: 28, display: 'flex', justifyContent: 'center', minHeight: 300, alignItems: 'center' }}>
+        <div style={{ width: 32, height: 32, borderRadius: '50%', border: '3px solid #e7e5e4', borderTopColor: '#4f46e5', animation: 'spin 0.8s linear infinite' }} />
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    )
+  }
+
+  const WORDS = article.vocabulary
+  const goals = getVocabGoals(article)
+  const goalMet = checked.length >= goals.memorizeGoal
 
   if (mode === 'flashcard') {
     const w = WORDS[cardIdx]
@@ -90,7 +107,7 @@ export default function VocabularyPage({ setPage }: Props) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
         <div>
           <h2 style={{ fontFamily: 'DM Serif Display, Georgia, serif', fontSize: 28, color: '#1c1917', margin: '0 0 6px' }}>Vocabulary Study</h2>
-          <p style={{ color: '#78716c', fontSize: 14, margin: 0 }}>Use these words in your reflection. Goal: {VOCAB_GOAL}+ words.</p>
+          <p style={{ color: '#78716c', fontSize: 14, margin: 0 }}>Use these words in your reflection. Goal: {goals.memorizeGoal}/{goals.total} words.</p>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           <div style={{ display: 'flex', gap: 2, backgroundColor: '#f5f5f4', borderRadius: 10, padding: 3 }}>
@@ -102,7 +119,7 @@ export default function VocabularyPage({ setPage }: Props) {
             </button>
           </div>
           <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 13, fontWeight: 600, color: goalMet ? '#059669' : '#4f46e5', backgroundColor: goalMet ? '#ecfdf5' : '#eef2ff', padding: '6px 14px', borderRadius: 10 }}>
-            {checked.length} / {WORDS.length} words
+            {checked.length} / {goals.total} words
           </div>
         </div>
       </div>
@@ -149,7 +166,7 @@ export default function VocabularyPage({ setPage }: Props) {
       </div>
 
       <div style={{ marginTop: 24, display: 'flex', justifyContent: 'flex-end', gap: 12, alignItems: 'center' }}>
-        {!goalMet && <span style={{ fontSize: 13, color: '#a8a29e' }}>Mark {VOCAB_GOAL - checked.length} more words as memorized to continue</span>}
+        {!goalMet && <span style={{ fontSize: 13, color: '#a8a29e' }}>Mark {goals.memorizeGoal - checked.length} more words as memorized to continue</span>}
         <button onClick={() => setPage('reflection')} disabled={!goalMet} style={{ padding: '13px 32px', borderRadius: 12, backgroundColor: goalMet ? '#4f46e5' : '#e7e5e4', color: goalMet ? 'white' : '#a8a29e', fontSize: 15, fontWeight: 600, border: 'none', cursor: goalMet ? 'pointer' : 'not-allowed' }}>
           Start Writing →
         </button>

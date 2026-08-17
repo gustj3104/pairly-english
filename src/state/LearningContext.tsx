@@ -64,12 +64,21 @@ interface LearningContextValue {
   setPage: (page: Page) => void
   update: (patch: Partial<LearningState>) => void
   reset: () => void
+  /**
+   * The selected discussion recording, held in memory only. A `File`
+   * can't be serialized into localStorage, so it does not survive a
+   * refresh — `state.discussion.audioFileName` is the persisted trace
+   * of what was selected, used to prompt the learner to reselect it.
+   */
+  audioFile: File | null
+  setAudioFile: (file: File | null) => void
 }
 
 const LearningContext = createContext<LearningContextValue | null>(null)
 
 export function LearningProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<LearningState>(loadState)
+  const [audioFile, setAudioFile] = useState<File | null>(null)
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
@@ -77,13 +86,24 @@ export function LearningProvider({ children }: { children: ReactNode }) {
 
   const setPage = (page: Page) => setState(s => ({ ...s, page }))
   const update = (patch: Partial<LearningState>) => setState(s => ({ ...s, ...patch }))
-  const reset = () => setState(DEFAULT_STATE)
+  const reset = () => {
+    setState(DEFAULT_STATE)
+    setAudioFile(null)
+  }
 
   return (
-    <LearningContext.Provider value={{ state, setPage, update, reset }}>
+    <LearningContext.Provider value={{ state, setPage, update, reset, audioFile, setAudioFile }}>
       {children}
     </LearningContext.Provider>
   )
+}
+
+/** First letter of up to the first two words, uppercased — a generic stand-in for the "HJ"-style avatar initials. */
+export function getInitials(name: string): string {
+  const trimmed = name.trim()
+  if (!trimmed) return '?'
+  const parts = trimmed.split(/\s+/)
+  return parts.slice(0, 2).map(p => p[0].toUpperCase()).join('')
 }
 
 export function useLearning() {
