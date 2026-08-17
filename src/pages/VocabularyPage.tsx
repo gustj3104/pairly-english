@@ -1,33 +1,30 @@
 import { useState } from 'react'
 import type { Page } from '../App'
+import { useLearning } from '../state/LearningContext'
+import { getVocabularyDictionary, VOCAB_GOAL } from '../services/mockNewsService'
 
 interface Props { setPage: (p: Page) => void }
 
-const WORDS = [
-  { word: 'harbinger', pron: '/ˈhɑːrbɪndʒər/', pos: 'noun', kr: '선구자, 전조', def: 'A person or thing that signals the approach of another', sentence: 'Parasite was not a fluke but a harbinger of a new era.', checked: true },
-  { word: 'hallyu', pron: '/ˈhæljuː/', pos: 'noun', kr: '한류 (韓流)', def: 'The spread of South Korean culture globally', sentence: 'The Korean wave — known domestically as hallyu — runs far deeper.', checked: true },
-  { word: 'ambivalent', pron: '/æmˈbɪvələnt/', pos: 'adjective', kr: '양가적인, 모호한', def: 'Having mixed or contradictory feelings about something', sentence: "Hollywood's response has been characteristically ambivalent.", checked: false },
-  { word: 'subsidy', pron: '/ˈsʌbsɪdi/', pos: 'noun', kr: '보조금', def: 'A sum of money granted by the government to assist an industry', sentence: 'Subsidies for film schools drove creative infrastructure growth.', checked: false },
-  { word: 'aesthetic', pron: '/esˈθetɪk/', pos: 'adjective', kr: '미적인, 심미적인', def: 'Concerned with beauty or the appreciation of beauty', sentence: 'The risk is what scholars call aesthetic laundering.', checked: false },
-  { word: 'infrastructure', pron: '/ˈɪnfrəstrʌktʃər/', pos: 'noun', kr: '인프라, 기반 시설', def: 'The basic physical and organizational structures needed for operation', sentence: 'A systematic cultivation of creative infrastructure followed.', checked: false },
-  { word: 'hegemony', pron: '/hɪˈdʒeməni/', pos: 'noun', kr: '패권, 지배력', def: 'Leadership or dominance, especially of one country over others', sentence: 'Korean culture began to challenge American cultural hegemony.', checked: false },
-  { word: 'meticulously', pron: '/mɪˈtɪkjʊləsli/', pos: 'adverb', kr: '꼼꼼하게, 세심하게', def: 'In a way that shows great attention to detail and careful precision', sentence: 'Meticulously choreographed performances captivate global audiences.', checked: false },
-]
+const WORDS = getVocabularyDictionary()
 
 export default function VocabularyPage({ setPage }: Props) {
+  const { state, update } = useLearning()
+  const checked = state.vocabulary.checkedWords
+  const userExamples = state.vocabulary.userExamples
   const [mode, setMode] = useState<'list' | 'flashcard'>('list')
-  const [checked, setChecked] = useState<Set<string>>(new Set(['harbinger', 'hallyu']))
   const [cardIdx, setCardIdx] = useState(0)
   const [flipped, setFlipped] = useState(false)
-  const [userExamples, setUserExamples] = useState<Record<string, string>>({})
 
   const toggleCheck = (w: string) => {
-    const s = new Set(checked)
-    s.has(w) ? s.delete(w) : s.add(w)
-    setChecked(s)
+    const next = checked.includes(w) ? checked.filter(c => c !== w) : [...checked, w]
+    update({ vocabulary: { ...state.vocabulary, checkedWords: next } })
   }
 
-  const goalMet = checked.size >= 10
+  const setExample = (word: string, value: string) => {
+    update({ vocabulary: { ...state.vocabulary, userExamples: { ...userExamples, [word]: value } } })
+  }
+
+  const goalMet = checked.length >= VOCAB_GOAL
 
   if (mode === 'flashcard') {
     const w = WORDS[cardIdx]
@@ -76,8 +73,8 @@ export default function VocabularyPage({ setPage }: Props) {
             <button onClick={() => { setCardIdx(Math.max(0, cardIdx - 1)); setFlipped(false) }} disabled={cardIdx === 0} style={{ padding: '10px 20px', borderRadius: 10, border: '1.5px solid #e7e5e4', backgroundColor: 'white', fontSize: 14, cursor: cardIdx === 0 ? 'not-allowed' : 'pointer', color: cardIdx === 0 ? '#c8c4c0' : '#57534e' }}>
               ← Prev
             </button>
-            <button onClick={() => toggleCheck(w.word)} style={{ padding: '10px 20px', borderRadius: 10, border: `1.5px solid ${checked.has(w.word) ? '#10b981' : '#e7e5e4'}`, backgroundColor: checked.has(w.word) ? '#ecfdf5' : 'white', fontSize: 13, cursor: 'pointer', color: checked.has(w.word) ? '#059669' : '#57534e', fontWeight: 600 }}>
-              {checked.has(w.word) ? '✓ Memorized' : 'Mark as Done'}
+            <button onClick={() => toggleCheck(w.word)} style={{ padding: '10px 20px', borderRadius: 10, border: `1.5px solid ${checked.includes(w.word) ? '#10b981' : '#e7e5e4'}`, backgroundColor: checked.includes(w.word) ? '#ecfdf5' : 'white', fontSize: 13, cursor: 'pointer', color: checked.includes(w.word) ? '#059669' : '#57534e', fontWeight: 600 }}>
+              {checked.includes(w.word) ? '✓ Memorized' : 'Mark as Done'}
             </button>
             <button onClick={() => { if (cardIdx < WORDS.length - 1) { setCardIdx(cardIdx + 1); setFlipped(false) } }} disabled={cardIdx === WORDS.length - 1} style={{ padding: '10px 20px', borderRadius: 10, border: '1.5px solid #e7e5e4', backgroundColor: 'white', fontSize: 14, cursor: cardIdx === WORDS.length - 1 ? 'not-allowed' : 'pointer', color: cardIdx === WORDS.length - 1 ? '#c8c4c0' : '#57534e' }}>
               Next →
@@ -93,7 +90,7 @@ export default function VocabularyPage({ setPage }: Props) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
         <div>
           <h2 style={{ fontFamily: 'DM Serif Display, Georgia, serif', fontSize: 28, color: '#1c1917', margin: '0 0 6px' }}>Vocabulary Study</h2>
-          <p style={{ color: '#78716c', fontSize: 14, margin: 0 }}>Use these words in your reflection. Goal: 10–15 words.</p>
+          <p style={{ color: '#78716c', fontSize: 14, margin: 0 }}>Use these words in your reflection. Goal: {VOCAB_GOAL}+ words.</p>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           <div style={{ display: 'flex', gap: 2, backgroundColor: '#f5f5f4', borderRadius: 10, padding: 3 }}>
@@ -105,14 +102,14 @@ export default function VocabularyPage({ setPage }: Props) {
             </button>
           </div>
           <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 13, fontWeight: 600, color: goalMet ? '#059669' : '#4f46e5', backgroundColor: goalMet ? '#ecfdf5' : '#eef2ff', padding: '6px 14px', borderRadius: 10 }}>
-            {checked.size} / 15 words
+            {checked.length} / {WORDS.length} words
           </div>
         </div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16 }}>
         {WORDS.map(w => {
-          const isChecked = checked.has(w.word)
+          const isChecked = checked.includes(w.word)
           return (
             <div key={w.word} style={{ backgroundColor: 'white', borderRadius: 16, padding: '20px', border: `1.5px solid ${isChecked ? '#a7f3d0' : '#e7e5e4'}`, transition: 'border-color 0.2s', boxShadow: isChecked ? '0 0 0 3px rgba(16,185,129,0.1)' : 'none' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
@@ -141,7 +138,7 @@ export default function VocabularyPage({ setPage }: Props) {
                 <div style={{ fontSize: 11, color: '#a8a29e', marginBottom: 4 }}>My example sentence:</div>
                 <input
                   value={userExamples[w.word] || ''}
-                  onChange={e => setUserExamples({ ...userExamples, [w.word]: e.target.value })}
+                  onChange={e => setExample(w.word, e.target.value)}
                   placeholder={`Write a sentence using "${w.word}"...`}
                   style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid #e7e5e4', fontSize: 12, color: '#44403c', outline: 'none', fontFamily: 'inherit', boxSizing: 'border-box', backgroundColor: '#fafaf9' }}
                 />
@@ -152,7 +149,7 @@ export default function VocabularyPage({ setPage }: Props) {
       </div>
 
       <div style={{ marginTop: 24, display: 'flex', justifyContent: 'flex-end', gap: 12, alignItems: 'center' }}>
-        {!goalMet && <span style={{ fontSize: 13, color: '#a8a29e' }}>Mark {10 - checked.size} more words as memorized to continue</span>}
+        {!goalMet && <span style={{ fontSize: 13, color: '#a8a29e' }}>Mark {VOCAB_GOAL - checked.length} more words as memorized to continue</span>}
         <button onClick={() => setPage('reflection')} disabled={!goalMet} style={{ padding: '13px 32px', borderRadius: 12, backgroundColor: goalMet ? '#4f46e5' : '#e7e5e4', color: goalMet ? 'white' : '#a8a29e', fontSize: 15, fontWeight: 600, border: 'none', cursor: goalMet ? 'pointer' : 'not-allowed' }}>
           Start Writing →
         </button>

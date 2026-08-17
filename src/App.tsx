@@ -1,5 +1,5 @@
-import { useState } from 'react'
 import LandingPage from './pages/LandingPage'
+import OnboardingPage from './pages/OnboardingPage'
 import DashboardPage from './pages/DashboardPage'
 import NewsReaderPage from './pages/NewsReaderPage'
 import VocabularyPage from './pages/VocabularyPage'
@@ -8,13 +8,16 @@ import PartnerWaitingPage from './pages/PartnerWaitingPage'
 import AIComparisonPage from './pages/AIComparisonPage'
 import DiscussionRoomPage from './pages/DiscussionRoomPage'
 import SpeakingFeedbackPage from './pages/SpeakingFeedbackPage'
+import LearningCompletePage from './pages/LearningCompletePage'
 import WeeklyPlanPage from './pages/WeeklyPlanPage'
 import ReviewPage from './pages/ReviewPage'
 import TopNav from './components/TopNav'
 import StepProgressBar from './components/StepProgressBar'
+import { LearningProvider, useLearning } from './state/LearningContext'
 
 export type Page =
   | 'landing'
+  | 'onboarding'
   | 'dashboard'
   | 'news-reader'
   | 'vocabulary'
@@ -23,6 +26,7 @@ export type Page =
   | 'ai-comparison'
   | 'discussion'
   | 'feedback'
+  | 'completed'
   | 'weekly'
   | 'review'
 
@@ -36,6 +40,8 @@ const LEARNING_PAGES: Page[] = [
   'feedback',
 ]
 
+const NO_NAV_PAGES: Page[] = ['landing', 'onboarding']
+
 const STEP_MAP: Record<string, number> = {
   'news-reader': 0,
   vocabulary: 1,
@@ -46,22 +52,23 @@ const STEP_MAP: Record<string, number> = {
   feedback: 5,
 }
 
-export default function App() {
-  const [page, setPage] = useState<Page>('landing')
+function AppShell() {
+  const { state, setPage } = useLearning()
+  const page = state.page
 
   const isLearning = LEARNING_PAGES.includes(page)
+  const showNav = !NO_NAV_PAGES.includes(page)
   const currentStep = STEP_MAP[page] ?? -1
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: '#fafaf9', fontFamily: 'Inter, system-ui, sans-serif' }}>
-      {page !== 'landing' && (
-        <TopNav page={page} setPage={setPage} />
-      )}
+      {showNav && <TopNav page={page} setPage={setPage} />}
       {isLearning && (
         <StepProgressBar currentStep={currentStep} completedUpTo={currentStep} />
       )}
-      <main style={{ maxWidth: page === 'landing' ? undefined : '1200px', margin: '0 auto', padding: page === 'landing' ? 0 : '0 24px 48px' }}>
+      <main style={{ maxWidth: showNav ? '1200px' : undefined, margin: '0 auto', padding: showNav ? '0 24px 48px' : 0 }}>
         {page === 'landing' && <LandingPage setPage={setPage} />}
+        {page === 'onboarding' && <OnboardingPage setPage={setPage} />}
         {page === 'dashboard' && <DashboardPage setPage={setPage} />}
         {page === 'news-reader' && <NewsReaderPage setPage={setPage} />}
         {page === 'vocabulary' && <VocabularyPage setPage={setPage} />}
@@ -70,9 +77,18 @@ export default function App() {
         {page === 'ai-comparison' && <AIComparisonPage setPage={setPage} />}
         {page === 'discussion' && <DiscussionRoomPage setPage={setPage} />}
         {page === 'feedback' && <SpeakingFeedbackPage setPage={setPage} />}
+        {page === 'completed' && <LearningCompletePage setPage={setPage} />}
         {page === 'weekly' && <WeeklyPlanPage setPage={setPage} />}
         {page === 'review' && <ReviewPage setPage={setPage} />}
       </main>
     </div>
+  )
+}
+
+export default function App() {
+  return (
+    <LearningProvider>
+      <AppShell />
+    </LearningProvider>
   )
 }

@@ -1,35 +1,49 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Page } from '../App'
+import { useLearning } from '../state/LearningContext'
+import { analyzeAudio, type FeedbackResult } from '../services/mockAIService'
 
 interface Props { setPage: (p: Page) => void }
 
 type Tab = 'transcript' | 'grammar' | 'expressions' | 'vocabulary'
 
-const TRANSCRIPT = [
-  { speaker: 'A', time: '0:05', text: 'So, I think the main reason K-culture became so popular is because the quality was genuinely good. Like, Parasite wasn\'t successful just because of marketing — it was a masterpiece.', corrections: [] },
-  { speaker: 'B', time: '1:12', text: 'I agree to some extent, but I think we should also consider the role of the government subsidies. Without those investment, the infrastructure couldn\'t have been built.', corrections: ['subsidies', 'those investment → that investment'] },
-  { speaker: 'A', time: '2:30', text: 'That\'s fair. But does that mean the art is less authentic? I don\'t think government support automatically makes something less genuine.', corrections: [] },
-  { speaker: 'B', time: '3:45', text: 'Not necessarily. But what concern me is that when you design culture for export, you risk losing the specific social critique that made it resonate in the first place.', corrections: ['what concern me → what concerns me'] },
-  { speaker: 'A', time: '5:02', text: 'That\'s a really interesting point. I hadn\'t thought about the aesthetic laundering idea from this angle. Do you think Hollywood is guilty of this with their Korean remakes?', corrections: [] },
-  { speaker: 'B', time: '6:18', text: 'Absolutely. They take the visual style but they remove the class commentary. Parasite worked in Korean because it spoke to very specific Korean anxieties about wealth gap.', corrections: ['about wealth gap → about the wealth gap'] },
-]
-
-const GRAMMAR_ISSUES = [
-  { original: 'Without those investment, the infrastructure...', corrected: 'Without that investment, the infrastructure...', type: 'Article', reason: '\'Investment\'는 불가산 명사이므로 \'those\' 대신 \'that\'을 사용해야 합니다.', natural: 'Without sufficient investment in the sector, ...' },
-  { original: 'what concern me is that...', corrected: 'what concerns me is that...', type: 'Tense', reason: '\'What\' 주어절에서 동사는 3인칭 단수 형태여야 합니다.', natural: 'My main concern is that...' },
-  { original: 'about wealth gap', corrected: 'about the wealth gap', type: 'Article', reason: '특정 사회 현상을 지칭할 때 정관사 \'the\'가 필요합니다.', natural: 'about the growing wealth disparity' },
-]
-
-const EXPRESSIONS = [
-  { original: 'the quality was genuinely good', natural: 'the quality genuinely stood out', explanation: '\'stand out\'은 특별히 뛰어나다는 뉘앙스를 더 잘 전달합니다.' },
-  { original: 'I agree to some extent', natural: 'I\'d partially agree with that', explanation: '\'To some extent\'보다 더 자연스러운 표현입니다.' },
-  { original: 'That\'s a really interesting point', natural: 'That\'s a compelling point, actually', explanation: '\'Compelling\'은 단순한 흥미보다 설득력 있다는 뉘앙스를 줍니다.' },
-]
-
 export default function SpeakingFeedbackPage({ setPage }: Props) {
+  const { state, update } = useLearning()
   const [tab, setTab] = useState<Tab>('transcript')
   const [selected, setSelected] = useState<number | null>(null)
   const [saved, setSaved] = useState<Set<number>>(new Set())
+  const [loading, setLoading] = useState(true)
+  const [result, setResult] = useState<FeedbackResult | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    analyzeAudio(state.discussion.audioFileName ?? 'discussion.mp3').then(r => {
+      if (!cancelled) {
+        setResult(r)
+        setLoading(false)
+      }
+    })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const handleMarkComplete = () => {
+    update({ today: { completed: true, streak: state.today.streak + 1 } })
+    setPage('completed')
+  }
+
+  if (loading || !result) {
+    return (
+      <div style={{ paddingTop: 28, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 400, gap: 16 }}>
+        <div style={{ width: 40, height: 40, borderRadius: '50%', border: '3px solid #e7e5e4', borderTopColor: '#4f46e5', animation: 'spin 0.8s linear infinite' }} />
+        <p style={{ color: '#78716c', fontSize: 14 }}>AI is analyzing your conversation...</p>
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    )
+  }
+
+  const { transcript: TRANSCRIPT, grammarIssues: GRAMMAR_ISSUES, expressions: EXPRESSIONS, vocabularyUsed } = result
 
   const TABS: { key: Tab; label: string; count?: number }[] = [
     { key: 'transcript', label: 'Transcript' },
@@ -43,11 +57,11 @@ export default function SpeakingFeedbackPage({ setPage }: Props) {
       {/* Summary cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16, marginBottom: 28 }}>
         {[
-          { icon: '⏱️', val: '14:32', label: 'Duration' },
-          { icon: '💬', val: '48', label: 'Utterances' },
-          { icon: '📚', val: '6', label: 'Vocab Used' },
-          { icon: '✏️', val: '3', label: 'Corrections', accent: '#ef4444', bg: '#fef2f2' },
-          { icon: '✨', val: '3', label: 'Better Phrases', accent: '#7c3aed', bg: '#faf5ff' },
+          { icon: '⏱️', val: result.duration, label: 'Duration' },
+          { icon: '💬', val: String(result.utterances), label: 'Utterances' },
+          { icon: '📚', val: String(vocabularyUsed.filter(v => v.used).length), label: 'Vocab Used' },
+          { icon: '✏️', val: String(GRAMMAR_ISSUES.length), label: 'Corrections', accent: '#ef4444', bg: '#fef2f2' },
+          { icon: '✨', val: String(EXPRESSIONS.length), label: 'Better Phrases', accent: '#7c3aed', bg: '#faf5ff' },
         ].map(s => (
           <div key={s.label} style={{ backgroundColor: s.bg || 'white', borderRadius: 16, padding: '18px 16px', textAlign: 'center', border: `1px solid ${s.accent ? s.accent + '25' : '#e7e5e4'}` }}>
             <div style={{ fontSize: 22, marginBottom: 8 }}>{s.icon}</div>
@@ -183,18 +197,11 @@ export default function SpeakingFeedbackPage({ setPage }: Props) {
 
           {tab === 'vocabulary' && (
             <div>
-              <p style={{ fontSize: 14, color: '#78716c', marginBottom: 16 }}>You used <strong style={{ color: '#4f46e5' }}>6 out of 8</strong> vocabulary words in your discussion. Great job!</p>
+              <p style={{ fontSize: 14, color: '#78716c', marginBottom: 16 }}>
+                You used <strong style={{ color: '#4f46e5' }}>{vocabularyUsed.filter(v => v.used).length} out of {vocabularyUsed.length}</strong> vocabulary words in your discussion. Great job!
+              </p>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-                {[
-                  { word: 'harbinger', used: true },
-                  { word: 'hallyu', used: true },
-                  { word: 'ambivalent', used: true },
-                  { word: 'subsidy', used: true },
-                  { word: 'aesthetic', used: true },
-                  { word: 'infrastructure', used: true },
-                  { word: 'hegemony', used: false },
-                  { word: 'meticulously', used: false },
-                ].map(w => (
+                {vocabularyUsed.map(w => (
                   <div key={w.word} style={{ padding: '14px', borderRadius: 12, backgroundColor: w.used ? '#ecfdf5' : '#f5f5f4', border: `1.5px solid ${w.used ? '#a7f3d0' : '#e7e5e4'}`, textAlign: 'center' }}>
                     <div style={{ fontSize: 16, marginBottom: 6 }}>{w.used ? '✅' : '⬜'}</div>
                     <div style={{ fontSize: 14, fontWeight: 600, color: w.used ? '#065f46' : '#a8a29e' }}>{w.word}</div>
@@ -216,7 +223,7 @@ export default function SpeakingFeedbackPage({ setPage }: Props) {
             ← Back to Dashboard
           </button>
         </div>
-        <button style={{ padding: '13px 28px', borderRadius: 12, backgroundColor: '#10b981', color: 'white', fontSize: 14, fontWeight: 700, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <button onClick={handleMarkComplete} style={{ padding: '13px 28px', borderRadius: 12, backgroundColor: '#10b981', color: 'white', fontSize: 14, fontWeight: 700, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
           🎉 Mark Today Complete
         </button>
       </div>

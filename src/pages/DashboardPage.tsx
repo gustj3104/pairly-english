@@ -1,34 +1,38 @@
 import type { Page } from '../App'
+import { useLearning } from '../state/LearningContext'
 
 interface Props { setPage: (p: Page) => void }
 
-const WEEK = [
-  { day: 'Mon', date: 11, topic: 'Technology', done: true, partner: true },
-  { day: 'Tue', date: 12, topic: 'Society', done: true, partner: true },
-  { day: 'Wed', date: 13, topic: 'Business', done: true, partner: false },
-  { day: 'Thu', date: 14, topic: 'Culture', done: false, today: true, partner: false, inProgress: true },
-  { day: 'Fri', date: 15, topic: 'Environment', done: false, locked: true },
-  { day: 'Sat', date: 16, topic: 'Lifestyle', done: false, locked: true },
-  { day: 'Sun', date: 17, topic: 'Sports', done: false, locked: true },
-]
-
 export default function DashboardPage({ setPage }: Props) {
+  const { state } = useLearning()
+  const todayDone = state.today.completed
+
+  const WEEK = [
+    { day: 'Mon', date: 11, topic: 'Technology', done: true, partner: true },
+    { day: 'Tue', date: 12, topic: 'Society', done: true, partner: true },
+    { day: 'Wed', date: 13, topic: 'Business', done: true, partner: false },
+    { day: 'Thu', date: 14, topic: 'Culture', done: todayDone, today: true, partner: false, inProgress: !todayDone },
+    { day: 'Fri', date: 15, topic: 'Environment', done: false, locked: true },
+    { day: 'Sat', date: 16, topic: 'Lifestyle', done: false, locked: true },
+    { day: 'Sun', date: 17, topic: 'Sports', done: false, locked: true },
+  ]
+
   return (
     <div style={{ paddingTop: 32 }}>
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 32 }}>
         <div>
-          <h1 style={{ fontFamily: 'DM Serif Display, Georgia, serif', fontSize: 32, color: '#1c1917', margin: '0 0 6px' }}>Good evening, Hyunji ✨</h1>
-          <p style={{ color: '#78716c', fontSize: 15, margin: 0 }}>Thursday, August 14, 2025 · 🔥 12-day streak</p>
+          <h1 style={{ fontFamily: 'DM Serif Display, Georgia, serif', fontSize: 32, color: '#1c1917', margin: '0 0 6px' }}>Good evening, {state.partner.myName || 'Hyunji'} ✨</h1>
+          <p style={{ color: '#78716c', fontSize: 15, margin: 0 }}>Thursday, August 14, 2025 · 🔥 {state.today.streak}-day streak</p>
         </div>
         <div style={{ backgroundColor: 'white', borderRadius: 14, padding: '14px 20px', border: '1px solid #e7e5e4', textAlign: 'right' }}>
           <div style={{ fontSize: 12, color: '#78716c', marginBottom: 6 }}>This week's progress</div>
           <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-            {[1,1,1,0.4,0,0,0].map((v, i) => (
+            {[1, 1, 1, todayDone ? 1 : 0.4, 0, 0, 0].map((v, i) => (
               <div key={i} style={{ width: 20, height: 6, borderRadius: 3, backgroundColor: v === 1 ? '#10b981' : v === 0.4 ? '#4f46e5' : '#e7e5e4' }} />
             ))}
           </div>
-          <div style={{ fontSize: 12, color: '#44403c', marginTop: 6, fontWeight: 600 }}>3 / 5 days completed</div>
+          <div style={{ fontSize: 12, color: '#44403c', marginTop: 6, fontWeight: 600 }}>{todayDone ? 4 : 3} / 5 days completed</div>
         </div>
       </div>
 
@@ -156,7 +160,7 @@ export default function DashboardPage({ setPage }: Props) {
               { icon: '✏️', title: 'Saved Corrections', sub: '24 expressions', color: '#ecfdf5', accent: '#10b981' },
               { icon: '🎧', title: 'Past Discussions', sub: '8 recordings', color: '#faf5ff', accent: '#7c3aed' },
             ].map(item => (
-              <div key={item.title} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px', borderRadius: 12, backgroundColor: item.color, marginBottom: 10, cursor: 'pointer', border: `1px solid ${item.accent}15` }}>
+              <div key={item.title} onClick={() => setPage('review')} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px', borderRadius: 12, backgroundColor: item.color, marginBottom: 10, cursor: 'pointer', border: `1px solid ${item.accent}15` }}>
                 <span style={{ fontSize: 20 }}>{item.icon}</span>
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 600, color: '#1c1917' }}>{item.title}</div>

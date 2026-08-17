@@ -1,16 +1,24 @@
 import { useState, useEffect } from 'react'
 import type { Page } from '../App'
+import { waitForPartnerSubmission } from '../services/mockPartnerService'
 
 interface Props { setPage: (p: Page) => void }
 
 export default function PartnerWaitingPage({ setPage }: Props) {
   const [dots, setDots] = useState(1)
   const [notified, setNotified] = useState(false)
+  const [checking, setChecking] = useState(false)
 
   useEffect(() => {
     const t = setInterval(() => setDots(d => (d % 3) + 1), 600)
     return () => clearInterval(t)
   }, [])
+
+  const handleCompareNow = async () => {
+    setChecking(true)
+    await waitForPartnerSubmission()
+    setPage('ai-comparison')
+  }
 
   return (
     <div style={{ paddingTop: 40, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
@@ -91,8 +99,8 @@ export default function PartnerWaitingPage({ setPage }: Props) {
         </div>
 
         {/* Simulate */}
-        <button onClick={() => setPage('ai-comparison')} style={{ padding: '13px 32px', borderRadius: 12, backgroundColor: '#10b981', color: 'white', fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer' }}>
-          Simulate: Partner Submitted → Compare Now
+        <button onClick={handleCompareNow} disabled={checking} style={{ padding: '13px 32px', borderRadius: 12, backgroundColor: checking ? '#a7f3d0' : '#10b981', color: 'white', fontSize: 14, fontWeight: 600, border: 'none', cursor: checking ? 'default' : 'pointer' }}>
+          {checking ? 'Checking...' : 'Simulate: Partner Submitted → Compare Now'}
         </button>
       </div>
     </div>

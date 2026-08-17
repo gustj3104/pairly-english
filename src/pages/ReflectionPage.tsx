@@ -1,29 +1,38 @@
 import { useState, useEffect } from 'react'
 import type { Page } from '../App'
+import { useLearning } from '../state/LearningContext'
+import { getVocabularyDictionary } from '../services/mockNewsService'
 
 interface Props { setPage: (p: Page) => void }
 
-const WORDS = ['harbinger', 'hallyu', 'ambivalent', 'subsidy', 'aesthetic', 'infrastructure', 'hegemony', 'meticulously']
+const WORDS = getVocabularyDictionary().map(w => w.word)
 const GUIDE = [
   'What was the main point of the article?',
   'What did you find most interesting?',
-  'Do you agree with the article\'s argument?',
+  "Do you agree with the article's argument?",
   'How does this issue affect society or your life?',
 ]
 
 export default function ReflectionPage({ setPage }: Props) {
-  const [title, setTitle] = useState('')
-  const [body, setBody] = useState('')
+  const { state, update } = useLearning()
+  const [title, setTitle] = useState(state.reflection.title)
+  const [body, setBody] = useState(state.reflection.body)
   const [saved, setSaved] = useState(true)
   const [showModal, setShowModal] = useState(false)
 
   const usedWords = WORDS.filter(w => body.toLowerCase().includes(w))
   const wordCount = body.trim() ? body.trim().split(/\s+/).length : 0
 
+  const saveDraft = () => {
+    update({ reflection: { ...state.reflection, title, body } })
+    setSaved(true)
+  }
+
   useEffect(() => {
     setSaved(false)
-    const t = setTimeout(() => setSaved(true), 1500)
+    const t = setTimeout(saveDraft, 1500)
     return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [body, title])
 
   const highlightUsedInBody = (text: string) => {
@@ -34,6 +43,11 @@ export default function ReflectionPage({ setPage }: Props) {
       }
       return <span key={i}>{w}</span>
     })
+  }
+
+  const handleSubmit = () => {
+    update({ reflection: { title, body, submitted: true } })
+    setPage('waiting')
   }
 
   return (
@@ -136,7 +150,7 @@ export default function ReflectionPage({ setPage }: Props) {
 
             {/* Footer */}
             <div style={{ padding: '16px 28px', borderTop: '1px solid #f5f5f4', display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'flex-end' }}>
-              <button style={{ padding: '10px 20px', borderRadius: 10, border: '1.5px solid #e7e5e4', backgroundColor: 'white', fontSize: 13, cursor: 'pointer', color: '#57534e' }}>
+              <button onClick={saveDraft} style={{ padding: '10px 20px', borderRadius: 10, border: '1.5px solid #e7e5e4', backgroundColor: 'white', fontSize: 13, cursor: 'pointer', color: '#57534e' }}>
                 Save Draft
               </button>
               <button onClick={() => setShowModal(true)} style={{ padding: '10px 24px', borderRadius: 10, backgroundColor: '#4f46e5', color: 'white', fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer' }}>
@@ -170,7 +184,7 @@ export default function ReflectionPage({ setPage }: Props) {
               <button onClick={() => setShowModal(false)} style={{ flex: 1, padding: '12px', borderRadius: 12, border: '1.5px solid #e7e5e4', backgroundColor: 'white', fontSize: 14, cursor: 'pointer', color: '#57534e' }}>
                 Edit More
               </button>
-              <button onClick={() => setPage('waiting')} style={{ flex: 1, padding: '12px', borderRadius: 12, backgroundColor: '#4f46e5', color: 'white', fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer' }}>
+              <button onClick={handleSubmit} style={{ flex: 1, padding: '12px', borderRadius: 12, backgroundColor: '#4f46e5', color: 'white', fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer' }}>
                 Submit
               </button>
             </div>

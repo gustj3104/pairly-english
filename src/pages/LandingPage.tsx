@@ -1,12 +1,28 @@
 import { useState } from 'react'
 import type { Page } from '../App'
+import { useLearning } from '../state/LearningContext'
+import { connectPartner } from '../services/mockPartnerService'
 
 interface Props { setPage: (p: Page) => void }
 
 export default function LandingPage({ setPage }: Props) {
+  const { state, update } = useLearning()
   const [showConnect, setShowConnect] = useState(false)
-  const [connected, setConnected] = useState(false)
-  const [name, setName] = useState('')
+  const [connected, setConnected] = useState(state.partner.connected)
+  const [connecting, setConnecting] = useState(false)
+  const [name, setName] = useState(state.partner.myName)
+
+  const handleSimulateJoin = async () => {
+    setConnecting(true)
+    const { partnerName } = await connectPartner('PRL-7829')
+    update({ partner: { connected: true, myName: name || 'Hyunji', partnerName } })
+    setConnecting(false)
+    setConnected(true)
+  }
+
+  const handleStartLearning = () => {
+    setPage(state.onboarding.complete ? 'dashboard' : 'onboarding')
+  }
 
   if (connected) {
     return (
@@ -26,13 +42,13 @@ export default function LandingPage({ setPage }: Props) {
           <div style={{ fontSize: 22, color: '#d6d3d1' }}>⟷</div>
           <div style={{ textAlign: 'center' }}>
             <div style={{ width: 64, height: 64, borderRadius: '50%', background: 'linear-gradient(135deg, #10b981, #059669)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: 20, fontWeight: 700, margin: '0 auto 8px' }}>
-              J
+              {(state.partner.partnerName || 'J')[0].toUpperCase()}
             </div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: '#1c1917' }}>Jisoo</div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: '#1c1917' }}>{state.partner.partnerName || 'Jisoo'}</div>
             <div style={{ fontSize: 12, color: '#10b981', marginTop: 2 }}>Partner</div>
           </div>
         </div>
-        <button onClick={() => setPage('dashboard')} style={{ padding: '14px 40px', borderRadius: 12, backgroundColor: '#4f46e5', color: 'white', fontSize: 15, fontWeight: 600, border: 'none', cursor: 'pointer' }}>
+        <button onClick={handleStartLearning} style={{ padding: '14px 40px', borderRadius: 12, backgroundColor: '#4f46e5', color: 'white', fontSize: 15, fontWeight: 600, border: 'none', cursor: 'pointer' }}>
           Start Learning Together →
         </button>
       </div>
@@ -95,8 +111,8 @@ export default function LandingPage({ setPage }: Props) {
             <span style={{ fontSize: 13, color: '#92400e' }}>Waiting for partner to connect...</span>
           </div>
 
-          <button onClick={() => setConnected(true)} style={{ width: '100%', padding: '12px', borderRadius: 10, backgroundColor: '#10b981', color: 'white', fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer' }}>
-            Simulate Partner Joining ✓
+          <button onClick={handleSimulateJoin} disabled={connecting} style={{ width: '100%', padding: '12px', borderRadius: 10, backgroundColor: connecting ? '#a7f3d0' : '#10b981', color: 'white', fontSize: 14, fontWeight: 600, border: 'none', cursor: connecting ? 'default' : 'pointer' }}>
+            {connecting ? 'Connecting...' : 'Simulate Partner Joining ✓'}
           </button>
         </div>
       </div>

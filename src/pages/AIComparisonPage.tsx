@@ -1,29 +1,51 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Page } from '../App'
+import { useLearning } from '../state/LearningContext'
+import { compareReflections, type ComparisonResult } from '../services/mockAIService'
 
 interface Props { setPage: (p: Page) => void }
 
-const TOPICS = [
-  {
-    q: 'Is K-culture\'s global rise a result of genuine artistic quality, or primarily effective marketing strategy?',
-    reason: 'Both reflections touch on this tension differently — Hyunji emphasized artistic merit, while Jisoo focused on systematic commercial strategy.',
-    difficulty: 'Intermediate',
-  },
-  {
-    q: 'Should governments subsidize cultural industries as a form of soft power? What are the risks?',
-    reason: 'Jisoo\'s reflection raised concerns about government-directed art losing authenticity. Hyunji suggested economic benefits outweigh the risks.',
-    difficulty: 'Advanced',
-  },
-  {
-    q: 'Does the global popularity of Korean culture challenge Western cultural hegemony, or simply add to it?',
-    reason: 'A direct extension of the "aesthetic laundering" concept in the article — both writers engaged with this idea from different angles.',
-    difficulty: 'Advanced',
-  },
-]
-
 export default function AIComparisonPage({ setPage }: Props) {
-  const [loading, setLoading] = useState(false)
-  const [selectedTopic, setSelectedTopic] = useState<number | null>(null)
+  const { state, update } = useLearning()
+  const [loading, setLoading] = useState(true)
+  const [result, setResult] = useState<ComparisonResult | null>(null)
+  const [selectedTopic, setSelectedTopic] = useState<number | null>(state.discussion.selectedTopicIndex)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    compareReflections(state.reflection.body, '').then(r => {
+      if (!cancelled) {
+        setResult(r)
+        setLoading(false)
+      }
+    })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const handleSelectTopic = (i: number) => {
+    const next = selectedTopic === i ? null : i
+    setSelectedTopic(next)
+    update({ discussion: { ...state.discussion, selectedTopicIndex: next, selectedTopicText: next === null ? null : topics[next].question } })
+  }
+
+  const handleStartDiscussion = () => {
+    if (selectedTopic === null) return
+    setPage('discussion')
+  }
+
+  if (loading || !result) {
+    return (
+      <div style={{ paddingTop: 28, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 400, gap: 16 }}>
+        <div style={{ width: 40, height: 40, borderRadius: '50%', border: '3px solid #e7e5e4', borderTopColor: '#4f46e5', animation: 'spin 0.8s linear infinite' }} />
+        <p style={{ color: '#78716c', fontSize: 14 }}>AI is comparing both reflections...</p>
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    )
+  }
+
+  const { commonGround, differences, topics } = result
 
   return (
     <div style={{ paddingTop: 28 }}>
@@ -45,15 +67,15 @@ export default function AIComparisonPage({ setPage }: Props) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'linear-gradient(135deg, #4f46e5, #7c3aed)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: 14, fontWeight: 700 }}>HJ</div>
             <div style={{ textAlign: 'left' }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#1c1917' }}>Hyunji</div>
-              <div style={{ fontSize: 11, color: '#4f46e5' }}>Me · 243 words</div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#1c1917' }}>{state.partner.myName || 'Hyunji'}</div>
+              <div style={{ fontSize: 11, color: '#4f46e5' }}>Me · {state.reflection.body.trim() ? state.reflection.body.trim().split(/\s+/).length : 243} words</div>
             </div>
           </div>
           <span style={{ fontSize: 18, color: '#d6d3d1' }}>vs</span>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'linear-gradient(135deg, #10b981, #059669)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: 14, fontWeight: 700 }}>J</div>
             <div style={{ textAlign: 'left' }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#1c1917' }}>Jisoo</div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#1c1917' }}>{state.partner.partnerName || 'Jisoo'}</div>
               <div style={{ fontSize: 11, color: '#10b981' }}>Partner · 198 words</div>
             </div>
           </div>
@@ -75,10 +97,7 @@ export default function AIComparisonPage({ setPage }: Props) {
             </div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-            {[
-              { point: 'Korean culture\'s global rise is unprecedented and historically significant', hj: '"...Parasite was not a fluke but a harbinger of something larger that was already in motion."', js: '"The scale of hallyu in 2025 is something that scholars predicted but few believed would happen this quickly."' },
-              { point: 'Government investment played a key role in building the cultural infrastructure', hj: '"...systematic subsidies created the conditions for both artistic ambition and commercial discipline."', js: '"The 1997 financial crisis paradoxically created the foundation for Korean soft power — necessity driving innovation."' },
-            ].map((item, i) => (
+            {commonGround.map((item, i) => (
               <div key={i} style={{ padding: '16px', backgroundColor: '#f0fdf4', borderRadius: 14, border: '1px solid #bbf7d0' }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: '#166534', lineHeight: 1.5, marginBottom: 14 }}>{item.point}</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -106,18 +125,7 @@ export default function AIComparisonPage({ setPage }: Props) {
             </div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-            {[
-              {
-                topic: 'Hollywood\'s response to K-culture',
-                hj: { stance: 'Cautiously optimistic', quote: '"The hiring of Korean directors suggests genuine openness — Hollywood can learn from a different storytelling tradition."' },
-                js: { stance: 'Skeptical', quote: '"Studios are appropriating the surface aesthetics of K-culture without engaging with its social critique — classic aesthetic laundering."' },
-              },
-              {
-                topic: 'The role of government in cultural production',
-                hj: { stance: 'Supportive', quote: '"Strategic investment in creative industries is legitimate soft power — economic success validates the approach."' },
-                js: { stance: 'Concerned', quote: '"When governments systematically cultivate culture for export, there is a risk of homogenizing art to fit marketable narratives."' },
-              },
-            ].map((item, i) => (
+            {differences.map((item, i) => (
               <div key={i} style={{ borderRadius: 14, overflow: 'hidden', border: '1px solid #e7e5e4' }}>
                 <div style={{ padding: '12px 16px', backgroundColor: '#f5f5f4', borderBottom: '1px solid #e7e5e4' }}>
                   <div style={{ fontSize: 13, fontWeight: 600, color: '#1c1917' }}>{item.topic}</div>
@@ -154,14 +162,14 @@ export default function AIComparisonPage({ setPage }: Props) {
           </div>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          {TOPICS.map((t, i) => (
-            <div key={i} onClick={() => setSelectedTopic(selectedTopic === i ? null : i)} style={{ borderRadius: 14, border: `2px solid ${selectedTopic === i ? '#4f46e5' : '#e7e5e4'}`, backgroundColor: selectedTopic === i ? '#f5f3ff' : 'white', cursor: 'pointer', overflow: 'hidden', transition: 'all 0.2s' }}>
+          {topics.map((t, i) => (
+            <div key={i} onClick={() => handleSelectTopic(i)} style={{ borderRadius: 14, border: `2px solid ${selectedTopic === i ? '#4f46e5' : '#e7e5e4'}`, backgroundColor: selectedTopic === i ? '#f5f3ff' : 'white', cursor: 'pointer', overflow: 'hidden', transition: 'all 0.2s' }}>
               <div style={{ padding: '18px 20px', display: 'flex', gap: 16, alignItems: 'flex-start' }}>
                 <div style={{ width: 32, height: 32, borderRadius: '50%', backgroundColor: selectedTopic === i ? '#4f46e5' : '#f5f5f4', display: 'flex', alignItems: 'center', justifyContent: 'center', color: selectedTopic === i ? 'white' : '#78716c', fontSize: 14, fontWeight: 700, flexShrink: 0 }}>
                   {i + 1}
                 </div>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 15, fontWeight: 600, color: '#1c1917', lineHeight: 1.5, marginBottom: 8 }}>{t.q}</div>
+                  <div style={{ fontSize: 15, fontWeight: 600, color: '#1c1917', lineHeight: 1.5, marginBottom: 8 }}>{t.question}</div>
                   <div style={{ fontSize: 12, color: '#78716c', lineHeight: 1.5, marginBottom: 10 }}>{t.reason}</div>
                   <span style={{ fontSize: 11, backgroundColor: t.difficulty === 'Advanced' ? '#fef3c7' : '#dbeafe', color: t.difficulty === 'Advanced' ? '#92400e' : '#1e40af', padding: '3px 10px', borderRadius: 20, fontWeight: 500 }}>
                     {t.difficulty}
@@ -177,7 +185,7 @@ export default function AIComparisonPage({ setPage }: Props) {
           ))}
         </div>
         <div style={{ marginTop: 20, display: 'flex', justifyContent: 'flex-end' }}>
-          <button onClick={() => selectedTopic !== null && setPage('discussion')} disabled={selectedTopic === null} style={{ padding: '13px 32px', borderRadius: 12, backgroundColor: selectedTopic !== null ? '#4f46e5' : '#e7e5e4', color: selectedTopic !== null ? 'white' : '#a8a29e', fontSize: 14, fontWeight: 600, border: 'none', cursor: selectedTopic !== null ? 'pointer' : 'not-allowed' }}>
+          <button onClick={handleStartDiscussion} disabled={selectedTopic === null} style={{ padding: '13px 32px', borderRadius: 12, backgroundColor: selectedTopic !== null ? '#4f46e5' : '#e7e5e4', color: selectedTopic !== null ? 'white' : '#a8a29e', fontSize: 14, fontWeight: 600, border: 'none', cursor: selectedTopic !== null ? 'pointer' : 'not-allowed' }}>
             Start Discussion →
           </button>
         </div>

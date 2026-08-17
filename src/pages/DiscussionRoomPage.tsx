@@ -1,14 +1,16 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Page } from '../App'
+import { useLearning } from '../state/LearningContext'
 
 interface Props { setPage: (p: Page) => void }
 
 export default function DiscussionRoomPage({ setPage }: Props) {
+  const { state, update } = useLearning()
   const [seconds, setSeconds] = useState(0)
   const [running, setRunning] = useState(false)
-  const [uploading, setUploading] = useState(false)
-  const [uploaded, setUploaded] = useState(false)
-  const [progress, setProgress] = useState(0)
+  const [audioFile, setAudioFile] = useState<File | null>(null)
+  const [audioUrl, setAudioUrl] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (!running) return
@@ -16,17 +18,24 @@ export default function DiscussionRoomPage({ setPage }: Props) {
     return () => clearInterval(t)
   }, [running])
 
-  const formatTime = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+  useEffect(() => {
+    return () => { if (audioUrl) URL.revokeObjectURL(audioUrl) }
+  }, [audioUrl])
 
-  const simulateUpload = () => {
-    setUploading(true)
-    let p = 0
-    const t = setInterval(() => {
-      p += Math.random() * 15
-      if (p >= 100) { p = 100; clearInterval(t); setUploading(false); setUploaded(true) }
-      setProgress(Math.min(p, 100))
-    }, 200)
+  const formatTime = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+  const formatSize = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (audioUrl) URL.revokeObjectURL(audioUrl)
+    setAudioFile(file)
+    setAudioUrl(URL.createObjectURL(file))
+    update({ discussion: { ...state.discussion, audioFileName: file.name } })
   }
+
+  const topicQuestion = state.discussion.selectedTopicText
+    ?? "Is K-culture's global rise a result of genuine artistic quality, or primarily effective marketing strategy?"
 
   return (
     <div style={{ paddingTop: 28 }}>
@@ -34,7 +43,7 @@ export default function DiscussionRoomPage({ setPage }: Props) {
       <div style={{ backgroundColor: '#1e1b4b', borderRadius: 20, padding: '28px 32px', marginBottom: 24, color: 'white' }}>
         <div style={{ fontSize: 11, color: '#a5b4fc', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>Discussion Topic</div>
         <h2 style={{ fontFamily: 'DM Serif Display, Georgia, serif', fontSize: 26, color: 'white', margin: '0 0 12px', lineHeight: 1.3 }}>
-          Is K-culture's global rise a result of genuine artistic quality, or primarily effective marketing strategy?
+          {topicQuestion}
         </h2>
         <div style={{ display: 'flex', gap: 14 }}>
           <span style={{ fontSize: 12, color: '#c7d2fe' }}>📰 The Quiet Revolution: K-Culture & Hollywood</span>
@@ -129,55 +138,46 @@ export default function DiscussionRoomPage({ setPage }: Props) {
           <div style={{ backgroundColor: 'white', borderRadius: 20, padding: '24px', border: '1px solid #e7e5e4' }}>
             <h3 style={{ fontSize: 16, fontWeight: 700, color: '#1c1917', margin: '0 0 6px' }}>Upload Discussion Audio</h3>
             <p style={{ fontSize: 13, color: '#78716c', margin: '0 0 20px', lineHeight: 1.5 }}>
-              Record your conversation offline, then upload the audio file for AI feedback.
+              Record your conversation offline, then select the audio file to preview it here. The file stays in your browser — nothing is uploaded.
             </p>
 
-            {!uploaded ? (
-              <>
-                {!uploading ? (
-                  <div onClick={simulateUpload} style={{ border: '2px dashed #c7d2fe', borderRadius: 14, padding: '32px 20px', textAlign: 'center', cursor: 'pointer', backgroundColor: '#f5f3ff', transition: 'border-color 0.2s' }}>
-                    <div style={{ fontSize: 32, marginBottom: 12 }}>🎙️</div>
-                    <div style={{ fontSize: 14, fontWeight: 600, color: '#4f46e5', marginBottom: 6 }}>Drop audio file here</div>
-                    <div style={{ fontSize: 12, color: '#78716c', marginBottom: 14 }}>or click to browse</div>
-                    <div style={{ fontSize: 11, color: '#a8a29e' }}>MP3, WAV, M4A · Max 100MB</div>
-                  </div>
-                ) : (
-                  <div style={{ border: '2px solid #4f46e5', borderRadius: 14, padding: '24px 20px', textAlign: 'center', backgroundColor: '#eef2ff' }}>
-                    <div style={{ fontSize: 14, fontWeight: 600, color: '#4f46e5', marginBottom: 12 }}>Uploading discussion_aug14.mp3</div>
-                    <div style={{ height: 6, backgroundColor: '#c7d2fe', borderRadius: 4, overflow: 'hidden', marginBottom: 8 }}>
-                      <div style={{ height: '100%', width: `${progress}%`, backgroundColor: '#4f46e5', borderRadius: 4, transition: 'width 0.2s' }} />
-                    </div>
-                    <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: '#4f46e5' }}>{Math.round(progress)}%</div>
-                  </div>
-                )}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="audio/*"
+              onChange={handleFileChange}
+              style={{ display: 'none' }}
+              aria-label="Select discussion audio file"
+            />
 
-                <div style={{ marginTop: 14, padding: '12px', backgroundColor: '#f0f9ff', borderRadius: 10, fontSize: 12, color: '#0369a1', lineHeight: 1.5 }}>
-                  💡 No recording app? Use any voice memo or call recording app. Both speakers on the same file works best.
-                </div>
-              </>
+            {!audioFile ? (
+              <div onClick={() => fileInputRef.current?.click()} style={{ border: '2px dashed #c7d2fe', borderRadius: 14, padding: '32px 20px', textAlign: 'center', cursor: 'pointer', backgroundColor: '#f5f3ff', transition: 'border-color 0.2s' }}>
+                <div style={{ fontSize: 32, marginBottom: 12 }}>🎙️</div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: '#4f46e5', marginBottom: 6 }}>Choose audio file</div>
+                <div style={{ fontSize: 12, color: '#78716c', marginBottom: 14 }}>Click to browse your device</div>
+                <div style={{ fontSize: 11, color: '#a8a29e' }}>MP3, WAV, M4A</div>
+              </div>
             ) : (
               <>
-                {/* Uploaded state */}
+                {/* Selected state */}
                 <div style={{ border: '1.5px solid #a7f3d0', borderRadius: 14, padding: '16px', backgroundColor: '#ecfdf5', marginBottom: 16 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                       <div style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: '#10b981', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: 16 }}>🎵</div>
                       <div>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: '#1c1917' }}>discussion_aug14.mp3</div>
-                        <div style={{ fontSize: 11, color: '#78716c' }}>14:32 · 22.4 MB</div>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: '#1c1917' }}>{audioFile.name}</div>
+                        <div style={{ fontSize: 11, color: '#78716c' }}>{formatSize(audioFile.size)}</div>
                       </div>
                     </div>
-                    <span style={{ fontSize: 11, color: '#059669', fontWeight: 600 }}>✓ Uploaded</span>
+                    <span style={{ fontSize: 11, color: '#059669', fontWeight: 600 }}>✓ Selected</span>
                   </div>
-                  {/* Mini player */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <button style={{ width: 32, height: 32, borderRadius: '50%', backgroundColor: '#10b981', border: 'none', cursor: 'pointer', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12 }}>▶</button>
-                    <div style={{ flex: 1, height: 4, backgroundColor: '#a7f3d0', borderRadius: 2 }}>
-                      <div style={{ width: '30%', height: '100%', backgroundColor: '#10b981', borderRadius: 2 }} />
-                    </div>
-                    <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11, color: '#78716c' }}>04:20</span>
-                  </div>
+                  {audioUrl && (
+                    <audio controls src={audioUrl} style={{ width: '100%', height: 32 }} />
+                  )}
                 </div>
+                <button onClick={() => fileInputRef.current?.click()} style={{ width: '100%', padding: '10px', borderRadius: 10, border: '1.5px solid #e7e5e4', backgroundColor: 'white', fontSize: 13, cursor: 'pointer', color: '#57534e', marginBottom: 10 }}>
+                  Choose a different file
+                </button>
                 <button onClick={() => setPage('feedback')} style={{ width: '100%', padding: '13px', borderRadius: 12, backgroundColor: '#4f46e5', color: 'white', fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer' }}>
                   Analyze Conversation →
                 </button>
