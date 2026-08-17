@@ -6,7 +6,7 @@ import { useLearning, getInitials } from '../state/LearningContext'
 interface Props { setPage: (p: Page) => void }
 
 export default function PartnerWaitingPage({ setPage }: Props) {
-  const { state } = useLearning()
+  const { state, update } = useLearning()
   const myName = state.partner.myName || 'Hyunji'
   const partnerName = state.partner.partnerName || 'Jisoo'
   const [dots, setDots] = useState(1)
@@ -21,6 +21,8 @@ export default function PartnerWaitingPage({ setPage }: Props) {
   const handleCompareNow = async () => {
     setChecking(true)
     await partnerService.waitForPartnerSubmission()
+    const reflection = await partnerService.getPartnerReflection()
+    update({ partner: { ...state.partner, reflection } })
     setPage('ai-comparison')
   }
 

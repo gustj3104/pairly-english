@@ -4,6 +4,7 @@ build/
 .cache/
 .env*
 !.env.example
+!.env.test
 .vite/
 test-results/
 playwright-report/

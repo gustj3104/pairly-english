@@ -15,7 +15,7 @@ export default function LandingPage({ setPage }: Props) {
   const handleSimulateJoin = async () => {
     setConnecting(true)
     const { partnerName } = await partnerService.connectPartner('PRL-7829')
-    update({ partner: { connected: true, myName: name || 'Hyunji', partnerName } })
+    update({ partner: { ...state.partner, connected: true, myName: name || 'Hyunji', partnerName } })
     setConnecting(false)
     setConnected(true)
   }

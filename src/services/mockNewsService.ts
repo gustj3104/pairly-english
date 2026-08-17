@@ -19,6 +19,8 @@ export interface Article {
   imageUrl: string
   paragraphs: { id: string; text: string }[]
   summary: string
+  /** Optional canonical link to the original article, passed through to the AI comparison request. */
+  sourceUrl?: string
   /** Vocabulary tied to this specific article — future articles can carry 10-20 words. */
   vocabulary: VocabWord[]
 }

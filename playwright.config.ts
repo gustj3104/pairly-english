@@ -17,5 +17,8 @@ export default defineConfig({
     url: `http://localhost:${port}`,
     reuseExistingServer: true,
     timeout: 30_000,
+    // e2e must never depend on a real backend or hit the real Mindlogic API —
+    // force mock AI regardless of .env.local's own VITE_USE_MOCK_AI setting.
+    env: { VITE_USE_MOCK_AI: 'true' },
   },
 })

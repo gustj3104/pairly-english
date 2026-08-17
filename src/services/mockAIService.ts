@@ -4,21 +4,9 @@
  * so swapping the body for a real request later doesn't touch any caller.
  */
 
-export interface DiscussionTopic {
-  question: string
-  reason: string
-  difficulty: 'Intermediate' | 'Advanced'
-}
+import type { CompareReflectionsRequest, ComparisonResult, DiscussionTopic } from './api/schemas'
 
-export interface ComparisonResult {
-  commonGround: { point: string; hj: string; js: string }[]
-  differences: {
-    topic: string
-    hj: { stance: string; quote: string }
-    js: { stance: string; quote: string }
-  }[]
-  topics: DiscussionTopic[]
-}
+export type { DiscussionTopic, ComparisonResult }
 
 export interface GrammarIssue {
   original: string
@@ -54,30 +42,31 @@ function delay<T>(value: T, ms = 900): Promise<T> {
   return new Promise(resolve => setTimeout(() => resolve(value), ms))
 }
 
-export function compareReflections(_myReflection: string, _partnerReflection: string): Promise<ComparisonResult> {
+export function compareReflections(_input: CompareReflectionsRequest): Promise<ComparisonResult> {
   return delay({
+    requestId: 'mock-request-id',
     commonGround: [
       {
         point: "Korean culture's global rise is unprecedented and historically significant",
-        hj: '"...Parasite was not a fluke but a harbinger of something larger that was already in motion."',
-        js: '"The scale of hallyu in 2025 is something that scholars predicted but few believed would happen this quickly."',
+        mine: '"...Parasite was not a fluke but a harbinger of something larger that was already in motion."',
+        partner: '"The scale of hallyu in 2025 is something that scholars predicted but few believed would happen this quickly."',
       },
       {
         point: 'Government investment played a key role in building the cultural infrastructure',
-        hj: '"...systematic subsidies created the conditions for both artistic ambition and commercial discipline."',
-        js: '"The 1997 financial crisis paradoxically created the foundation for Korean soft power — necessity driving innovation."',
+        mine: '"...systematic subsidies created the conditions for both artistic ambition and commercial discipline."',
+        partner: '"The 1997 financial crisis paradoxically created the foundation for Korean soft power — necessity driving innovation."',
       },
     ],
     differences: [
       {
         topic: "Hollywood's response to K-culture",
-        hj: { stance: 'Cautiously optimistic', quote: '"The hiring of Korean directors suggests genuine openness — Hollywood can learn from a different storytelling tradition."' },
-        js: { stance: 'Skeptical', quote: '"Studios are appropriating the surface aesthetics of K-culture without engaging with its social critique — classic aesthetic laundering."' },
+        mine: { stance: 'Cautiously optimistic', quote: '"The hiring of Korean directors suggests genuine openness — Hollywood can learn from a different storytelling tradition."' },
+        partner: { stance: 'Skeptical', quote: '"Studios are appropriating the surface aesthetics of K-culture without engaging with its social critique — classic aesthetic laundering."' },
       },
       {
         topic: 'The role of government in cultural production',
-        hj: { stance: 'Supportive', quote: '"Strategic investment in creative industries is legitimate soft power — economic success validates the approach."' },
-        js: { stance: 'Concerned', quote: '"When governments systematically cultivate culture for export, there is a risk of homogenizing art to fit marketable narratives."' },
+        mine: { stance: 'Supportive', quote: '"Strategic investment in creative industries is legitimate soft power — economic success validates the approach."' },
+        partner: { stance: 'Concerned', quote: '"When governments systematically cultivate culture for export, there is a risk of homogenizing art to fit marketable narratives."' },
       },
     ],
     topics: [

@@ -9,6 +9,8 @@ export interface LearningState {
     connected: boolean
     myName: string
     partnerName: string
+    /** The partner's submitted reflection text — MVP-mocked (see mockPartnerService), empty until available. */
+    reflection: string
   }
   onboarding: {
     complete: boolean
@@ -40,7 +42,7 @@ const STORAGE_KEY = 'pairly:state:v1'
 
 const DEFAULT_STATE: LearningState = {
   page: 'landing',
-  partner: { connected: false, myName: '', partnerName: '' },
+  partner: { connected: false, myName: '', partnerName: '', reflection: '' },
   onboarding: { complete: false, level: null, interests: [] },
   vocabulary: { savedWords: [], checkedWords: [], userExamples: {} },
   reflection: { title: '', body: '', submitted: false },

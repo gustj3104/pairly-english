@@ -1,36 +1,88 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Page } from '../App'
 import { useLearning, getInitials } from '../state/LearningContext'
-import { aiService } from '../services'
-import type { ComparisonResult } from '../services/mockAIService'
+import { aiService, newsService } from '../services'
+import { ApiError, type ApiErrorKind } from '../services/api/errors'
+import type { ComparisonResult } from '../services/api/schemas'
 
 interface Props { setPage: (p: Page) => void }
+
+type ComparisonStatus =
+  | 'loading'
+  | 'success'
+  | 'credit_limit_exceeded'
+  | 'reconciliation_pending'
+  | 'rate_limited'
+  | 'backend_unavailable'
+  | 'invalid_response'
+  | 'error'
+
+function statusFromErrorKind(kind: ApiErrorKind): ComparisonStatus {
+  if (kind === 'validation' || kind === 'unknown') return 'error'
+  return kind
+}
+
+const STATUS_COPY: Record<Exclude<ComparisonStatus, 'loading' | 'success'>, { title: string; icon: string; canRetry: boolean }> = {
+  credit_limit_exceeded: { title: '이번 달 AI 학습 한도를 모두 사용했습니다', icon: '📊', canRetry: false },
+  reconciliation_pending: { title: '이전 요청을 확인하는 중입니다', icon: '⏳', canRetry: false },
+  rate_limited: { title: '요청이 너무 많습니다', icon: '🐢', canRetry: true },
+  backend_unavailable: { title: '서버에 연결할 수 없습니다', icon: '🔌', canRetry: true },
+  invalid_response: { title: '서버 응답을 처리할 수 없습니다', icon: '⚠️', canRetry: true },
+  error: { title: '문제가 발생했습니다', icon: '❗', canRetry: true },
+}
 
 export default function AIComparisonPage({ setPage }: Props) {
   const { state, update } = useLearning()
   const myName = state.partner.myName || 'Hyunji'
   const partnerName = state.partner.partnerName || 'Jisoo'
-  const [loading, setLoading] = useState(true)
+  const [status, setStatus] = useState<ComparisonStatus>('loading')
   const [result, setResult] = useState<ComparisonResult | null>(null)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [selectedTopic, setSelectedTopic] = useState<number | null>(state.discussion.selectedTopicIndex)
+  const attemptRef = useRef(0)
+
+  const runComparison = useCallback(async () => {
+    setStatus('loading')
+    setErrorMessage(null)
+    const requestToken = ++attemptRef.current
+
+    try {
+      const article = await newsService.getTodayArticle()
+      const response = await aiService.compareReflections({
+        article: { title: article.title, summary: article.summary, sourceUrl: article.sourceUrl },
+        mine: { displayName: myName, reflection: state.reflection.body },
+        partner: { displayName: partnerName, reflection: state.partner.reflection },
+      })
+      if (requestToken !== attemptRef.current) return // superseded by a later attempt
+      setResult(response)
+      setStatus('success')
+    } catch (error) {
+      if (requestToken !== attemptRef.current) return
+      if (error instanceof ApiError) {
+        setStatus(statusFromErrorKind(error.kind))
+        setErrorMessage(error.message)
+      } else {
+        setStatus('error')
+        setErrorMessage('알 수 없는 오류가 발생했습니다.')
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myName, partnerName, state.reflection.body, state.partner.reflection])
 
   useEffect(() => {
-    let cancelled = false
-    setLoading(true)
-    aiService.compareReflections(state.reflection.body, '').then(r => {
-      if (!cancelled) {
-        setResult(r)
-        setLoading(false)
-      }
-    })
-    return () => { cancelled = true }
+    if (!state.partner.reflection.trim()) {
+      // Nothing to compare yet — send the learner back rather than calling the API with an empty side.
+      setPage('waiting')
+      return
+    }
+    runComparison()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const handleSelectTopic = (i: number) => {
     const next = selectedTopic === i ? null : i
     setSelectedTopic(next)
-    update({ discussion: { ...state.discussion, selectedTopicIndex: next, selectedTopicText: next === null ? null : topics[next].question } })
+    update({ discussion: { ...state.discussion, selectedTopicIndex: next, selectedTopicText: next === null ? null : (result?.topics[i]?.question ?? null) } })
   }
 
   const handleStartDiscussion = () => {
@@ -38,12 +90,33 @@ export default function AIComparisonPage({ setPage }: Props) {
     setPage('discussion')
   }
 
-  if (loading || !result) {
+  if (status === 'loading') {
     return (
       <div style={{ paddingTop: 28, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 400, gap: 16 }}>
         <div style={{ width: 40, height: 40, borderRadius: '50%', border: '3px solid #e7e5e4', borderTopColor: '#4f46e5', animation: 'spin 0.8s linear infinite' }} />
         <p style={{ color: '#78716c', fontSize: 14 }}>AI is comparing both reflections...</p>
         <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    )
+  }
+
+  if (status !== 'success' || !result) {
+    // `status === 'success'` with a null `result` shouldn't happen — they're set together —
+    // but fall back to the generic error copy rather than indexing STATUS_COPY with 'success'.
+    const copy = status === 'success' ? STATUS_COPY.error : STATUS_COPY[status]
+    return (
+      <div style={{ paddingTop: 28, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 400, gap: 12, textAlign: 'center' }}>
+        <div style={{ fontSize: 36 }}>{copy.icon}</div>
+        <h2 style={{ fontFamily: 'DM Serif Display, Georgia, serif', fontSize: 22, color: '#1c1917', margin: 0 }}>{copy.title}</h2>
+        {errorMessage && <p style={{ color: '#78716c', fontSize: 14, maxWidth: 420, margin: 0 }}>{errorMessage}</p>}
+        {copy.canRetry && (
+          <button
+            onClick={runComparison}
+            style={{ marginTop: 12, padding: '11px 28px', borderRadius: 12, backgroundColor: '#4f46e5', color: 'white', fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer' }}
+          >
+            Retry
+          </button>
+        )}
       </div>
     )
   }
@@ -71,7 +144,7 @@ export default function AIComparisonPage({ setPage }: Props) {
             <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'linear-gradient(135deg, #4f46e5, #7c3aed)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: 14, fontWeight: 700 }}>{getInitials(myName)}</div>
             <div style={{ textAlign: 'left' }}>
               <div style={{ fontSize: 13, fontWeight: 600, color: '#1c1917' }}>{myName}</div>
-              <div style={{ fontSize: 11, color: '#4f46e5' }}>Me · {state.reflection.body.trim() ? state.reflection.body.trim().split(/\s+/).length : 243} words</div>
+              <div style={{ fontSize: 11, color: '#4f46e5' }}>Me · {state.reflection.body.trim() ? state.reflection.body.trim().split(/\s+/).length : 0} words</div>
             </div>
           </div>
           <span style={{ fontSize: 18, color: '#d6d3d1' }}>vs</span>
@@ -79,7 +152,7 @@ export default function AIComparisonPage({ setPage }: Props) {
             <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'linear-gradient(135deg, #10b981, #059669)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: 14, fontWeight: 700 }}>{getInitials(partnerName)}</div>
             <div style={{ textAlign: 'left' }}>
               <div style={{ fontSize: 13, fontWeight: 600, color: '#1c1917' }}>{partnerName}</div>
-              <div style={{ fontSize: 11, color: '#10b981' }}>Partner · 198 words</div>
+              <div style={{ fontSize: 11, color: '#10b981' }}>Partner · {state.partner.reflection.trim() ? state.partner.reflection.trim().split(/\s+/).length : 0} words</div>
             </div>
           </div>
         </div>
@@ -106,11 +179,11 @@ export default function AIComparisonPage({ setPage }: Props) {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <div style={{ padding: '10px 12px', backgroundColor: 'rgba(79,70,229,0.08)', borderRadius: 10, borderLeft: '3px solid #4f46e5' }}>
                     <div style={{ fontSize: 10, color: '#4f46e5', fontWeight: 600, marginBottom: 4 }}>{myName.toUpperCase()}</div>
-                    <div style={{ fontSize: 12, color: '#44403c', fontStyle: 'italic', lineHeight: 1.5 }}>{item.hj}</div>
+                    <div style={{ fontSize: 12, color: '#44403c', fontStyle: 'italic', lineHeight: 1.5 }}>{item.mine}</div>
                   </div>
                   <div style={{ padding: '10px 12px', backgroundColor: 'rgba(16,185,129,0.08)', borderRadius: 10, borderLeft: '3px solid #10b981' }}>
                     <div style={{ fontSize: 10, color: '#10b981', fontWeight: 600, marginBottom: 4 }}>{partnerName.toUpperCase()}</div>
-                    <div style={{ fontSize: 12, color: '#44403c', fontStyle: 'italic', lineHeight: 1.5 }}>{item.js}</div>
+                    <div style={{ fontSize: 12, color: '#44403c', fontStyle: 'italic', lineHeight: 1.5 }}>{item.partner}</div>
                   </div>
                 </div>
               </div>
@@ -137,16 +210,16 @@ export default function AIComparisonPage({ setPage }: Props) {
                   <div style={{ padding: '14px', borderRight: '1px solid #f5f5f4' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
                       <div style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#4f46e5', marginTop: 3 }} />
-                      <span style={{ fontSize: 11, fontWeight: 700, color: '#4f46e5' }}>{myName.toUpperCase()} · {item.hj.stance}</span>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: '#4f46e5' }}>{myName.toUpperCase()} · {item.mine.stance}</span>
                     </div>
-                    <div style={{ fontSize: 12, color: '#57534e', fontStyle: 'italic', lineHeight: 1.6 }}>{item.hj.quote}</div>
+                    <div style={{ fontSize: 12, color: '#57534e', fontStyle: 'italic', lineHeight: 1.6 }}>{item.mine.quote}</div>
                   </div>
                   <div style={{ padding: '14px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
                       <div style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#10b981', marginTop: 3 }} />
-                      <span style={{ fontSize: 11, fontWeight: 700, color: '#10b981' }}>{partnerName.toUpperCase()} · {item.js.stance}</span>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: '#10b981' }}>{partnerName.toUpperCase()} · {item.partner.stance}</span>
                     </div>
-                    <div style={{ fontSize: 12, color: '#57534e', fontStyle: 'italic', lineHeight: 1.6 }}>{item.js.quote}</div>
+                    <div style={{ fontSize: 12, color: '#57534e', fontStyle: 'italic', lineHeight: 1.6 }}>{item.partner.quote}</div>
                   </div>
                 </div>
               </div>
