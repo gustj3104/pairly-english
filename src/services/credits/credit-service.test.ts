@@ -89,6 +89,31 @@ describe('CreditService.reserveCredits', () => {
     // Only one reservation should have been counted, not two.
     expect(usage.reservedCredits).toBe(first.ok ? first.record.creditsReserved : -1);
   });
+
+  it('rejects a requestId replay whose payload does not match the original reservation', async () => {
+    const service = buildService(5000);
+    const requestId = crypto.randomUUID();
+    const first = await service.reserveCredits({
+      requestId,
+      feature: 'grammar_feedback',
+      model: 'claude-haiku-4-5-20251001',
+      inputTokens: 1000,
+      outputTokens: 1000,
+      now: NOW,
+    });
+    expect(first.ok).toBe(true);
+
+    await expect(
+      service.reserveCredits({
+        requestId,
+        feature: 'vocabulary_extraction', // different feature, same requestId
+        model: 'claude-haiku-4-5-20251001',
+        inputTokens: 1000,
+        outputTokens: 1000,
+        now: NOW,
+      }),
+    ).rejects.toThrow(/conflicts with an existing reservation/);
+  });
 });
 
 describe('CreditService usage lifecycle', () => {

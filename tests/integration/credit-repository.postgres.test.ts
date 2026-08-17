@@ -152,6 +152,123 @@ describe('idempotency', () => {
   });
 });
 
+describe('same requestId — real concurrency', () => {
+  it('20 truly concurrent identical requests collapse into exactly one reservation', async () => {
+    const requestId = crypto.randomUUID();
+    const inputs = Array.from({ length: 20 }, () =>
+      reservation({ requestId, estimatedCredits: 50 }),
+    );
+
+    // Fired concurrently — not sequentially awaited — so all 20 genuinely
+    // race for the same requestId and the same billing-month row.
+    const settled = await Promise.allSettled(
+      inputs.map((input) => repository.reserveCredits(input, LIMIT)),
+    );
+
+    for (const outcome of settled) {
+      expect(outcome.status).toBe('fulfilled'); // no unique_violation ever escapes as a rejection
+    }
+    const results = settled.map((outcome) => {
+      if (outcome.status !== 'fulfilled') throw new Error('unexpected rejection');
+      return outcome.value;
+    });
+
+    for (const result of results) {
+      expect(result.ok).toBe(true);
+    }
+
+    const recordIds = new Set(
+      results.map((result) => (result.ok ? result.record.requestId : null)),
+    );
+    expect(recordIds.size).toBe(1);
+    expect([...recordIds][0]).toBe(requestId);
+
+    // Exactly one call actually created the reservation; the other 19 must
+    // report it as an idempotent replay of the same record.
+    const replayCount = results.filter((result) => result.ok && result.idempotentReplay).length;
+    expect(replayCount).toBe(19);
+
+    const period = await getPeriod();
+    expect(period?.reservedCredits).toBe(50); // counted exactly once, not 20 times
+    expect(period?.reservedCredits).toBeGreaterThanOrEqual(0);
+
+    const records = await testDb.db
+      .select()
+      .from(creditUsageRecords)
+      .where(eq(creditUsageRecords.requestId, requestId));
+    expect(records).toHaveLength(1);
+  });
+});
+
+describe('same requestId — conflicting payload', () => {
+  it('rejects a sequential replay whose feature differs from the original reservation', async () => {
+    const requestId = crypto.randomUUID();
+    const original = reservation({
+      requestId,
+      estimatedCredits: 6,
+      feature: 'grammar_feedback',
+      userRef: 'user-1',
+    });
+    const conflicting = reservation({
+      requestId,
+      estimatedCredits: 6,
+      feature: 'vocabulary_extraction',
+      userRef: 'user-1',
+    });
+
+    const first = await repository.reserveCredits(original, LIMIT);
+    expect(first.ok).toBe(true);
+
+    await expect(repository.reserveCredits(conflicting, LIMIT)).rejects.toThrow(
+      /conflicts with an existing reservation/,
+    );
+
+    // The original reservation must be untouched by the rejected replay.
+    const record = await getRecord(requestId);
+    expect(record?.feature).toBe('grammar_feedback');
+    const period = await getPeriod();
+    expect(period?.reservedCredits).toBe(6);
+  });
+
+  it('rejects whichever concurrent request loses the claim when payloads disagree, without corrupting the ledger', async () => {
+    const requestId = crypto.randomUUID();
+    // Same requestId, different reserved amount — a real payload conflict,
+    // not a legitimate retry of the same logical request.
+    const variantA = reservation({ requestId, estimatedCredits: 6 });
+    const variantB = reservation({ requestId, estimatedCredits: 999 });
+
+    const settled = await Promise.allSettled([
+      repository.reserveCredits(variantA, LIMIT),
+      repository.reserveCredits(variantB, LIMIT),
+    ]);
+
+    const fulfilled = settled.filter((outcome) => outcome.status === 'fulfilled');
+    const rejected = settled.filter((outcome) => outcome.status === 'rejected');
+
+    // Whichever variant's transaction claims the row first wins and
+    // resolves; the other must see a mismatched payload on replay and be
+    // rejected with IdempotencyConflictError — never silently merged,
+    // never silently returning the wrong reservation.
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+      name: 'IdempotencyConflictError',
+    });
+
+    const period = await getPeriod();
+    expect([variantA.estimatedCredits, variantB.estimatedCredits]).toContain(
+      period?.reservedCredits,
+    );
+    expect(period?.reservedCredits).toBeGreaterThanOrEqual(0);
+
+    const records = await testDb.db
+      .select()
+      .from(creditUsageRecords)
+      .where(eq(creditUsageRecords.requestId, requestId));
+    expect(records).toHaveLength(1);
+  });
+});
+
 describe('monthly limit', () => {
   it('allows a reservation that brings the month to exactly the limit', async () => {
     await repository.reserveCredits(reservation({ estimatedCredits: LIMIT - 100 }), LIMIT);

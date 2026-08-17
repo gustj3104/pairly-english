@@ -1,6 +1,7 @@
 import { buildUsageSummary } from '../../src/services/credits/usage-summary.js';
 import {
   CreditRecordNotFoundError,
+  IdempotencyConflictError,
   InvalidCreditTransitionError,
 } from '../../src/services/credits/errors.js';
 import type {
@@ -41,6 +42,14 @@ export class InMemoryCreditRepository implements CreditRepository {
   ): Promise<ReserveCreditsResult> {
     const existing = this.records.get(input.requestId);
     if (existing) {
+      const matches =
+        input.feature === existing.feature &&
+        input.model === existing.model &&
+        input.estimatedCredits === existing.creditsReserved &&
+        (input.userRef ?? null) === existing.userRef;
+      if (!matches) {
+        throw new IdempotencyConflictError(input.requestId);
+      }
       return { ok: true, record: existing, idempotentReplay: true };
     }
 

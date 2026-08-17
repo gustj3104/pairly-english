@@ -93,21 +93,22 @@ pnpm test:integration  # real PostgreSQL integration tests via Testcontainers �
 pnpm test:all          # test:run + test:integration
 ```
 
-### Fast unit tests (`pnpm test:run`, 49 tests, no Docker)
+### Fast unit tests (`pnpm test:run`, 50 tests, no Docker)
 
 Cover: env validation, CORS allow/deny + wildcard rejection, credit calculation and rounding,
 80/90%/exhausted warning levels, Asia/Seoul month-boundary and reset-date math, reservation
-limit rejection, requestId idempotency, invalid-state-transition rejection (double
-commit/release), the full credit lifecycle (reserve → commit / release), the Mindlogic
-client's status-code → error-code mapping and API-key non-leakage, and the `/health`,
-`/ready`, `/api/v1/usage` HTTP routes via Fastify's `inject()`.
+limit rejection, requestId idempotency, requestId-payload-conflict rejection,
+invalid-state-transition rejection (double commit/release), the full credit lifecycle
+(reserve → commit / release), the Mindlogic client's status-code → error-code mapping and
+API-key non-leakage, and the `/health`, `/ready`, `/api/v1/usage` HTTP routes via Fastify's
+`inject()`.
 
 These run `CreditService`'s business rules against `InMemoryCreditRepository`
 (`tests/helpers/in-memory-credit-repository.ts`) — a plain JS `Map`, **not** a stand-in for
 PostgreSQL. It verifies `CreditService`'s logic, never PostgreSQL's transaction/locking
 semantics — that's what the integration suite below is for.
 
-### PostgreSQL integration tests (`pnpm test:integration`, 21 tests, requires Docker)
+### PostgreSQL integration tests (`pnpm test:integration`, 24 tests, requires Docker)
 
 Uses [Testcontainers](https://node.testcontainers.org/) to boot a real, throwaway
 `postgres:16-alpine` container per test file, apply the actual Drizzle migrations from
@@ -117,10 +118,14 @@ between tests. **Never connects to a developer's local or remote database** — 
 running, or these tests fail to start (they do not fall back to SQLite or any other engine).
 
 - `tests/integration/credit-repository.postgres.test.ts` — basic reservation, successful
-  settlement, failure release, idempotency, exact-limit boundary, a genuine concurrency race
-  (10 requests fired via `Promise.allSettled`, never sequentially awaited, racing the same
-  `credit_periods` row), and double-settlement guards (reject double-commit, double-release,
-  release-after-commit, commit-after-release; `reserved_credits` never goes negative).
+  settlement, failure release, idempotency, **20 truly concurrent requests sharing one
+  requestId** (collapses to exactly one reservation, zero unique-violations, zero rejected
+  promises), **concurrent requests sharing a requestId with conflicting payloads** (exactly
+  one wins, the other is rejected with `IdempotencyConflictError`, ledger never corrupted),
+  the original 10-requests-different-requestId monthly-limit race (kept as a regression
+  check), exact-limit boundary, and double-settlement guards (reject double-commit,
+  double-release, release-after-commit, commit-after-release, a reserve→commit/release race;
+  `reserved_credits` never goes negative).
 - `tests/integration/migrations.postgres.test.ts` — migration applies cleanly to an empty
   database, migration re-run is a no-op, foreign key / enum / `CHECK` constraint enforcement
   at the database level, and integer round-trip precision (no numeric/bigint string coercion,
@@ -178,8 +183,25 @@ metadata is stored.
 - `CreditService.reserveCredits()` (`src/services/credits/credit-service.ts`) rejects a
   reservation — **before any Mindlogic call is made** — whenever
   `committed + reserved + requested > monthlyLimit` (5,000 by default).
-- The same `requestId` submitted twice returns the original reservation instead of reserving
-  twice (idempotency), enforced inside the same database transaction as the limit check.
+- The same `requestId` submitted twice — even fully concurrently, not just sequentially —
+  returns the original reservation instead of reserving twice (idempotency). `reserveCredits()`
+  claims the `requestId` via `INSERT ... ON CONFLICT (request_id) DO NOTHING RETURNING *`
+  _inside_ the same `SELECT ... FOR UPDATE`-locked section used for the limit check, rather
+  than checking existence with a separate, unlocked `SELECT` beforehand — that earlier
+  check-then-act gap was a real TOCTOU race (see `git log` on `credit-repository.ts` for the
+  fix) that let concurrent duplicate requestIds both pass the "does it exist" check and race
+  each other into a raw PostgreSQL `unique_violation`. No advisory lock was added: the
+  existing per-billing-month `FOR UPDATE` lock already serializes every reservation attempt
+  (same requestId or not) against that month, and PostgreSQL's own unique-index arbitration on
+  `request_id` independently prevents two callers from both inserting the same id even across
+  different months — layering an advisory lock on top would just add a second lock type for
+  no additional safety.
+- A requestId reused with a **different** feature/model/reserved-amount/`userRef` than the
+  reservation already on record is not treated as a replay — it throws
+  `IdempotencyConflictError` instead of silently returning the mismatched original.
+- If a reservation attempt would exceed the limit, the whole transaction is rolled back —
+  including the usage-record row that was speculatively inserted to claim the requestId before
+  the limit check ran — so a rejected reservation never leaves a ledger row.
 - Warning levels (`ok` / `warning80` / `warning90` / `exhausted`) and `usagePercent` are
   computed against committed + reserved credits, so a client sees the warning rise even
   before a reservation is committed.
@@ -192,6 +214,20 @@ metadata is stored.
   and constants (`RETRYABLE_ERROR_CODES`, `MAX_RETRY_ATTEMPTS`, ...) in
   `src/services/mindlogic/types.ts` — it is not wired into any outbound call yet, because no
   outbound call exists yet.
+
+### Credit error types (`src/services/credits/errors.ts`)
+
+Four distinct error classes, each with a stable `code` intended for a future API route's JSON
+error envelope. **PostgreSQL constraint names and raw SQL error text must never be forwarded
+to an HTTP response** — a future route handler maps these `code`s to an HTTP status and a
+generic message, the same way `src/plugins/error-handler.ts` already does for uncaught errors.
+
+| Class                          | `code`                      | Thrown when                                                                                                                                                                              |
+| ------------------------------ | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CreditLimitExceededError`     | `CREDIT_LIMIT_EXCEEDED`     | Internal only — caught inside `reserveCredits()` and converted back to `{ ok: false, reason: 'limit_exceeded', usage }`; exported for a future route that calls the repository directly. |
+| `IdempotencyConflictError`     | `IDEMPOTENCY_CONFLICT`      | A `requestId` is reused with a different feature/model/credits/`userRef`.                                                                                                                |
+| `InvalidCreditTransitionError` | `INVALID_CREDIT_TRANSITION` | `commitCredits`/`releaseCredits` called on a record that isn't currently `'reserved'`.                                                                                                   |
+| `CreditRecordNotFoundError`    | `CREDIT_RECORD_NOT_FOUND`   | `commitCredits`/`releaseCredits` called with an unknown `requestId`.                                                                                                                     |
 
 ## Endpoints implemented
 
