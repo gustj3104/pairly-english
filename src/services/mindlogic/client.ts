@@ -7,6 +7,7 @@ import type {
   MindlogicErrorObservability,
   MindlogicModel,
   MindlogicModelsResponse,
+  MindlogicValidationErrorDetail,
 } from './types.js';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -105,6 +106,62 @@ function extractProviderErrorCode(body: Record<string, unknown>): string | null 
   return null;
 }
 
+const MAX_VALIDATION_ERRORS_CAPTURED = 10;
+const MAX_LOC_SEGMENTS_CAPTURED = 10;
+
+/** A `loc` segment is either a short safe field name or a plain finite number (array index). */
+function extractLocSegment(segment: unknown): string | number | null {
+  if (typeof segment === 'number' && Number.isFinite(segment)) return segment;
+  if (typeof segment === 'string' && SAFE_SHORT_CODE_PATTERN.test(segment)) return segment;
+  return null;
+}
+
+/**
+ * Reduces one FastAPI/Pydantic-style validation error entry to only its
+ * `type` and `loc` (field path) — deliberately never `msg` (free text,
+ * may echo request content), `input` (the actual rejected value), or
+ * `ctx` (may embed arbitrary context data).
+ */
+function extractValidationErrorDetail(entry: unknown): MindlogicValidationErrorDetail {
+  if (!entry || typeof entry !== 'object') return { type: null, loc: null };
+  const record = entry as Record<string, unknown>;
+  const type =
+    typeof record.type === 'string' && SAFE_SHORT_CODE_PATTERN.test(record.type)
+      ? record.type
+      : null;
+  const loc = Array.isArray(record.loc)
+    ? record.loc
+        .slice(0, MAX_LOC_SEGMENTS_CAPTURED)
+        .map(extractLocSegment)
+        .filter((segment): segment is string | number => segment !== null)
+    : null;
+  return { type, loc };
+}
+
+/**
+ * Summarizes a FastAPI/Pydantic-style `detail` field structurally — array
+ * vs string, how many validation errors, and each one's type+loc — without
+ * ever touching the free-text `msg`, the rejected `input` value, or `ctx`.
+ */
+function extractDetailSummary(
+  body: Record<string, unknown>,
+): Pick<MindlogicErrorObservability, 'detailKind' | 'validationErrorCount' | 'validationErrors'> {
+  const detail = body.detail;
+  if (Array.isArray(detail)) {
+    return {
+      detailKind: 'array',
+      validationErrorCount: detail.length,
+      validationErrors: detail
+        .slice(0, MAX_VALIDATION_ERRORS_CAPTURED)
+        .map(extractValidationErrorDetail),
+    };
+  }
+  if (typeof detail === 'string') {
+    return { detailKind: 'string', validationErrorCount: null, validationErrors: null };
+  }
+  return { detailKind: null, validationErrorCount: null, validationErrors: null };
+}
+
 /**
  * Builds safe diagnostic detail for a non-ok response, reading the body
  * exactly once as text so a parse failure never throws here. The raw
@@ -115,6 +172,14 @@ async function buildErrorObservability(response: Response): Promise<MindlogicErr
   const providerRequestId = extractProviderRequestId(response.headers);
   let responseTopLevelKeys: string[] | null = null;
   let providerErrorCode: string | null = null;
+  let detailSummary: Pick<
+    MindlogicErrorObservability,
+    'detailKind' | 'validationErrorCount' | 'validationErrors'
+  > = {
+    detailKind: null,
+    validationErrorCount: null,
+    validationErrors: null,
+  };
 
   try {
     const text = await response.text();
@@ -123,13 +188,20 @@ async function buildErrorObservability(response: Response): Promise<MindlogicErr
       const record = parsed as Record<string, unknown>;
       responseTopLevelKeys = Object.keys(record).slice(0, 20);
       providerErrorCode = extractProviderErrorCode(record);
+      detailSummary = extractDetailSummary(record);
     }
   } catch {
     // Body wasn't valid JSON, or couldn't be read — leave keys/code null.
     // Never store the raw text.
   }
 
-  return { providerErrorCode, providerRequestId, contentType, responseTopLevelKeys };
+  return {
+    providerErrorCode,
+    providerRequestId,
+    contentType,
+    responseTopLevelKeys,
+    ...detailSummary,
+  };
 }
 
 export interface MindlogicClientOptions {

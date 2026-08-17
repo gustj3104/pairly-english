@@ -449,14 +449,17 @@ difficulty: 'Intermediate' | 'Advanced' }[] (exactly 3) }`. Deliberately uses `m
   A response that fails `JSON.parse` (e.g. wrapped in ` ```json ` fences) or fails schema
   validation is treated as a genuine upstream error, **never silently patched or stripped**.
 - **Model / token ceiling**: fixed per-feature in `src/services/mindlogic/feature-config.ts` —
-  `claude-haiku-4-5-20251001`, `max_tokens: 1500`. The client cannot choose either.
-- **Input token estimate**: no real Claude tokenizer is available, so
+  `gpt-5.4-mini`, `max_tokens: 1500`. The client cannot choose either. `claude-haiku-4-5-20251001`
+  stays in `MODEL_CREDIT_RATES` (used by the `provider_contract_check` diagnostic feature) but
+  is not used by `reflection_comparison` and is never an automatic fallback for it.
+- **Input token estimate**: no real provider tokenizer is available server-side, so
   `src/services/mindlogic/token-estimate.ts` (`estimateChatRequestInputTokens`) uses raw UTF-8
   byte length as the token count — no "typical bytes-per-token" divisor. Byte-level BPE
-  tokenizers (the family Claude's almost certainly belongs to) can, for unusual byte
-  sequences, produce tokens as short as a single byte, so `tokenCount <= byteCount` is the
-  only universally safe invariant; a divisor tuned for English prose (an earlier version of
-  this file used bytes÷3) is not a safe upper bound for CJK text, emoji, or mixed-script
+  tokenizers (the family essentially every modern provider tokenizer, Claude's and OpenAI's
+  alike, belongs to) can, for unusual byte sequences, produce tokens as short as a single byte,
+  so `tokenCount <= byteCount` is the only universally safe invariant; a divisor tuned for
+  English prose (an earlier version of this file used bytes÷3) is not a safe upper bound for
+  CJK text, emoji, or mixed-script
   input. The estimate covers the **entire actual request payload** — every message's content
   (system + user, reused verbatim for the real call, so the estimate can never drift from what
   is actually sent) _and_ the serialized `response_format` JSON Schema, which also counts

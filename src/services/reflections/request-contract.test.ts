@@ -33,6 +33,7 @@ function buildFixtureRequest(): ChatCompletionRequest {
     max_tokens: maxOutputTokens,
     messages,
     response_format: REFLECTION_COMPARISON_RESPONSE_FORMAT,
+    stream: false,
   };
 }
 
@@ -59,18 +60,18 @@ describe('Mindlogic chat completion request contract (offline, no network call)'
     const request = buildFixtureRequest();
 
     expect(Object.keys(request).sort()).toEqual(
-      ['max_tokens', 'messages', 'model', 'response_format'].sort(),
+      ['max_tokens', 'messages', 'model', 'response_format', 'stream'].sort(),
     );
-    expect(request.model).toBe('claude-haiku-4-5-20251001');
+    expect(request.model).toBe('gpt-5.4-mini');
     expect(request.max_tokens).toBe(1500);
+    expect(request.stream).toBe(false);
     expect(request.messages).toHaveLength(2);
     expect(request.messages[0]).toMatchObject({ role: 'system' });
     expect(request.messages[1]).toMatchObject({ role: 'user' });
     // No unsupported/unexpected top-level fields (e.g. no `temperature`,
-    // `stream`, `tools`, `max_completion_tokens` — max_tokens alone is
-    // sufficient per the gateway's documented auto-conversion).
+    // `tools`, `max_completion_tokens` — max_tokens alone is sufficient
+    // per the gateway's documented auto-conversion).
     expect(request).not.toHaveProperty('temperature');
-    expect(request).not.toHaveProperty('stream');
     expect(request).not.toHaveProperty('tools');
     expect(request).not.toHaveProperty('max_completion_tokens');
   });

@@ -16,8 +16,12 @@ export interface FeatureModelConfig {
  * gracefully.
  */
 export const FEATURE_MODEL_CONFIG: Partial<Record<CreditFeature, FeatureModelConfig>> = {
+  // No automatic fallback to any other model — a rejected request here
+  // must surface as a failure, never silently retry against a different
+  // model (see reflection-comparison-service.ts's retry policy, which is
+  // scoped to the same model/request, not a model switch).
   reflection_comparison: {
-    model: 'claude-haiku-4-5-20251001',
+    model: 'gpt-5.4-mini',
     maxOutputTokens: 1500,
   },
   // Minimal bare-messages diagnostic call — see scripts/mindlogic-contract-check.ts.

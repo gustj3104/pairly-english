@@ -214,6 +214,7 @@ export async function compareReflections(
           max_tokens: maxOutputTokens,
           messages,
           response_format: REFLECTION_COMPARISON_RESPONSE_FORMAT,
+          stream: false,
         }),
       sleep,
       maxAttempts,

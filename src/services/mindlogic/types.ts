@@ -124,6 +124,17 @@ export type MindlogicErrorCode =
   | 'unknown'; // unrecognized network failure — the conservative default, not a guess
 
 /**
+ * A single FastAPI/Pydantic-style validation error entry, reduced to only
+ * its structural `type` and `loc` (field path) — never `msg` (free text,
+ * may echo request content), never `input` (the actual rejected value),
+ * never `ctx` (may embed arbitrary context data).
+ */
+export interface MindlogicValidationErrorDetail {
+  type: string | null;
+  loc: (string | number)[] | null;
+}
+
+/**
  * Safe-to-log diagnostic detail about an upstream error. Deliberately
  * narrow: never the raw response body, never the full error message,
  * never anything that could echo user input. `providerErrorCode` is
@@ -139,6 +150,12 @@ export interface MindlogicErrorObservability {
   contentType: string | null;
   /** Top-level key names of the parsed response body (never values), if parseable. */
   responseTopLevelKeys: string[] | null;
+  /** Whether a FastAPI/Pydantic-style `detail` field was an array (typically validation errors) or a plain string, if present. */
+  detailKind: 'array' | 'string' | null;
+  /** Number of entries in `detail`, only when it was an array. */
+  validationErrorCount: number | null;
+  /** Up to 10 validation error entries' `type` + `loc` only — see MindlogicValidationErrorDetail. */
+  validationErrors: MindlogicValidationErrorDetail[] | null;
 }
 
 export const EMPTY_ERROR_OBSERVABILITY: MindlogicErrorObservability = {
@@ -146,6 +163,9 @@ export const EMPTY_ERROR_OBSERVABILITY: MindlogicErrorObservability = {
   providerRequestId: null,
   contentType: null,
   responseTopLevelKeys: null,
+  detailKind: null,
+  validationErrorCount: null,
+  validationErrors: null,
 };
 
 export class MindlogicApiError extends Error {

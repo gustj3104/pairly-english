@@ -341,6 +341,154 @@ describe('MindlogicClient error observability', () => {
   });
 });
 
+describe('MindlogicClient FastAPI-style `detail` validation error observability', () => {
+  it('summarizes an array `detail` into type+loc only, never msg/input/ctx', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse(422, {
+        detail: [
+          {
+            type: 'missing',
+            loc: ['body', 'messages', 0, 'content'],
+            msg: 'Field required — this text must never be stored',
+            input: { secret: 'never store this either' },
+            ctx: { nested: 'never store this either' },
+          },
+          {
+            type: 'extra_forbidden',
+            loc: ['body', 'response_format', 'json_schema', 'schema', 'additionalProperties'],
+            msg: 'Extra inputs are not permitted',
+          },
+        ],
+      }),
+    );
+    const client = new MindlogicClient({
+      apiKey: FAKE_KEY,
+      baseUrl: 'https://example.com/v1',
+      fetchImpl,
+    });
+
+    let caught: unknown;
+    try {
+      await client.getModels();
+    } catch (error) {
+      caught = error;
+    }
+
+    const observability = (caught as MindlogicApiError).observability;
+    expect(observability.detailKind).toBe('array');
+    expect(observability.validationErrorCount).toBe(2);
+    expect(observability.validationErrors).toEqual([
+      { type: 'missing', loc: ['body', 'messages', 0, 'content'] },
+      {
+        type: 'extra_forbidden',
+        loc: ['body', 'response_format', 'json_schema', 'schema', 'additionalProperties'],
+      },
+    ]);
+
+    const serialized = JSON.stringify(observability);
+    expect(serialized).not.toContain('Field required');
+    expect(serialized).not.toContain('secret');
+    expect(serialized).not.toContain('nested');
+    expect(serialized).not.toContain('Extra inputs are not permitted');
+  });
+
+  it('reports detailKind "string" for a plain-string detail, with no validation error list', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(400, { detail: 'Model not found' }));
+    const client = new MindlogicClient({
+      apiKey: FAKE_KEY,
+      baseUrl: 'https://example.com/v1',
+      fetchImpl,
+    });
+
+    let caught: unknown;
+    try {
+      await client.getModels();
+    } catch (error) {
+      caught = error;
+    }
+
+    const observability = (caught as MindlogicApiError).observability;
+    expect(observability.detailKind).toBe('string');
+    expect(observability.validationErrorCount).toBeNull();
+    expect(observability.validationErrors).toBeNull();
+    expect(JSON.stringify(observability)).not.toContain('Model not found');
+  });
+
+  it('leaves detail fields null when there is no `detail` key at all', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(400, { message: 'boom' }));
+    const client = new MindlogicClient({
+      apiKey: FAKE_KEY,
+      baseUrl: 'https://example.com/v1',
+      fetchImpl,
+    });
+
+    let caught: unknown;
+    try {
+      await client.getModels();
+    } catch (error) {
+      caught = error;
+    }
+
+    const observability = (caught as MindlogicApiError).observability;
+    expect(observability.detailKind).toBeNull();
+    expect(observability.validationErrorCount).toBeNull();
+    expect(observability.validationErrors).toBeNull();
+  });
+
+  it('drops an unsafe/overlong `type` or non-string `loc` segment rather than storing it raw', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse(422, {
+        detail: [
+          {
+            type: 'x'.repeat(200), // exceeds the safe-code length bound
+            loc: ['body', { nested: 'object, not a string/number segment' }, 'field'],
+          },
+        ],
+      }),
+    );
+    const client = new MindlogicClient({
+      apiKey: FAKE_KEY,
+      baseUrl: 'https://example.com/v1',
+      fetchImpl,
+    });
+
+    let caught: unknown;
+    try {
+      await client.getModels();
+    } catch (error) {
+      caught = error;
+    }
+
+    const observability = (caught as MindlogicApiError).observability;
+    expect(observability.validationErrors).toEqual([{ type: null, loc: ['body', 'field'] }]);
+  });
+
+  it('caps the number of captured validation errors and loc segments', async () => {
+    const manyErrors = Array.from({ length: 25 }, (_unused, i) => ({
+      type: `error_${i}`,
+      loc: Array.from({ length: 25 }, (_alsoUnused, j) => `segment_${j}`),
+    }));
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(422, { detail: manyErrors }));
+    const client = new MindlogicClient({
+      apiKey: FAKE_KEY,
+      baseUrl: 'https://example.com/v1',
+      fetchImpl,
+    });
+
+    let caught: unknown;
+    try {
+      await client.getModels();
+    } catch (error) {
+      caught = error;
+    }
+
+    const observability = (caught as MindlogicApiError).observability;
+    expect(observability.validationErrorCount).toBe(25); // full count still reported
+    expect(observability.validationErrors).toHaveLength(10); // but only the first 10 captured
+    expect(observability.validationErrors?.[0]?.loc).toHaveLength(10); // loc capped too
+  });
+});
+
 describe('MindlogicClient.createChatCompletionWithStatus', () => {
   it('returns status, the parsed completion, and a provider request id extracted from a success response header', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(

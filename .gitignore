@@ -25,3 +25,4 @@ pnpm-debug.log*
 .mindlogic-smoke-test-completed.json
 .mindlogic-contract-check-completed.json
 .mindlogic-smoke-test-round2-completed.json
+.mindlogic-smoke-test-round3-completed.json
