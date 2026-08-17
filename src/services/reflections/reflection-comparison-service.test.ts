@@ -231,6 +231,22 @@ describe('compareReflections — 429/5xx retry policy', () => {
     const usage = await creditService.getUsageSummary();
     expect(usage.reservedCredits).toBe(0);
   });
+
+  it('maxRetries: 0 makes exactly one attempt even on an otherwise-retryable 500 — for a controlled one-shot call (e.g. a real smoke test)', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(500, { message: 'server error' }));
+    const creditService = buildCreditService();
+    const mindlogicClient = buildMindlogicClient(fetchImpl);
+
+    const outcome = await compareReflections(INPUT, {
+      creditService,
+      mindlogicClient,
+      sleep: noopSleep,
+      maxRetries: 0,
+    });
+
+    expect(outcome.status).toBe('upstream_failed');
+    expect(fetchImpl).toHaveBeenCalledTimes(1); // never more than one provider POST
+  });
 });
 
 describe('compareReflections — uncertain billing status is held, not released', () => {

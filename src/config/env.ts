@@ -26,6 +26,17 @@ const envSchema = z
      * src/plugins/dev-ai-gate.ts). Never bundled into the frontend.
      */
     AI_DEV_ACCESS_TOKEN: z.string().min(1).optional(),
+    /**
+     * Overrides the number of retries (after the first attempt) for
+     * 429/5xx Mindlogic responses. Unset means "use the standard policy"
+     * (see MAX_RETRY_ATTEMPTS in src/services/mindlogic/types.ts). Set to
+     * 0 for a controlled one-shot call — e.g. a real smoke test — where a
+     * second provider POST must be impossible regardless of the response.
+     * Never affects the separate, always-off retry behavior for
+     * timeout/connection_reset/incomplete_response/unknown (uncertain
+     * billing status is never retried no matter what this is set to).
+     */
+    MINDLOGIC_MAX_RETRIES: z.coerce.number().int().min(0).optional(),
   })
   .superRefine((value, ctx) => {
     if (value.FRONTEND_ORIGIN === '*') {
@@ -74,5 +85,6 @@ export function redactedEnvSummary(value: Env = env) {
     mindlogicBaseUrl: value.MINDLOGIC_BASE_URL,
     mindlogicModel: value.MINDLOGIC_MODEL,
     monthlyCreditLimit: value.MINDLOGIC_MONTHLY_CREDIT_LIMIT,
+    mindlogicMaxRetries: value.MINDLOGIC_MAX_RETRIES,
   };
 }

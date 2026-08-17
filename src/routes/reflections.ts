@@ -49,6 +49,7 @@ export async function reflectionsRoutes(
     const outcome: ReflectionComparisonOutcome = await compareReflections(parsed.data, {
       creditService: app.creditService,
       mindlogicClient: app.mindlogicClient,
+      maxRetries: env.MINDLOGIC_MAX_RETRIES,
     });
     const durationMs = Date.now() - startedAt;
 
@@ -99,7 +100,7 @@ export async function reflectionsRoutes(
 
       case 'upstream_failed':
         request.log.warn(
-          { ...logFields, upstreamCode: outcome.code },
+          { ...logFields, upstreamCode: outcome.code, upstreamStatus: outcome.upstreamStatus },
           'reflection comparison upstream call failed',
         );
         return sendError(
@@ -132,7 +133,7 @@ export async function reflectionsRoutes(
 
       case 'reconciliation_pending':
         request.log.warn(
-          { ...logFields, upstreamCode: outcome.code },
+          { ...logFields, upstreamCode: outcome.code, upstreamStatus: outcome.upstreamStatus },
           'reflection comparison transmission status unknown — held for reconciliation',
         );
         return sendError(

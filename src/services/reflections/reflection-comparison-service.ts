@@ -52,7 +52,7 @@ export type ReflectionComparisonOutcome = {
   | { status: 'ok'; result: ReflectionComparisonResult }
   | { status: 'limit_exceeded'; usage: UsageSummary }
   | { status: 'provider_exhausted' }
-  | { status: 'upstream_failed'; code: MindlogicErrorCode }
+  | { status: 'upstream_failed'; code: MindlogicErrorCode; upstreamStatus: number }
   | { status: 'upstream_schema_error' }
   | { status: 'reservation_exceeded' }
   /**
@@ -61,8 +61,11 @@ export type ReflectionComparisonOutcome = {
    * reservation is held as 'reconciliation_pending', not released, and
    * this requestId must not be retried until an operator reconciles it.
    */
-  | { status: 'reconciliation_pending'; code: MindlogicErrorCode }
+  | { status: 'reconciliation_pending'; code: MindlogicErrorCode; upstreamStatus: number }
 );
+
+/** Default retries after the first attempt (2 retries = 3 total attempts), i.e. MAX_RETRY_ATTEMPTS unchanged. */
+const DEFAULT_MAX_RETRIES = MAX_RETRY_ATTEMPTS - 1;
 
 export interface ReflectionComparisonDeps {
   creditService: CreditService;
@@ -73,19 +76,28 @@ export interface ReflectionComparisonDeps {
   sleep?: (ms: number) => Promise<void>;
   /** Injectable for tests that need a deterministic requestId. */
   generateRequestId?: () => string;
+  /**
+   * Number of retries after the first attempt for 429/5xx responses (0 =
+   * never retry, i.e. at most one provider POST no matter what). Defaults
+   * to the standard policy (`MAX_RETRY_ATTEMPTS - 1`). Never affects
+   * timeout/connection_reset/incomplete_response/unknown, which are
+   * never retried regardless of this value — see UNCERTAIN_BILLING_ERROR_CODES.
+   */
+  maxRetries?: number;
 }
 
 async function callWithRetry(
   attempt: () => Promise<ChatCompletionResponse>,
   sleep: (ms: number) => Promise<void>,
+  maxAttempts: number,
 ): Promise<ChatCompletionResponse> {
-  for (let attemptNumber = 1; attemptNumber <= MAX_RETRY_ATTEMPTS; attemptNumber++) {
+  for (let attemptNumber = 1; attemptNumber <= maxAttempts; attemptNumber++) {
     try {
       return await attempt();
     } catch (error) {
       const retryable =
         error instanceof MindlogicApiError && RETRYABLE_ERROR_CODES.includes(error.code);
-      if (!retryable || attemptNumber === MAX_RETRY_ATTEMPTS) {
+      if (!retryable || attemptNumber === maxAttempts) {
         throw error;
       }
       await sleep(RETRY_BASE_DELAY_MS * attemptNumber);
@@ -164,6 +176,10 @@ export async function compareReflections(
         status: 'reconciliation_pending',
         requestId,
         code: (reservation.record.errorCode as MindlogicErrorCode | null) ?? 'unknown',
+        // Only the error code is persisted on the DB record, not the raw
+        // HTTP status from the original attempt — 0 here just means
+        // "not available from this replay path", not "no response".
+        upstreamStatus: 0,
         accounting,
       };
     }
@@ -172,6 +188,8 @@ export async function compareReflections(
 
   const reservedCredits = reservation.record.creditsReserved;
   accounting.reservedCredits = reservedCredits;
+
+  const maxAttempts = (deps.maxRetries ?? DEFAULT_MAX_RETRIES) + 1;
 
   let completion: ChatCompletionResponse;
   try {
@@ -184,6 +202,7 @@ export async function compareReflections(
           response_format: REFLECTION_COMPARISON_RESPONSE_FORMAT,
         }),
       sleep,
+      maxAttempts,
     );
   } catch (error) {
     if (error instanceof MindlogicApiError) {
@@ -202,14 +221,26 @@ export async function compareReflections(
         // reconciles this specific requestId against Mindlogic's own
         // /credits/ report (see src/services/credits/reconciliation.ts).
         await deps.creditService.markReconciliationPending(requestId, error.code);
-        return { status: 'reconciliation_pending', requestId, code: error.code, accounting };
+        return {
+          status: 'reconciliation_pending',
+          requestId,
+          code: error.code,
+          upstreamStatus: error.status,
+          accounting,
+        };
       }
 
       // Every other code here is backed by either an actual HTTP
       // response (401/429/5xx) or a certain "never reached the server"
       // signal (connection_refused) — safe to release.
       await deps.creditService.releaseCredits(requestId, error.code);
-      return { status: 'upstream_failed', requestId, code: error.code, accounting };
+      return {
+        status: 'upstream_failed',
+        requestId,
+        code: error.code,
+        upstreamStatus: error.status,
+        accounting,
+      };
     }
     // Not a MindlogicApiError at all — this happened before any network
     // call could even be attempted (e.g. a bug in payload construction).

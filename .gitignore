@@ -16,3 +16,7 @@ pnpm-debug.log*
 .DS_Store
 .vscode/
 .idea/
+
+# Smoke-test guard: presence of this file blocks scripts/mindlogic-smoke-test.ts
+# from running a second time. Delete it manually if a genuine re-run is intended.
+.mindlogic-smoke-test-completed.json
