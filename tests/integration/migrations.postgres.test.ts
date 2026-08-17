@@ -110,6 +110,28 @@ describe('check constraint enforcement', () => {
       ),
     ).rejects.toMatchObject({ code: '23514' });
   });
+
+  it('rejects a reconciliation_pending row with no error_code', async () => {
+    await testDb.pool.query(`insert into credit_periods (billing_month) values ('2026-08')`);
+    await expect(
+      testDb.pool.query(
+        `insert into credit_usage_records
+           (request_id, billing_month, feature, model, input_tokens, output_tokens, credits_reserved, status)
+         values (gen_random_uuid(), '2026-08', 'grammar_feedback', 'claude-haiku-4-5-20251001', 100, 100, 5, 'reconciliation_pending')`,
+      ),
+    ).rejects.toMatchObject({ code: '23514' });
+  });
+
+  it('accepts a reconciliation_pending row that does have an error_code', async () => {
+    await testDb.pool.query(`insert into credit_periods (billing_month) values ('2026-08')`);
+    await expect(
+      testDb.pool.query(
+        `insert into credit_usage_records
+           (request_id, billing_month, feature, model, input_tokens, output_tokens, credits_reserved, status, error_code)
+         values (gen_random_uuid(), '2026-08', 'grammar_feedback', 'claude-haiku-4-5-20251001', 100, 100, 5, 'reconciliation_pending', 'timeout')`,
+      ),
+    ).resolves.toMatchObject({ rowCount: 1 });
+  });
 });
 
 describe('integer round-trip precision', () => {

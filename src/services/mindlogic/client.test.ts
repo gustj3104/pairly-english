@@ -111,4 +111,80 @@ describe('MindlogicClient error mapping', () => {
 
     await expect(client.getModels()).rejects.toMatchObject({ code: 'timeout' });
   });
+
+  it("maps a connection-refused failure to 'connection_refused' (certain the request was never sent)", async () => {
+    const fetchImpl = vi.fn().mockImplementation(() => {
+      const cause = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:1'), {
+        code: 'ECONNREFUSED',
+      });
+      return Promise.reject(new Error('fetch failed', { cause }));
+    });
+    const client = new MindlogicClient({
+      apiKey: FAKE_KEY,
+      baseUrl: 'https://example.com/v1',
+      fetchImpl,
+    });
+
+    await expect(client.getModels()).rejects.toMatchObject({ code: 'connection_refused' });
+  });
+
+  it("maps a DNS resolution failure to 'connection_refused' too", async () => {
+    const fetchImpl = vi.fn().mockImplementation(() => {
+      const cause = Object.assign(new Error('getaddrinfo ENOTFOUND example.invalid'), {
+        code: 'ENOTFOUND',
+      });
+      return Promise.reject(new Error('fetch failed', { cause }));
+    });
+    const client = new MindlogicClient({
+      apiKey: FAKE_KEY,
+      baseUrl: 'https://example.com/v1',
+      fetchImpl,
+    });
+
+    await expect(client.getModels()).rejects.toMatchObject({ code: 'connection_refused' });
+  });
+
+  it("maps a connection reset to 'connection_reset' (uncertain — may have been mid-request)", async () => {
+    const fetchImpl = vi.fn().mockImplementation(() => {
+      const cause = Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+      return Promise.reject(new Error('fetch failed', { cause }));
+    });
+    const client = new MindlogicClient({
+      apiKey: FAKE_KEY,
+      baseUrl: 'https://example.com/v1',
+      fetchImpl,
+    });
+
+    await expect(client.getModels()).rejects.toMatchObject({ code: 'connection_reset' });
+  });
+
+  it("maps an unrecognized network failure to 'unknown' rather than guessing it's safe", async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new Error('something unexpected happened'));
+    const client = new MindlogicClient({
+      apiKey: FAKE_KEY,
+      baseUrl: 'https://example.com/v1',
+      fetchImpl,
+    });
+
+    await expect(client.getModels()).rejects.toMatchObject({ code: 'unknown' });
+  });
+
+  it("maps a response whose body fails to parse to 'incomplete_response' — status/headers arrived, so the request definitely reached Mindlogic", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response('{"truncated": tr', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    const client = new MindlogicClient({
+      apiKey: FAKE_KEY,
+      baseUrl: 'https://example.com/v1',
+      fetchImpl,
+    });
+
+    await expect(client.getModels()).rejects.toMatchObject({
+      code: 'incomplete_response',
+      status: 200,
+    });
+  });
 });

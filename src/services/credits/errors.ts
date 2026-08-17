@@ -57,17 +57,29 @@ export class CreditRecordNotFoundError extends Error {
   }
 }
 
+export type CreditTransitionAction =
+  'commit' | 'release' | 'mark_reconciliation_pending' | 'reconcile_commit' | 'reconcile_release';
+
+const EXPECTED_STATUS_BY_ACTION: Record<CreditTransitionAction, string> = {
+  commit: 'reserved',
+  release: 'reserved',
+  mark_reconciliation_pending: 'reserved',
+  reconcile_commit: 'reconciliation_pending',
+  reconcile_release: 'reconciliation_pending',
+};
+
 /**
- * Thrown when commitCredits/releaseCredits is called on a usage record
- * that is not currently 'reserved' — e.g. committing twice, or releasing
- * an already-completed record. Callers must not silently ignore this.
+ * Thrown when a credit-record state transition is attempted from the
+ * wrong status — e.g. committing twice, releasing an already-completed
+ * record, or reconciling a record that was never marked pending.
+ * Callers must not silently ignore this.
  */
 export class InvalidCreditTransitionError extends Error {
   readonly code: CreditErrorCode = 'INVALID_CREDIT_TRANSITION';
 
-  constructor(requestId: string, fromStatus: string, action: 'commit' | 'release') {
+  constructor(requestId: string, fromStatus: string, action: CreditTransitionAction) {
     super(
-      `Cannot ${action} credit usage record ${requestId}: current status is '${fromStatus}', expected 'reserved'`,
+      `Cannot ${action} credit usage record ${requestId}: current status is '${fromStatus}', expected '${EXPECTED_STATUS_BY_ACTION[action]}'`,
     );
     this.name = 'InvalidCreditTransitionError';
   }

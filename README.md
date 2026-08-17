@@ -132,22 +132,32 @@ pnpm test:integration  # real PostgreSQL integration tests via Testcontainers �
 pnpm test:all          # test:run + test:integration
 ```
 
-### Fast unit tests (`pnpm test:run`, 105 tests, no Docker)
+### Fast unit tests (`pnpm test:run`, 137 tests, no Docker)
 
 Cover: env validation, CORS allow/deny + wildcard rejection, credit calculation and rounding,
 80/90%/exhausted warning levels, Asia/Seoul month-boundary and reset-date math, reservation
 limit rejection, requestId idempotency, requestId-payload-conflict rejection,
-invalid-state-transition rejection (double commit/release), the full credit lifecycle
-(reserve → commit / release), the Mindlogic client's status-code → error-code mapping
-(including the dedicated, non-retryable `timeout` code) and API-key non-leakage, conservative
-token estimation, the reflection-comparison request/response Zod schemas (length/blank
-bounds, exactly-3-topics, `additionalProperties: false` parity), the full
+invalid-state-transition rejection (double commit/release, and the new
+`reconciliation_pending` transitions — mark/reconcileCommit/reconcileRelease, both directions
+rejected from the wrong state), the full credit lifecycle (reserve → commit / release /
+mark-pending / reconcile), `evaluateReconciliation()`'s verdicts (in-sync auto-release,
+negative-discrepancy flagged but still auto-releasable, unexplained discrepancy with no
+pending records, ambiguous multi-candidate never bulk-released, discrepancy exceeding total
+pending, and the conservative-baseline/remaining-budget math), the Mindlogic client's
+status-code → error-code mapping (including `timeout` / `connection_refused` /
+`connection_reset` / `incomplete_response` as distinct codes) and API-key non-leakage,
+byte-length-upper-bound token estimation (ASCII/Korean/emoji, with/without a
+`response_format` schema), the reflection-comparison request/response Zod schemas
+(length/blank bounds, exactly-3-topics, `additionalProperties: false` parity), the full
 reserve→call→settle credit pipeline for reflection comparison (429/5xx retry, no-retry on 402
-and timeout, release-on-failure, actual-usage-exceeds-reservation fail-closed, no
-silent-double-charge on requestId reuse) against a mocked Mindlogic `fetchImpl`, and the
-`/health`, `/ready`, `/api/v1/usage`, `/api/v1/reflections/compare` HTTP routes via Fastify's
-`inject()` — including the pre-auth gate (prod always 404, missing-token 503, wrong-token 401)
-and a log-capture test proving reflection text/names/the API key never reach the logger. Also
+and all uncertain-billing codes, release-on-certain-failure,
+hold-as-pending-on-uncertain-failure, blocked same-requestId retry while pending, pending
+reservations still counting against the budget, actual-usage-exceeds-reservation fail-closed,
+no silent-double-charge on requestId reuse, sane bounded reservation sizes for Korean/emoji/
+maximum-length input) against a mocked Mindlogic `fetchImpl`, and the `/health`, `/ready`,
+`/api/v1/usage`, `/api/v1/reflections/compare` HTTP routes via Fastify's `inject()` —
+including the pre-auth gate (prod always 404, missing-token 503, wrong-token 401) and a
+log-capture test proving reflection text/names/the API key never reach the logger. Also
 covers `scripts/mindlogic-check.ts`'s summary logic (GET-only, quota-mismatch detection, no
 key leakage) against a mocked `fetchImpl`.
 
@@ -156,7 +166,7 @@ These run `CreditService`'s business rules against `InMemoryCreditRepository`
 PostgreSQL. It verifies `CreditService`'s logic, never PostgreSQL's transaction/locking
 semantics — that's what the integration suite below is for.
 
-### PostgreSQL integration tests (`pnpm test:integration`, 27 tests, requires Docker)
+### PostgreSQL integration tests (`pnpm test:integration`, 35 tests, requires Docker)
 
 Uses [Testcontainers](https://node.testcontainers.org/) to boot a real, throwaway
 `postgres:16-alpine` container per test file, apply the actual Drizzle migrations from
@@ -176,10 +186,17 @@ Docker-Compose dev database described below.
   check), exact-limit boundary, and double-settlement guards (reject double-commit,
   double-release, release-after-commit, commit-after-release, a reserve→commit/release race;
   `reserved_credits` never goes negative).
+  Plus a dedicated `reconciliation_pending` block: `markReconciliationPending` leaves
+  `reserved_credits` untouched and records the error code, `reconcileCommit`/`reconcileRelease`
+  correctly transition pending → completed/released, both are rejected on a record never
+  marked pending, ordinary `commitCredits`/`releaseCredits` are rejected on a pending record,
+  and re-`reserveCredits()`-ing a pending `requestId` is blocked (returns
+  `reason: 'reconciliation_pending'`, creates no second reservation).
 - `tests/integration/migrations.postgres.test.ts` — migration applies cleanly to an empty
   database, migration re-run is a no-op, foreign key / enum / `CHECK` constraint enforcement
-  at the database level, and integer round-trip precision (no numeric/bigint string coercion,
-  since the schema uses `integer` throughout).
+  at the database level (including the new `reconciliation_pending` requires-`error_code`
+  constraint), and integer round-trip precision (no numeric/bigint string coercion, since the
+  schema uses `integer` throughout).
 - `tests/integration/reflections.postgres.test.ts` — `POST /api/v1/reflections/compare` driven
   through Fastify `inject()` with a **real** PostgreSQL-backed `CreditService` and a **mocked**
   Mindlogic HTTP layer: a successful comparison reserves and commits real rows, a non-retryable
@@ -197,7 +214,7 @@ pnpm db:migrate    # apply pending migrations to DATABASE_URL
 pnpm db:studio     # open Drizzle Studio against DATABASE_URL
 ```
 
-The initial migration (`src/db/migrations/0000_salty_mariko_yashida.sql`) has been generated
+The initial migration (`src/db/migrations/0000_glorious_dark_beast.sql`) has been generated
 and is applied automatically to a throwaway container by every `pnpm test:integration` run,
 but it has **not been applied to any persistent or remote database** — no such connection was
 available while building this project. Run `pnpm db:migrate` yourself once `DATABASE_URL` in
@@ -227,12 +244,13 @@ This is entirely separate from `pnpm test:integration`'s Testcontainers database
 an ephemeral container on a random Docker-assigned port, created and destroyed per test run,
 and never shares state or a port with this persistent dev container — both can run at once.
 
-This migration was regenerated once (originally `0000_puzzling_brood.sql`) to add the `CHECK`
-constraints described below, discovered while writing the integration tests. Since it had
-never been applied anywhere real, the safest option was to fold the constraints into a fresh
-initial migration rather than layer an `ALTER TABLE` migration on top of a schema no
-environment has ever run — once a migration has shipped to any real database, this project
-will switch to additive migrations only.
+This migration has now been regenerated twice (originally `0000_puzzling_brood.sql`, then
+`0000_salty_mariko_yashida.sql`, now `0000_glorious_dark_beast.sql` — this round added the
+`reconciliation_pending` enum value and its `CHECK` constraint, described below). Since it had
+never been applied anywhere real, the safest option remains folding changes into a fresh
+initial migration rather than layering `ALTER TABLE`/`ALTER TYPE` migrations on top of a
+schema no environment has ever run — once a migration has shipped to any real database, this
+project will switch to additive migrations only.
 
 ### Schema
 
@@ -240,12 +258,15 @@ will switch to additive migrations only.
   tracking `committed_credits`, `reserved_credits`, `provider_reported_credits`, and an
   `exhausted` flag.
 - **`credit_usage_records`** — one row per AI request (`request_id` UUID PK), with `feature`
-  and `status` enums, token counts, and reserved/used credits.
+  and `status` enums, token counts, and reserved/used credits. `status` is one of `reserved` /
+  `completed` / `failed` / `released` / `reconciliation_pending` — see [Credit
+  hard cap](#credit-hard-cap) below for the state machine.
 
 Both tables also carry `CHECK` constraints requiring every credit/token count to be
 non-negative (`>= 0`) — defense in depth confirmed by the integration suite's "check
 constraint enforcement" tests, in addition to the application-level guarantees described
-below.
+below. `credit_usage_records` additionally requires `error_code IS NOT NULL` whenever
+`status = 'reconciliation_pending'`, so a pending row is never left with no recorded reason.
 
 Deliberately **excluded** from `credit_usage_records`: essay/reflection text, full news
 articles, transcripts, audio files, or any other original learner content. Only accounting
@@ -286,13 +307,87 @@ metadata is stored.
   before a reservation is committed.
 - `commitCredits()`/`releaseCredits()` atomically claim the `'reserved' → 'completed'/'released'`
   transition with a single conditional `UPDATE ... WHERE status = 'reserved'`; committing or
-  releasing an already-settled `requestId` throws (`InvalidCreditTransitionError`) instead of
-  silently no-opping, and `reserved_credits` can never be double-decremented or driven negative
-  — verified under real concurrent settlement attempts in the integration suite.
-- 402 (payment/credit exhausted) is never retried. 429/5xx retry policy exists only as types
-  and constants (`RETRYABLE_ERROR_CODES`, `MAX_RETRY_ATTEMPTS`, ...) in
-  `src/services/mindlogic/types.ts` — it is not wired into any outbound call yet, because no
-  outbound call exists yet.
+  releasing an already-settled (or pending) `requestId` throws (`InvalidCreditTransitionError`)
+  instead of silently no-opping, and `reserved_credits` can never be double-decremented or
+  driven negative — verified under real concurrent settlement attempts in the integration
+  suite.
+- 402 (payment/credit exhausted) is never retried. 429/real 5xx (an actual received HTTP
+  response) are retried up to `MAX_RETRY_ATTEMPTS` (`src/services/mindlogic/types.ts`) against
+  the same reservation — this is now wired into
+  `src/services/reflections/reflection-comparison-service.ts`, the reflection-comparison
+  route's credit pipeline.
+
+### Uncertain billing status: `reconciliation_pending`
+
+A timeout, connection reset, or a response that gets cut off mid-stream means we genuinely do
+not know whether Mindlogic received and billed the request. Releasing the reservation in that
+case would be optimistic — if a real charge lands later, it would land against a budget we'd
+already freed, silently letting real usage exceed the 5,000 cap. So the state machine has a
+fifth status:
+
+```text
+reserved -> completed                 (commitCredits — the normal happy path)
+reserved -> released                  (releaseCredits — a certain, clean failure)
+reserved -> reconciliation_pending    (markReconciliationPending — billing status unknown)
+reconciliation_pending -> completed   (reconcileCommit — operator confirmed it WAS billed)
+reconciliation_pending -> released    (reconcileRelease — operator confirmed it was NOT billed)
+```
+
+Every other transition throws `InvalidCreditTransitionError`. `markReconciliationPending()`
+deliberately does **not** touch `reserved_credits` — the reservation keeps counting against
+the monthly budget, and a repeat call with the same `requestId` while it's pending returns
+`{ ok: false, reason: 'reconciliation_pending' }` from `reserveCredits()` instead of
+proceeding to call Mindlogic again (`src/services/reflections/reflection-comparison-service.ts`
+returns HTTP `409 RECONCILIATION_PENDING` for this case — "this request could not be
+confirmed and is being verified, do not resubmit it").
+
+Which `MindlogicErrorCode`s go to which outcome (`src/services/mindlogic/types.ts`):
+
+| Code                                                                  | Certainty                                                                                                                         | Outcome                                              |
+| --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `unauthorized` / `payment_required` / `rate_limited` / `server_error` | A real HTTP response was received                                                                                                 | Release (402 additionally marks the month exhausted) |
+| `connection_refused`                                                  | TCP/DNS connection never came up (`ECONNREFUSED`/`ENOTFOUND`/`EAI_AGAIN`) — certain the request bytes were never sent             | Release                                              |
+| `timeout`                                                             | Our own `AbortController` fired — no response, unknown whether Mindlogic received/processed it                                    | **`reconciliation_pending`**                         |
+| `connection_reset`                                                    | `ECONNRESET` — could have happened before or after the request was flushed                                                        | **`reconciliation_pending`**                         |
+| `incomplete_response`                                                 | HTTP status/headers arrived (so the request definitely reached Mindlogic) but the body was truncated or malformed while streaming | **`reconciliation_pending`**                         |
+| `unknown`                                                             | An unrecognized network failure — deliberately the conservative default rather than guessing                                      | **`reconciliation_pending`**                         |
+
+No code is retryable except `rate_limited`/`server_error` — see `RETRYABLE_ERROR_CODES`.
+`connection_refused` is certain-safe-to-release but was deliberately left out of the retryable
+set too; expanding retry scope to it wasn't part of this change.
+
+### Reconciliation (`src/services/credits/reconciliation.ts`)
+
+`CreditService.reconcileCommit()`/`reconcileRelease()` give an operator a clear way to resolve
+a pending reservation once they've checked Mindlogic's own `GET /credits/` — but **nothing in
+this codebase calls them automatically**. No scheduler exists yet; this is a pure decision
+function (`evaluateReconciliation()`) plus the two resolution methods, ready for a future
+CLI/admin route/cron to drive.
+
+`evaluateReconciliation({ providerUsedCredits, dbCommittedCredits, pendingReservations,
+configuredMonthlyLimit })` compares Mindlogic's reported `monthly_allocated.used` against our
+own `committed_credits` and never guesses:
+
+- **`discrepancy <= 0`** (provider reports the same or less than we've already committed) —
+  certain none of the pending reservations were billed; all are safe to
+  `autoReleasableRequestIds`. A negative discrepancy is still flagged
+  (`provider_reports_less_than_committed`, `requiresManualReview: true`) as worth investigating
+  on its own, even though it doesn't implicate any pending request.
+- **`discrepancy > 0` with no pending reservations** — `unexplained_discrepancy`: the gap
+  doesn't resolve itself; nothing is auto-releasable.
+- **`discrepancy > 0` exceeding the total of all pending reservations** —
+  `discrepancy_exceeds_pending_reservations`: even resolving every pending record as billed
+  wouldn't explain it — investigate before touching any of them.
+- **`0 < discrepancy <= total pending`** — `ambiguous_pending_needs_manual_review`: the gap
+  could be explained by any subset of the pending reservations; with more than one pending
+  record, which one(s) cannot be determined from aggregate numbers alone, so **nothing is
+  auto-releasable** even though the math "adds up". A single pending record gets a specific
+  (still unconfirmed) suggestion in the verdict's `explanation`.
+
+Every verdict also exposes `conservativeUsedBaseline` (`Math.max(providerUsed, dbCommitted)`)
+and `conservativeRemainingCredits` computed from it — so gating new reservations during an
+unresolved discrepancy always uses the stricter of the two sources, never optimistically the
+lower one.
 
 ### Credit error types (`src/services/credits/errors.ts`)
 
@@ -345,17 +440,49 @@ difficulty: 'Intermediate' | 'Advanced' }[] (exactly 3) }`. Deliberately uses `m
 - **Model / token ceiling**: fixed per-feature in `src/services/mindlogic/feature-config.ts` —
   `claude-haiku-4-5-20251001`, `max_tokens: 1500`. The client cannot choose either.
 - **Input token estimate**: no real Claude tokenizer is available, so
-  `src/services/mindlogic/token-estimate.ts` intentionally **over-estimates** (1 token per 3
-  UTF-8 bytes, vs. English's real ~4 bytes/token) so a reservation is never sized smaller than
-  likely actual usage.
+  `src/services/mindlogic/token-estimate.ts` (`estimateChatRequestInputTokens`) uses raw UTF-8
+  byte length as the token count — no "typical bytes-per-token" divisor. Byte-level BPE
+  tokenizers (the family Claude's almost certainly belongs to) can, for unusual byte
+  sequences, produce tokens as short as a single byte, so `tokenCount <= byteCount` is the
+  only universally safe invariant; a divisor tuned for English prose (an earlier version of
+  this file used bytes÷3) is not a safe upper bound for CJK text, emoji, or mixed-script
+  input. The estimate covers the **entire actual request payload** — every message's content
+  (system + user, reused verbatim for the real call, so the estimate can never drift from what
+  is actually sent) _and_ the serialized `response_format` JSON Schema, which also counts
+  toward input tokens and is easy to forget — plus a small fixed per-message overhead and a
+  minimum floor buffer. Reserved credits are always rounded up (`Math.ceil`, via the existing
+  `calculateCredits()`). If real usage data is ever collected, the safety margin must not be
+  lowered without deliberately re-verifying the CJK/emoji worst case stays safely reserved.
+- **Reservation sizes** (computed against the real system prompt + `response_format` schema +
+  `max_tokens: 1500`; verified in `reflection-comparison-service.test.ts`):
+
+  | Scenario                                       | Estimated input tokens | Reserved credits | % of 5,000 cap |
+  | ---------------------------------------------- | ---------------------- | ---------------- | -------------- |
+  | Typical English request                        | ~4,600                 | ~13              | 0.26%          |
+  | Maximum-length, ASCII/English                  | ~20,100                | ~28              | 0.56%          |
+  | Maximum-length, Korean (worst-case bytes/char) | ~49,100                | ~57              | 1.14%          |
+  | Maximum-length, emoji-heavy                    | ~37,100                | ~45              | 0.90%          |
+
+  Even the worst realistic case (every field at its schema maximum, in Korean, the densest
+  bytes-per-length-unit combination the length limits allow) reserves about 57 credits —
+  comfortably under 500, let alone 5,000. No adjustment to `REFLECTION_MAX_LENGTH` or
+  `max_tokens` was needed: this byte-length upper bound, while much more conservative than the
+  divide-by-3 estimator it replaced, still leaves headroom for 80+ maximum-size requests in a
+  single month.
+
 - **Credit pipeline** (`src/services/reflections/reflection-comparison-service.ts`): validate →
   estimate input tokens → `reserveCredits()` → call Mindlogic (with retry) → validate
   response/usage → settle. Returns a discriminated-union outcome (`ok` /
   `limit_exceeded` / `provider_exhausted` / `upstream_failed` / `upstream_schema_error` /
-  `reservation_exceeded`) rather than throwing, so the route maps each case to a stable HTTP
-  response.
-  - Reservation rejected (limit exceeded) → Mindlogic is **never called**.
-  - Failure before any Mindlogic response (network/4xx/5xx/timeout) → `releaseCredits()`.
+  `reservation_exceeded` / `reconciliation_pending`) rather than throwing, so the route maps
+  each case to a stable HTTP response.
+  - Reservation rejected (limit exceeded, or a prior attempt with this requestId is still
+    `reconciliation_pending`) → Mindlogic is **never called**.
+  - A **certain**, clean failure before any Mindlogic response (a real HTTP 4xx/5xx, or
+    `connection_refused` — the TCP/DNS connection never came up) → `releaseCredits()`.
+  - An **uncertain** failure (`timeout`, `connection_reset`, `incomplete_response`, `unknown`)
+    → held as `reconciliation_pending` instead — see [Uncertain billing
+    status](#uncertain-billing-status-reconciliation_pending) above. Never released.
   - A response that arrives but fails schema validation or is missing `usage` → **settles to
     actual usage where known** (or the full reservation if `usage` itself is absent) rather
     than releasing it for free, since Mindlogic still did billable work.
@@ -363,11 +490,11 @@ difficulty: 'Intermediate' | 'Advanced' }[] (exactly 3) }`. Deliberately uses `m
   - `429`/real `5xx` (an actual received HTTP response) → retried up to `MAX_RETRY_ATTEMPTS`
     (3 total attempts) against the **same** `requestId`/reservation — no new reservation per
     retry.
-  - **Timeouts are never retried.** Mindlogic has no Idempotency-Key support, so if our own
-    `AbortController` fires we cannot tell whether Mindlogic received and is processing (and
-    will bill) the request; retrying could double-execute a real generative call. This is
-    intentionally more conservative than the 429/5xx policy — see `RETRYABLE_ERROR_CODES` in
-    `src/services/mindlogic/types.ts`.
+  - **Timeouts are never retried**, and are never released either (see above) — Mindlogic has
+    no Idempotency-Key support, so if our own `AbortController` fires we cannot tell whether
+    Mindlogic received and is processing (and will bill) the request; retrying could
+    double-execute a real generative call, and releasing could later under-count a real charge
+    past the 5,000 cap. Both risks point the same direction: hold, don't guess.
   - If actual usage (from Mindlogic's reported `usage`) ever exceeds the reservation — meaning
     the conservative estimator's own invariant was violated — the commit is **capped at the
     reserved amount**, the month is marked exhausted, and the AI result is **not** returned to
@@ -488,12 +615,13 @@ before any real generative call, pending separate approval.
 - Real authentication/authorization for `/api/v1/*`, replacing the temporary dev-token gate.
 - CI wiring for `pnpm test:integration` (Docker-in-CI) — not yet added; see
   [Tests](#tests) for the scripts this would run.
-- Reconciliation job comparing `provider_reported_credits` (from Mindlogic's own `getCredits()`)
-  against our internal ledger, using the existing `reconciliation_adjustment` feature enum.
+- **Automatic reconciliation.** `evaluateReconciliation()` (decision logic) and
+  `reconcileCommit()`/`reconcileRelease()` (resolution) exist and are tested, but nothing calls
+  Mindlogic's `GET /credits/`, feeds it the current month's `reconciliation_pending` rows, and
+  acts on the verdict automatically — that wiring (a CLI, an admin route, or a scheduled job)
+  is deliberately left for a follow-up, per this round's task. Until it exists, any
+  `reconciliation_pending` row requires a human to run the reconciliation manually.
 - Decide with the frontend team how to reconcile `mine`/`partner` (this server) against
   `hj`/`js` (current frontend mock) and the missing article/display-name fields in the current
   `compareReflections(myReflection, partnerReflection)` call signature — see
   [Differences from the current frontend contract](#differences-from-the-current-frontend-contract).
-- Consider whether a genuinely lost-request timeout should ever be resolvable other than by a
-  brand-new client-initiated request (e.g. a status-check endpoint keyed by `requestId`) —
-  right now a timeout just fails closed with no automatic recovery path.

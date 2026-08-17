@@ -25,6 +25,27 @@ function mapStatusToErrorCode(status: number): MindlogicErrorCode {
   return 'unknown';
 }
 
+/**
+ * Classifies a thrown network-level error (fetch rejected before any HTTP
+ * response was received) by inspecting the underlying cause's error code.
+ * Only ever returns 'connection_refused' when we recognize a specific,
+ * well-known "never connected" signal (DNS failure, refused TCP connect)
+ * — everything else defaults to 'unknown', the conservative bucket,
+ * rather than guessing. This is deliberately biased toward classifying
+ * ambiguous failures as uncertain rather than certain-safe.
+ */
+function classifyNetworkError(error: unknown): MindlogicErrorCode {
+  const cause = error instanceof Error ? (error.cause as { code?: string } | undefined) : undefined;
+  const code = cause?.code;
+  if (code === 'ECONNREFUSED' || code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+    return 'connection_refused';
+  }
+  if (code === 'ECONNRESET') {
+    return 'connection_reset';
+  }
+  return 'unknown';
+}
+
 export interface MindlogicClientOptions {
   apiKey: string;
   baseUrl: string;
@@ -80,7 +101,23 @@ export class MindlogicClient {
         );
       }
 
-      return { status: response.status, data: (await response.json()) as T };
+      let data: T;
+      try {
+        data = (await response.json()) as T;
+      } catch {
+        // The response status/headers arrived — the request definitely
+        // reached Mindlogic — but the body was truncated, malformed, or
+        // the connection dropped while streaming it. We cannot tell
+        // whether generation completed or what it cost; never treat this
+        // as a clean failure safe to release.
+        throw new MindlogicApiError(
+          'incomplete_response',
+          response.status,
+          'Mindlogic response body was incomplete or malformed',
+        );
+      }
+
+      return { status: response.status, data };
     } catch (error) {
       if (error instanceof MindlogicApiError) throw error;
       if (error instanceof Error && error.name === 'AbortError') {
@@ -90,7 +127,7 @@ export class MindlogicClient {
         // deliberately excluded from the retry policy.
         throw new MindlogicApiError('timeout', 0, 'Mindlogic request timed out');
       }
-      throw new MindlogicApiError('unknown', 0, 'Mindlogic request failed');
+      throw new MindlogicApiError(classifyNetworkError(error), 0, 'Mindlogic request failed');
     } finally {
       clearTimeout(timeout);
     }

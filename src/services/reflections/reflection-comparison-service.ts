@@ -9,10 +9,15 @@ import {
   MAX_RETRY_ATTEMPTS,
   RETRYABLE_ERROR_CODES,
   RETRY_BASE_DELAY_MS,
+  UNCERTAIN_BILLING_ERROR_CODES,
 } from '../mindlogic/types.js';
-import type { ChatCompletionResponse, MindlogicErrorCode } from '../mindlogic/types.js';
+import type {
+  ChatCompletionResponse,
+  ChatMessage,
+  MindlogicErrorCode,
+} from '../mindlogic/types.js';
 import { getFeatureModelConfig } from '../mindlogic/feature-config.js';
-import { estimateTokens } from '../mindlogic/token-estimate.js';
+import { estimateChatRequestInputTokens } from '../mindlogic/token-estimate.js';
 import {
   REFLECTION_COMPARISON_RESPONSE_FORMAT,
   REFLECTION_COMPARISON_SYSTEM_PROMPT,
@@ -50,6 +55,13 @@ export type ReflectionComparisonOutcome = {
   | { status: 'upstream_failed'; code: MindlogicErrorCode }
   | { status: 'upstream_schema_error' }
   | { status: 'reservation_exceeded' }
+  /**
+   * Mindlogic's response to this request could not be confirmed
+   * (timeout / connection reset / mid-response disconnect) — the
+   * reservation is held as 'reconciliation_pending', not released, and
+   * this requestId must not be retried until an operator reconciles it.
+   */
+  | { status: 'reconciliation_pending'; code: MindlogicErrorCode }
 );
 
 export interface ReflectionComparisonDeps {
@@ -83,6 +95,23 @@ async function callWithRetry(
   throw new Error('unreachable: retry loop exited without returning or throwing');
 }
 
+function buildAccounting(
+  model: string,
+  estimatedInputTokens: number,
+  maxOutputTokens: number,
+): ReflectionComparisonAccounting {
+  return {
+    feature: FEATURE,
+    model,
+    estimatedInputTokens,
+    maxOutputTokens,
+    reservedCredits: null,
+    actualInputTokens: null,
+    actualOutputTokens: null,
+    actualCredits: null,
+  };
+}
+
 /**
  * Orchestrates one reflection-comparison AI call end to end: reserve →
  * call Mindlogic (with a conservative retry policy) → validate → settle.
@@ -103,19 +132,20 @@ export async function compareReflections(
   const { model, maxOutputTokens } = getFeatureModelConfig(FEATURE);
 
   const userMessageContent = buildReflectionComparisonUserMessage(input);
-  const estimatedInputTokens =
-    estimateTokens(REFLECTION_COMPARISON_SYSTEM_PROMPT) + estimateTokens(userMessageContent);
+  const messages: ChatMessage[] = [
+    { role: 'system', content: REFLECTION_COMPARISON_SYSTEM_PROMPT },
+    { role: 'user', content: userMessageContent },
+  ];
 
-  const accounting: ReflectionComparisonAccounting = {
-    feature: FEATURE,
-    model,
-    estimatedInputTokens,
-    maxOutputTokens,
-    reservedCredits: null,
-    actualInputTokens: null,
-    actualOutputTokens: null,
-    actualCredits: null,
-  };
+  // Estimated from the exact payload that will be sent — same `messages`
+  // array and response_format object reused below, so the estimate can
+  // never drift from what actually goes over the wire.
+  const estimatedInputTokens = estimateChatRequestInputTokens({
+    messages,
+    responseFormatSchema: REFLECTION_COMPARISON_RESPONSE_FORMAT,
+  });
+
+  const accounting = buildAccounting(model, estimatedInputTokens, maxOutputTokens);
 
   const reservation = await deps.creditService.reserveCredits({
     requestId,
@@ -127,6 +157,16 @@ export async function compareReflections(
   });
 
   if (!reservation.ok) {
+    if (reservation.reason === 'reconciliation_pending') {
+      // A prior attempt with this exact requestId is still unresolved —
+      // must not call Mindlogic again for it.
+      return {
+        status: 'reconciliation_pending',
+        requestId,
+        code: (reservation.record.errorCode as MindlogicErrorCode | null) ?? 'unknown',
+        accounting,
+      };
+    }
     return { status: 'limit_exceeded', requestId, usage: reservation.usage, accounting };
   }
 
@@ -140,10 +180,7 @@ export async function compareReflections(
         deps.mindlogicClient.createChatCompletion({
           model,
           max_tokens: maxOutputTokens,
-          messages: [
-            { role: 'system', content: REFLECTION_COMPARISON_SYSTEM_PROMPT },
-            { role: 'user', content: userMessageContent },
-          ],
+          messages,
           response_format: REFLECTION_COMPARISON_RESPONSE_FORMAT,
         }),
       sleep,
@@ -155,14 +192,28 @@ export async function compareReflections(
         await deps.creditService.markExhausted(getBillingMonth(now()));
         return { status: 'provider_exhausted', requestId, accounting };
       }
-      // No usage occurred before this failure — including for 'timeout',
-      // where we genuinely don't know whether Mindlogic processed the
-      // request; releasing (not committing) is the conservative choice
-      // for the reservation itself, and we never retry a timeout (see
-      // RETRYABLE_ERROR_CODES) to avoid risking a second real charge.
+
+      if (UNCERTAIN_BILLING_ERROR_CODES.includes(error.code)) {
+        // We cannot tell whether Mindlogic received/billed this request.
+        // Releasing here could let real usage silently exceed the 5,000
+        // cap once an actual charge lands after we'd already freed the
+        // budget. Hold the reservation instead — reserved_credits keeps
+        // counting against the monthly budget until an operator
+        // reconciles this specific requestId against Mindlogic's own
+        // /credits/ report (see src/services/credits/reconciliation.ts).
+        await deps.creditService.markReconciliationPending(requestId, error.code);
+        return { status: 'reconciliation_pending', requestId, code: error.code, accounting };
+      }
+
+      // Every other code here is backed by either an actual HTTP
+      // response (401/429/5xx) or a certain "never reached the server"
+      // signal (connection_refused) — safe to release.
       await deps.creditService.releaseCredits(requestId, error.code);
       return { status: 'upstream_failed', requestId, code: error.code, accounting };
     }
+    // Not a MindlogicApiError at all — this happened before any network
+    // call could even be attempted (e.g. a bug in payload construction).
+    // Nothing was sent, so releasing is safe.
     await deps.creditService.releaseCredits(requestId, 'unknown_error');
     throw error;
   }

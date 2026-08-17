@@ -50,6 +50,9 @@ export class InMemoryCreditRepository implements CreditRepository {
       if (!matches) {
         throw new IdempotencyConflictError(input.requestId);
       }
+      if (existing.status === 'reconciliation_pending') {
+        return { ok: false, reason: 'reconciliation_pending', record: existing };
+      }
       return { ok: true, record: existing, idempotentReplay: true };
     }
 
@@ -117,6 +120,49 @@ export class InMemoryCreditRepository implements CreditRepository {
 
     record.status = 'released';
     record.errorCode = errorCode ?? null;
+  }
+
+  async markReconciliationPending(requestId: string, errorCode: string): Promise<void> {
+    const record = this.records.get(requestId);
+    if (!record) throw new CreditRecordNotFoundError(requestId);
+    if (record.status !== 'reserved') {
+      throw new InvalidCreditTransitionError(
+        requestId,
+        record.status,
+        'mark_reconciliation_pending',
+      );
+    }
+    // Deliberately no period update — reserved_credits is untouched.
+    record.status = 'reconciliation_pending';
+    record.errorCode = errorCode;
+  }
+
+  async reconcileCommit(requestId: string, actualCredits: number): Promise<void> {
+    const record = this.records.get(requestId);
+    if (!record) throw new CreditRecordNotFoundError(requestId);
+    if (record.status !== 'reconciliation_pending') {
+      throw new InvalidCreditTransitionError(requestId, record.status, 'reconcile_commit');
+    }
+
+    const period = this.getOrCreatePeriod(record.billingMonth);
+    period.reservedCredits -= record.creditsReserved;
+    period.committedCredits += actualCredits;
+
+    record.status = 'completed';
+    record.creditsUsed = actualCredits;
+  }
+
+  async reconcileRelease(requestId: string): Promise<void> {
+    const record = this.records.get(requestId);
+    if (!record) throw new CreditRecordNotFoundError(requestId);
+    if (record.status !== 'reconciliation_pending') {
+      throw new InvalidCreditTransitionError(requestId, record.status, 'reconcile_release');
+    }
+
+    const period = this.getOrCreatePeriod(record.billingMonth);
+    period.reservedCredits -= record.creditsReserved;
+
+    record.status = 'released';
   }
 
   async markExhausted(billingMonth: string): Promise<void> {

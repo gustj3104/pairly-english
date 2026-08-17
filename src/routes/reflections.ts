@@ -130,6 +130,19 @@ export async function reflectionsRoutes(
           outcome.requestId,
         );
 
+      case 'reconciliation_pending':
+        request.log.warn(
+          { ...logFields, upstreamCode: outcome.code },
+          'reflection comparison transmission status unknown — held for reconciliation',
+        );
+        return sendError(
+          reply,
+          409,
+          'This request could not be confirmed and is being verified — do not resubmit it.',
+          'RECONCILIATION_PENDING',
+          outcome.requestId,
+        );
+
       default: {
         const exhaustive: never = outcome;
         throw new Error(`Unhandled reflection comparison outcome: ${JSON.stringify(exhaustive)}`);

@@ -147,6 +147,17 @@ export class DrizzleCreditRepository implements CreditRepository {
             );
           }
           assertSamePayload(input, existing);
+
+          if (existing.status === 'reconciliation_pending') {
+            // Transmission/billing status for this requestId is still
+            // unknown — must not proceed to call the provider again.
+            return {
+              ok: false,
+              reason: 'reconciliation_pending',
+              record: toCreditUsageRecord(existing),
+            } as const;
+          }
+
           return {
             ok: true,
             record: toCreditUsageRecord(existing),
@@ -243,6 +254,100 @@ export class DrizzleCreditRepository implements CreditRepository {
         });
         if (!existing) throw new CreditRecordNotFoundError(requestId);
         throw new InvalidCreditTransitionError(requestId, existing.status, 'release');
+      }
+
+      await tx
+        .update(creditPeriods)
+        .set({
+          reservedCredits: sql`${creditPeriods.reservedCredits} - ${updated.creditsReserved}`,
+          updatedAt: new Date(),
+        })
+        .where(eq(creditPeriods.billingMonth, updated.billingMonth));
+    });
+  }
+
+  async markReconciliationPending(requestId: string, errorCode: string): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(creditUsageRecords)
+        .set({ status: 'reconciliation_pending', errorCode })
+        .where(
+          and(
+            eq(creditUsageRecords.requestId, requestId),
+            eq(creditUsageRecords.status, 'reserved'),
+          ),
+        )
+        .returning();
+
+      if (!updated) {
+        const existing = await tx.query.creditUsageRecords.findFirst({
+          where: eq(creditUsageRecords.requestId, requestId),
+        });
+        if (!existing) throw new CreditRecordNotFoundError(requestId);
+        throw new InvalidCreditTransitionError(
+          requestId,
+          existing.status,
+          'mark_reconciliation_pending',
+        );
+      }
+
+      // Deliberately no credit_periods update: reserved_credits stays
+      // exactly as it was, continuing to count against the monthly
+      // budget until an operator reconciles this record.
+    });
+  }
+
+  async reconcileCommit(requestId: string, actualCredits: number): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(creditUsageRecords)
+        .set({ status: 'completed', creditsUsed: actualCredits })
+        .where(
+          and(
+            eq(creditUsageRecords.requestId, requestId),
+            eq(creditUsageRecords.status, 'reconciliation_pending'),
+          ),
+        )
+        .returning();
+
+      if (!updated) {
+        const existing = await tx.query.creditUsageRecords.findFirst({
+          where: eq(creditUsageRecords.requestId, requestId),
+        });
+        if (!existing) throw new CreditRecordNotFoundError(requestId);
+        throw new InvalidCreditTransitionError(requestId, existing.status, 'reconcile_commit');
+      }
+
+      await tx
+        .update(creditPeriods)
+        .set({
+          reservedCredits: sql`${creditPeriods.reservedCredits} - ${updated.creditsReserved}`,
+          committedCredits: sql`${creditPeriods.committedCredits} + ${actualCredits}`,
+          updatedAt: new Date(),
+        })
+        .where(eq(creditPeriods.billingMonth, updated.billingMonth));
+    });
+  }
+
+  async reconcileRelease(requestId: string): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(creditUsageRecords)
+        .set({ status: 'released' })
+        .where(
+          and(
+            eq(creditUsageRecords.requestId, requestId),
+            eq(creditUsageRecords.status, 'reconciliation_pending'),
+          ),
+        )
+        .returning();
+
+      if (!updated) {
+        const existing = await tx.query.creditUsageRecords.findFirst({
+          where: eq(creditUsageRecords.requestId, requestId),
+        });
+        if (!existing) throw new CreditRecordNotFoundError(requestId);
+        throw new InvalidCreditTransitionError(requestId, existing.status, 'reconcile_release');
       }
 
       await tx

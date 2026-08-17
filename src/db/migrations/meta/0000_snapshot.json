@@ -1,5 +1,5 @@
 {
-  "id": "9e02c1ea-527e-4ea2-a3f5-248bf1ffcf5b",
+  "id": "4b825cdc-aa0a-4cb1-b9ed-90d389bec210",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -197,6 +197,10 @@
         "credit_usage_records_retry_count_non_negative": {
           "name": "credit_usage_records_retry_count_non_negative",
           "value": "\"credit_usage_records\".\"retry_count\" >= 0"
+        },
+        "credit_usage_records_reconciliation_pending_has_error_code": {
+          "name": "credit_usage_records_reconciliation_pending_has_error_code",
+          "value": "\"credit_usage_records\".\"status\" != 'reconciliation_pending' OR \"credit_usage_records\".\"error_code\" IS NOT NULL"
         }
       },
       "isRLSEnabled": false
@@ -221,7 +225,8 @@
         "reserved",
         "completed",
         "failed",
-        "released"
+        "released",
+        "reconciliation_pending"
       ]
     }
   },

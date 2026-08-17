@@ -408,3 +408,87 @@ describe('double-settlement guards', () => {
     expect(period?.reservedCredits).toBeGreaterThanOrEqual(0);
   });
 });
+
+describe('reconciliation_pending state transitions (real PostgreSQL)', () => {
+  it('markReconciliationPending leaves reserved_credits untouched and records the error code', async () => {
+    const input = reservation({ estimatedCredits: 6 });
+    await repository.reserveCredits(input, LIMIT);
+
+    await repository.markReconciliationPending(input.requestId, 'timeout');
+
+    const period = await getPeriod();
+    expect(period?.reservedCredits).toBe(6); // unchanged — still counts against the budget
+
+    const record = await getRecord(input.requestId);
+    expect(record?.status).toBe('reconciliation_pending');
+    expect(record?.errorCode).toBe('timeout');
+  });
+
+  it('reconcileCommit moves reconciliation_pending -> completed and updates committed/reserved', async () => {
+    const input = reservation({ estimatedCredits: 6 });
+    await repository.reserveCredits(input, LIMIT);
+    await repository.markReconciliationPending(input.requestId, 'timeout');
+
+    await repository.reconcileCommit(input.requestId, 5);
+
+    const period = await getPeriod();
+    expect(period?.reservedCredits).toBe(0);
+    expect(period?.committedCredits).toBe(5);
+
+    const record = await getRecord(input.requestId);
+    expect(record?.status).toBe('completed');
+    expect(record?.creditsUsed).toBe(5);
+  });
+
+  it('reconcileRelease moves reconciliation_pending -> released without touching committed', async () => {
+    const input = reservation({ estimatedCredits: 6 });
+    await repository.reserveCredits(input, LIMIT);
+    await repository.markReconciliationPending(input.requestId, 'connection_reset');
+
+    await repository.reconcileRelease(input.requestId);
+
+    const period = await getPeriod();
+    expect(period?.reservedCredits).toBe(0);
+    expect(period?.committedCredits).toBe(0);
+
+    const record = await getRecord(input.requestId);
+    expect(record?.status).toBe('released');
+  });
+
+  it('rejects reconcileCommit/reconcileRelease on a record that was never marked pending', async () => {
+    const input = reservation({ estimatedCredits: 6 });
+    await repository.reserveCredits(input, LIMIT);
+
+    await expect(repository.reconcileCommit(input.requestId, 5)).rejects.toThrow();
+    await expect(repository.reconcileRelease(input.requestId)).rejects.toThrow();
+  });
+
+  it('rejects ordinary commitCredits/releaseCredits on a pending record', async () => {
+    const input = reservation({ estimatedCredits: 6 });
+    await repository.reserveCredits(input, LIMIT);
+    await repository.markReconciliationPending(input.requestId, 'timeout');
+
+    await expect(repository.commitCredits(input.requestId, 5)).rejects.toThrow();
+    await expect(repository.releaseCredits(input.requestId)).rejects.toThrow();
+
+    // Neither rejected call should have moved reserved_credits.
+    const period = await getPeriod();
+    expect(period?.reservedCredits).toBe(6);
+  });
+
+  it('blocks re-reservation of a requestId currently pending — never a new reservation, never re-runs the caller', async () => {
+    const input = reservation({ estimatedCredits: 6 });
+    await repository.reserveCredits(input, LIMIT);
+    await repository.markReconciliationPending(input.requestId, 'timeout');
+
+    const retry = await repository.reserveCredits(input, LIMIT);
+
+    expect(retry.ok).toBe(false);
+    if (!retry.ok) {
+      expect(retry.reason).toBe('reconciliation_pending');
+    }
+
+    const period = await getPeriod();
+    expect(period?.reservedCredits).toBe(6); // unchanged — no second reservation was created
+  });
+});

@@ -44,6 +44,12 @@ export const creditStatusEnum = pgEnum('credit_status', [
   'completed',
   'failed',
   'released',
+  // Transmission/billing status to Mindlogic could not be determined
+  // (timeout, connection reset, response cut off mid-stream) — the
+  // reservation is held, not released, until an operator reconciles it
+  // against Mindlogic's own /credits/ usage report. See
+  // src/services/credits/reconciliation.ts.
+  'reconciliation_pending',
 ]);
 
 export const creditFeatureEnum = pgEnum('credit_feature', [
@@ -86,5 +92,12 @@ export const creditUsageRecords = pgTable(
       sql`${table.creditsUsed} IS NULL OR ${table.creditsUsed} >= 0`,
     ),
     check('credit_usage_records_retry_count_non_negative', sql`${table.retryCount} >= 0`),
+    // Every reconciliation_pending row must record why it's pending —
+    // an operator reconciling the ledger needs to know what happened
+    // without cross-referencing application logs.
+    check(
+      'credit_usage_records_reconciliation_pending_has_error_code',
+      sql`${table.status} != 'reconciliation_pending' OR ${table.errorCode} IS NOT NULL`,
+    ),
   ],
 );

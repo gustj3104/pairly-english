@@ -59,6 +59,27 @@ export class CreditService {
     return this.repository.releaseCredits(requestId, errorCode);
   }
 
+  /**
+   * Holds a reservation as 'reconciliation_pending' — used when whether
+   * Mindlogic received/billed the request is unknown (timeout, connection
+   * reset, mid-response disconnect). reserved_credits is left untouched
+   * so it keeps counting against the monthly budget until an operator
+   * calls reconcileCommit()/reconcileRelease() below.
+   */
+  markReconciliationPending(requestId: string, errorCode: string): Promise<void> {
+    return this.repository.markReconciliationPending(requestId, errorCode);
+  }
+
+  /** Operator-invoked, after confirming against Mindlogic's /credits/ that this request WAS billed. */
+  reconcileCommit(requestId: string, actualCredits: number): Promise<void> {
+    return this.repository.reconcileCommit(requestId, actualCredits);
+  }
+
+  /** Operator-invoked, after confirming against Mindlogic's /credits/ that this request was NOT billed. */
+  reconcileRelease(requestId: string): Promise<void> {
+    return this.repository.reconcileRelease(requestId);
+  }
+
   markExhausted(billingMonth: string): Promise<void> {
     return this.repository.markExhausted(billingMonth);
   }
