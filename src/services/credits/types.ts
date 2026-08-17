@@ -73,7 +73,9 @@ export interface CreditRepository {
     input: ReserveCreditsRepositoryInput,
     monthlyLimit: number,
   ): Promise<ReserveCreditsResult>;
+  /** Throws CreditRecordNotFoundError / InvalidCreditTransitionError (./errors.js) if requestId is unknown or not currently 'reserved'. */
   commitCredits(requestId: string, creditsUsed: number): Promise<void>;
+  /** Throws CreditRecordNotFoundError / InvalidCreditTransitionError (./errors.js) if requestId is unknown or not currently 'reserved'. */
   releaseCredits(requestId: string, errorCode?: string): Promise<void>;
   markExhausted(billingMonth: string): Promise<void>;
   getUsageSummary(billingMonth: string, limitCredits: number, now: Date): Promise<UsageSummary>;

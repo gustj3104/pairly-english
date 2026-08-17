@@ -22,18 +22,18 @@ client (`src/services/mindlogic/client.ts`) is a typed skeleton; nothing calls
 
 ## Tech stack
 
-| Concern | Choice |
-| --- | --- |
-| Runtime | Node.js 22 |
-| Language | TypeScript 5.9 (strict) |
-| Package manager | pnpm 10.34.3 |
-| HTTP framework | Fastify 5 |
-| Database | PostgreSQL |
-| ORM | Drizzle ORM (`drizzle-orm/node-postgres`) |
-| Validation | Zod 4 |
-| Tests | Vitest 4 + Fastify `inject()` |
-| Logging | Pino (Fastify's built-in logger, with header redaction) |
-| Lint / format | ESLint 10 (flat config) + Prettier 3 |
+| Concern         | Choice                                                  |
+| --------------- | ------------------------------------------------------- |
+| Runtime         | Node.js 22                                              |
+| Language        | TypeScript 5.9 (strict)                                 |
+| Package manager | pnpm 10.34.3                                            |
+| HTTP framework  | Fastify 5                                               |
+| Database        | PostgreSQL                                              |
+| ORM             | Drizzle ORM (`drizzle-orm/node-postgres`)               |
+| Validation      | Zod 4                                                   |
+| Tests           | Vitest 4 + Fastify `inject()`                           |
+| Logging         | Pino (Fastify's built-in logger, with header redaction) |
+| Lint / format   | ESLint 10 (flat config) + Prettier 3                    |
 
 Toolchain versions are pinned in [`.mise.toml`](./.mise.toml) (Node 22, pnpm 10.34.3).
 
@@ -43,6 +43,10 @@ Toolchain versions are pinned in [`.mise.toml`](./.mise.toml) (Node 22, pnpm 10.
 mise install     # installs the pinned Node 22 / pnpm 10.34.3, if you use mise
 pnpm install
 ```
+
+`pnpm test:integration` additionally requires a running Docker daemon (Docker Desktop or
+equivalent) — it boots real, throwaway PostgreSQL containers via Testcontainers. Everything
+else (`dev`, `build`, `test:run`, `lint`, `typecheck`) has no Docker dependency.
 
 ## Environment variables
 
@@ -54,17 +58,17 @@ copied into this project.
 cp .env.example .env.local
 ```
 
-| Variable | Required | Default | Notes |
-| --- | --- | --- | --- |
-| `NODE_ENV` | no | `development` | `development` \| `test` \| `production` |
-| `PORT` | no | `3001` | |
-| `HOST` | no | `127.0.0.1` | |
-| `DATABASE_URL` | **yes** | — | PostgreSQL connection string |
-| `FRONTEND_ORIGIN` | no | `http://localhost:5173` | Single CORS origin — wildcards are rejected in every environment |
-| `MINDLOGIC_API_KEY` | **yes** | — | Never logged, never returned in any response |
-| `MINDLOGIC_BASE_URL` | no | `https://factchat-cloud.mindlogic.ai/v1/gateway` | |
-| `MINDLOGIC_MODEL` | no | `claude-haiku-4-5-20251001` | Must be a key in `MODEL_CREDIT_RATES` (`src/services/mindlogic/credit-rates.ts`) — validated at boot |
-| `MINDLOGIC_MONTHLY_CREDIT_LIMIT` | no | `5000` | |
+| Variable                         | Required | Default                                          | Notes                                                                                                |
+| -------------------------------- | -------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`                       | no       | `development`                                    | `development` \| `test` \| `production`                                                              |
+| `PORT`                           | no       | `3001`                                           |                                                                                                      |
+| `HOST`                           | no       | `127.0.0.1`                                      |                                                                                                      |
+| `DATABASE_URL`                   | **yes**  | —                                                | PostgreSQL connection string                                                                         |
+| `FRONTEND_ORIGIN`                | no       | `http://localhost:5173`                          | Single CORS origin — wildcards are rejected in every environment                                     |
+| `MINDLOGIC_API_KEY`              | **yes**  | —                                                | Never logged, never returned in any response                                                         |
+| `MINDLOGIC_BASE_URL`             | no       | `https://factchat-cloud.mindlogic.ai/v1/gateway` |                                                                                                      |
+| `MINDLOGIC_MODEL`                | no       | `claude-haiku-4-5-20251001`                      | Must be a key in `MODEL_CREDIT_RATES` (`src/services/mindlogic/credit-rates.ts`) — validated at boot |
+| `MINDLOGIC_MONTHLY_CREDIT_LIMIT` | no       | `5000`                                           |                                                                                                      |
 
 Validation happens in `src/config/env.ts` via Zod. Invalid configuration throws at startup
 with the field name and a generic reason — **secret values are never included in the error
@@ -83,32 +87,44 @@ Starts Fastify with `tsx watch` against `src/server.ts`, reading `.env.local` vi
 ## Tests
 
 ```bash
-pnpm test        # watch mode
-pnpm test:run    # single run (used in CI)
+pnpm test              # watch mode (fast unit tests only)
+pnpm test:run          # fast unit tests, single run — no Docker required (used in CI)
+pnpm test:integration  # real PostgreSQL integration tests via Testcontainers — requires Docker
+pnpm test:all          # test:run + test:integration
 ```
 
-46 tests currently cover: env validation, CORS allow/deny + wildcard rejection, credit
-calculation and rounding, 80/90%/exhausted warning levels, Asia/Seoul month-boundary and
-reset-date math, reservation limit rejection, requestId idempotency, the full credit
-lifecycle (reserve → commit / release), the Mindlogic client's status-code → error-code
-mapping and API-key non-leakage, and the `/health`, `/ready`, `/api/v1/usage` HTTP routes
-via Fastify's `inject()`.
+### Fast unit tests (`pnpm test:run`, 49 tests, no Docker)
 
-### What is *not* yet tested
+Cover: env validation, CORS allow/deny + wildcard rejection, credit calculation and rounding,
+80/90%/exhausted warning levels, Asia/Seoul month-boundary and reset-date math, reservation
+limit rejection, requestId idempotency, invalid-state-transition rejection (double
+commit/release), the full credit lifecycle (reserve → commit / release), the Mindlogic
+client's status-code → error-code mapping and API-key non-leakage, and the `/health`,
+`/ready`, `/api/v1/usage` HTTP routes via Fastify's `inject()`.
 
-`DrizzleCreditRepository` (`src/services/credits/credit-repository.ts`) — the real
-PostgreSQL-backed implementation using a transaction + `SELECT ... FOR UPDATE` — has **no
-automated test against a real PostgreSQL instance**. The business rules it must satisfy
-(limit rejection, idempotent replay) are unit-tested against `CreditRepository`, the
-storage-agnostic interface it implements, using an in-memory fake
-(`tests/helpers/in-memory-credit-repository.ts`). That fake is a plain JS `Map`, **not**
-SQLite standing in for PostgreSQL — it verifies `CreditService`'s logic, not PostgreSQL's
-transaction/locking semantics.
+These run `CreditService`'s business rules against `InMemoryCreditRepository`
+(`tests/helpers/in-memory-credit-repository.ts`) — a plain JS `Map`, **not** a stand-in for
+PostgreSQL. It verifies `CreditService`'s logic, never PostgreSQL's transaction/locking
+semantics — that's what the integration suite below is for.
 
-**Follow-up work**: add a Testcontainers-based integration test that spins up a real
-PostgreSQL container, runs the migrations, and exercises `DrizzleCreditRepository` directly
-— in particular concurrent `reserveCredits()` calls racing against the same billing month, to
-confirm `SELECT ... FOR UPDATE` actually serializes them.
+### PostgreSQL integration tests (`pnpm test:integration`, 21 tests, requires Docker)
+
+Uses [Testcontainers](https://node.testcontainers.org/) to boot a real, throwaway
+`postgres:16-alpine` container per test file, apply the actual Drizzle migrations from
+`src/db/migrations/`, and exercise `DrizzleCreditRepository` directly against it. The
+container is torn down in `afterAll`; tables are `TRUNCATE`d in `beforeEach` for isolation
+between tests. **Never connects to a developer's local or remote database** — Docker must be
+running, or these tests fail to start (they do not fall back to SQLite or any other engine).
+
+- `tests/integration/credit-repository.postgres.test.ts` — basic reservation, successful
+  settlement, failure release, idempotency, exact-limit boundary, a genuine concurrency race
+  (10 requests fired via `Promise.allSettled`, never sequentially awaited, racing the same
+  `credit_periods` row), and double-settlement guards (reject double-commit, double-release,
+  release-after-commit, commit-after-release; `reserved_credits` never goes negative).
+- `tests/integration/migrations.postgres.test.ts` — migration applies cleanly to an empty
+  database, migration re-run is a no-op, foreign key / enum / `CHECK` constraint enforcement
+  at the database level, and integer round-trip precision (no numeric/bigint string coercion,
+  since the schema uses `integer` throughout).
 
 ## Database / migrations
 
@@ -121,10 +137,18 @@ pnpm db:migrate    # apply pending migrations to DATABASE_URL
 pnpm db:studio     # open Drizzle Studio against DATABASE_URL
 ```
 
-The initial migration (`src/db/migrations/0000_puzzling_brood.sql`) has been generated but
-**has not been applied to any real database** — no PostgreSQL connection was available while
-building this project. Run `pnpm db:migrate` yourself once `DATABASE_URL` in `.env.local`
-points at a real, reachable PostgreSQL instance.
+The initial migration (`src/db/migrations/0000_salty_mariko_yashida.sql`) has been generated
+and is applied automatically to a throwaway container by every `pnpm test:integration` run,
+but it has **not been applied to any persistent or remote database** — no such connection was
+available while building this project. Run `pnpm db:migrate` yourself once `DATABASE_URL` in
+`.env.local` points at a real, reachable PostgreSQL instance.
+
+This migration was regenerated once (originally `0000_puzzling_brood.sql`) to add the `CHECK`
+constraints described below, discovered while writing the integration tests. Since it had
+never been applied anywhere real, the safest option was to fold the constraints into a fresh
+initial migration rather than layer an `ALTER TABLE` migration on top of a schema no
+environment has ever run — once a migration has shipped to any real database, this project
+will switch to additive migrations only.
 
 ### Schema
 
@@ -133,6 +157,11 @@ points at a real, reachable PostgreSQL instance.
   `exhausted` flag.
 - **`credit_usage_records`** — one row per AI request (`request_id` UUID PK), with `feature`
   and `status` enums, token counts, and reserved/used credits.
+
+Both tables also carry `CHECK` constraints requiring every credit/token count to be
+non-negative (`>= 0`) — defense in depth confirmed by the integration suite's "check
+constraint enforcement" tests, in addition to the application-level guarantees described
+below.
 
 Deliberately **excluded** from `credit_usage_records`: essay/reflection text, full news
 articles, transcripts, audio files, or any other original learner content. Only accounting
@@ -154,6 +183,11 @@ metadata is stored.
 - Warning levels (`ok` / `warning80` / `warning90` / `exhausted`) and `usagePercent` are
   computed against committed + reserved credits, so a client sees the warning rise even
   before a reservation is committed.
+- `commitCredits()`/`releaseCredits()` atomically claim the `'reserved' → 'completed'/'released'`
+  transition with a single conditional `UPDATE ... WHERE status = 'reserved'`; committing or
+  releasing an already-settled `requestId` throws (`InvalidCreditTransitionError`) instead of
+  silently no-opping, and `reserved_credits` can never be double-decremented or driven negative
+  — verified under real concurrent settlement attempts in the integration suite.
 - 402 (payment/credit exhausted) is never retried. 429/5xx retry policy exists only as types
   and constants (`RETRYABLE_ERROR_CODES`, `MAX_RETRY_ATTEMPTS`, ...) in
   `src/services/mindlogic/types.ts` — it is not wired into any outbound call yet, because no
@@ -205,8 +239,8 @@ only way the monthly hard cap can actually be enforced.
 - Wire an actual AI route that calls `CreditService.reserveCredits()` →
   `MindlogicClient.createChatCompletion()` → `commitCredits()`/`releaseCredits()`.
 - Apply the 429/5xx retry policy (types already exist) to real outbound Mindlogic calls.
-- Testcontainers-based PostgreSQL integration tests for `DrizzleCreditRepository`, especially
-  concurrent reservation races.
 - Authentication/authorization for `/api/v1/*`.
+- CI wiring for `pnpm test:integration` (Docker-in-CI) — not yet added; see
+  [Tests](#tests) for the scripts this would run.
 - Reconciliation job comparing `provider_reported_credits` (from Mindlogic's own `getCredits()`)
   against our internal ledger, using the existing `reconciliation_adjustment` feature enum.

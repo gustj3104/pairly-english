@@ -147,4 +147,52 @@ describe('CreditService usage lifecycle', () => {
     expect(usage.warningLevel).toBe('exhausted');
     expect(usage.aiFeaturesAvailable).toBe(false);
   });
+
+  it('rejects committing a request that was already committed', async () => {
+    const service = buildService(5000);
+    const requestId = crypto.randomUUID();
+    await service.reserveCredits({
+      requestId,
+      feature: 'grammar_feedback',
+      model: 'claude-haiku-4-5-20251001',
+      inputTokens: 1000,
+      outputTokens: 1000,
+      now: NOW,
+    });
+    await service.commitCredits(requestId, 5);
+
+    await expect(service.commitCredits(requestId, 5)).rejects.toThrow();
+  });
+
+  it('rejects releasing a request that was already released', async () => {
+    const service = buildService(5000);
+    const requestId = crypto.randomUUID();
+    await service.reserveCredits({
+      requestId,
+      feature: 'grammar_feedback',
+      model: 'claude-haiku-4-5-20251001',
+      inputTokens: 1000,
+      outputTokens: 1000,
+      now: NOW,
+    });
+    await service.releaseCredits(requestId, 'upstream_failure');
+
+    await expect(service.releaseCredits(requestId, 'upstream_failure')).rejects.toThrow();
+  });
+
+  it('rejects releasing a request that was already committed', async () => {
+    const service = buildService(5000);
+    const requestId = crypto.randomUUID();
+    await service.reserveCredits({
+      requestId,
+      feature: 'grammar_feedback',
+      model: 'claude-haiku-4-5-20251001',
+      inputTokens: 1000,
+      outputTokens: 1000,
+      now: NOW,
+    });
+    await service.commitCredits(requestId, 5);
+
+    await expect(service.releaseCredits(requestId, 'too_late')).rejects.toThrow();
+  });
 });

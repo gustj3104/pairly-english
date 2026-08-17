@@ -1,4 +1,8 @@
 import { buildUsageSummary } from '../../src/services/credits/usage-summary.js';
+import {
+  CreditRecordNotFoundError,
+  InvalidCreditTransitionError,
+} from '../../src/services/credits/errors.js';
 import type {
   CreditRepository,
   CreditUsageRecord,
@@ -81,7 +85,9 @@ export class InMemoryCreditRepository implements CreditRepository {
 
   async commitCredits(requestId: string, creditsUsed: number): Promise<void> {
     const record = this.records.get(requestId);
-    if (!record || record.status !== 'reserved') return;
+    if (!record) throw new CreditRecordNotFoundError(requestId);
+    if (record.status !== 'reserved')
+      throw new InvalidCreditTransitionError(requestId, record.status, 'commit');
 
     const period = this.getOrCreatePeriod(record.billingMonth);
     period.reservedCredits -= record.creditsReserved;
@@ -93,12 +99,14 @@ export class InMemoryCreditRepository implements CreditRepository {
 
   async releaseCredits(requestId: string, errorCode?: string): Promise<void> {
     const record = this.records.get(requestId);
-    if (!record || record.status !== 'reserved') return;
+    if (!record) throw new CreditRecordNotFoundError(requestId);
+    if (record.status !== 'reserved')
+      throw new InvalidCreditTransitionError(requestId, record.status, 'release');
 
     const period = this.getOrCreatePeriod(record.billingMonth);
     period.reservedCredits -= record.creditsReserved;
 
-    record.status = errorCode ? 'failed' : 'released';
+    record.status = 'released';
     record.errorCode = errorCode ?? null;
   }
 

@@ -1,8 +1,9 @@
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { creditPeriods, creditUsageRecords } from '../../db/schema.js';
 import type * as schema from '../../db/schema.js';
 import { buildUsageSummary } from './usage-summary.js';
+import { CreditRecordNotFoundError, InvalidCreditTransitionError } from './errors.js';
 import type {
   CreditRepository,
   CreditUsageRecord,
@@ -35,10 +36,18 @@ function toCreditUsageRecord(row: typeof creditUsageRecords.$inferSelect): Credi
  * PostgreSQL-backed CreditRepository. Atomicity for reserveCredits comes
  * from a transaction combined with `SELECT ... FOR UPDATE` on the
  * credit_periods row for the billing month, so concurrent reservations
- * are serialized against the same limit check.
+ * against the same month are serialized against the same limit check.
  *
- * Not yet covered by automated tests against a real PostgreSQL instance —
- * see README for the planned Testcontainers-based integration test.
+ * commitCredits/releaseCredits use a single conditional
+ * `UPDATE ... WHERE status = 'reserved' RETURNING *` to atomically claim
+ * the state transition (so two concurrent settlements of the same
+ * requestId can't both succeed), followed by an in-place arithmetic
+ * UPDATE on credit_periods (`reserved_credits = reserved_credits - $n`),
+ * which Postgres itself serializes per-row without needing a separate
+ * lock statement.
+ *
+ * Covered by tests/integration/credit-repository.postgres.test.ts against
+ * a real PostgreSQL instance (Testcontainers). See README for scope.
  */
 export class DrizzleCreditRepository implements CreditRepository {
   constructor(private readonly db: Db) {}
@@ -55,38 +64,48 @@ export class DrizzleCreditRepository implements CreditRepository {
         return { ok: true, record: toCreditUsageRecord(existing), idempotentReplay: true } as const;
       }
 
+      // SELECT ... FOR UPDATE cannot lock a row that doesn't exist yet, so
+      // two concurrent first-reservations of a brand-new billing month
+      // would otherwise both fall through to INSERT and race on the PK.
+      // Upserting a zeroed row first (idempotent, Postgres-serialized on
+      // the unique index) guarantees the row exists before we lock it.
+      await tx
+        .insert(creditPeriods)
+        .values({ billingMonth: input.billingMonth })
+        .onConflictDoNothing();
+
       const [period] = await tx
         .select()
         .from(creditPeriods)
         .where(eq(creditPeriods.billingMonth, input.billingMonth))
         .for('update');
 
-      const committed = period?.committedCredits ?? 0;
-      const reserved = period?.reservedCredits ?? 0;
+      if (!period) {
+        throw new Error(`credit_periods row for ${input.billingMonth} could not be created`);
+      }
 
-      if (committed + reserved + input.estimatedCredits > monthlyLimit) {
+      if (
+        period.committedCredits + period.reservedCredits + input.estimatedCredits >
+        monthlyLimit
+      ) {
         const usage = buildUsageSummary({
           billingMonth: input.billingMonth,
-          committedCredits: committed,
-          reservedCredits: reserved,
+          committedCredits: period.committedCredits,
+          reservedCredits: period.reservedCredits,
           limitCredits: monthlyLimit,
           now: input.requestedAt,
-          exhausted: period?.exhausted ?? false,
+          exhausted: period.exhausted,
         });
         return { ok: false, reason: 'limit_exceeded', usage } as const;
       }
 
-      if (period) {
-        await tx
-          .update(creditPeriods)
-          .set({ reservedCredits: reserved + input.estimatedCredits, updatedAt: new Date() })
-          .where(eq(creditPeriods.billingMonth, input.billingMonth));
-      } else {
-        await tx.insert(creditPeriods).values({
-          billingMonth: input.billingMonth,
-          reservedCredits: input.estimatedCredits,
-        });
-      }
+      await tx
+        .update(creditPeriods)
+        .set({
+          reservedCredits: period.reservedCredits + input.estimatedCredits,
+          updatedAt: new Date(),
+        })
+        .where(eq(creditPeriods.billingMonth, input.billingMonth));
 
       const [inserted] = await tx
         .insert(creditUsageRecords)
@@ -114,60 +133,64 @@ export class DrizzleCreditRepository implements CreditRepository {
 
   async commitCredits(requestId: string, creditsUsed: number): Promise<void> {
     await this.db.transaction(async (tx) => {
-      const record = await tx.query.creditUsageRecords.findFirst({
-        where: eq(creditUsageRecords.requestId, requestId),
-      });
-      if (!record || record.status !== 'reserved') return;
-
-      await tx
+      const [updated] = await tx
         .update(creditUsageRecords)
         .set({ status: 'completed', creditsUsed })
-        .where(eq(creditUsageRecords.requestId, requestId));
+        .where(
+          and(
+            eq(creditUsageRecords.requestId, requestId),
+            eq(creditUsageRecords.status, 'reserved'),
+          ),
+        )
+        .returning();
 
-      const [period] = await tx
-        .select()
-        .from(creditPeriods)
-        .where(eq(creditPeriods.billingMonth, record.billingMonth))
-        .for('update');
-      if (!period) return;
+      if (!updated) {
+        const existing = await tx.query.creditUsageRecords.findFirst({
+          where: eq(creditUsageRecords.requestId, requestId),
+        });
+        if (!existing) throw new CreditRecordNotFoundError(requestId);
+        throw new InvalidCreditTransitionError(requestId, existing.status, 'commit');
+      }
 
       await tx
         .update(creditPeriods)
         .set({
-          reservedCredits: period.reservedCredits - record.creditsReserved,
-          committedCredits: period.committedCredits + creditsUsed,
+          reservedCredits: sql`${creditPeriods.reservedCredits} - ${updated.creditsReserved}`,
+          committedCredits: sql`${creditPeriods.committedCredits} + ${creditsUsed}`,
           updatedAt: new Date(),
         })
-        .where(eq(creditPeriods.billingMonth, record.billingMonth));
+        .where(eq(creditPeriods.billingMonth, updated.billingMonth));
     });
   }
 
   async releaseCredits(requestId: string, errorCode?: string): Promise<void> {
     await this.db.transaction(async (tx) => {
-      const record = await tx.query.creditUsageRecords.findFirst({
-        where: eq(creditUsageRecords.requestId, requestId),
-      });
-      if (!record || record.status !== 'reserved') return;
-
-      await tx
+      const [updated] = await tx
         .update(creditUsageRecords)
-        .set({ status: errorCode ? 'failed' : 'released', errorCode: errorCode ?? null })
-        .where(eq(creditUsageRecords.requestId, requestId));
+        .set({ status: 'released', errorCode: errorCode ?? null })
+        .where(
+          and(
+            eq(creditUsageRecords.requestId, requestId),
+            eq(creditUsageRecords.status, 'reserved'),
+          ),
+        )
+        .returning();
 
-      const [period] = await tx
-        .select()
-        .from(creditPeriods)
-        .where(eq(creditPeriods.billingMonth, record.billingMonth))
-        .for('update');
-      if (!period) return;
+      if (!updated) {
+        const existing = await tx.query.creditUsageRecords.findFirst({
+          where: eq(creditUsageRecords.requestId, requestId),
+        });
+        if (!existing) throw new CreditRecordNotFoundError(requestId);
+        throw new InvalidCreditTransitionError(requestId, existing.status, 'release');
+      }
 
       await tx
         .update(creditPeriods)
         .set({
-          reservedCredits: period.reservedCredits - record.creditsReserved,
+          reservedCredits: sql`${creditPeriods.reservedCredits} - ${updated.creditsReserved}`,
           updatedAt: new Date(),
         })
-        .where(eq(creditPeriods.billingMonth, record.billingMonth));
+        .where(eq(creditPeriods.billingMonth, updated.billingMonth));
     });
   }
 

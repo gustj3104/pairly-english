@@ -1,5 +1,5 @@
 {
-  "id": "d52704e9-74a3-47a4-a63d-ff5773810beb",
+  "id": "9e02c1ea-527e-4ea2-a3f5-248bf1ffcf5b",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -55,7 +55,20 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "credit_periods_committed_credits_non_negative": {
+          "name": "credit_periods_committed_credits_non_negative",
+          "value": "\"credit_periods\".\"committed_credits\" >= 0"
+        },
+        "credit_periods_reserved_credits_non_negative": {
+          "name": "credit_periods_reserved_credits_non_negative",
+          "value": "\"credit_periods\".\"reserved_credits\" >= 0"
+        },
+        "credit_periods_provider_reported_credits_non_negative": {
+          "name": "credit_periods_provider_reported_credits_non_negative",
+          "value": "\"credit_periods\".\"provider_reported_credits\" >= 0"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.credit_usage_records": {
@@ -164,7 +177,28 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "credit_usage_records_input_tokens_non_negative": {
+          "name": "credit_usage_records_input_tokens_non_negative",
+          "value": "\"credit_usage_records\".\"input_tokens\" >= 0"
+        },
+        "credit_usage_records_output_tokens_non_negative": {
+          "name": "credit_usage_records_output_tokens_non_negative",
+          "value": "\"credit_usage_records\".\"output_tokens\" >= 0"
+        },
+        "credit_usage_records_credits_reserved_non_negative": {
+          "name": "credit_usage_records_credits_reserved_non_negative",
+          "value": "\"credit_usage_records\".\"credits_reserved\" >= 0"
+        },
+        "credit_usage_records_credits_used_non_negative": {
+          "name": "credit_usage_records_credits_used_non_negative",
+          "value": "\"credit_usage_records\".\"credits_used\" IS NULL OR \"credit_usage_records\".\"credits_used\" >= 0"
+        },
+        "credit_usage_records_retry_count_non_negative": {
+          "name": "credit_usage_records_retry_count_non_negative",
+          "value": "\"credit_usage_records\".\"retry_count\" >= 0"
+        }
+      },
       "isRLSEnabled": false
     }
   },
