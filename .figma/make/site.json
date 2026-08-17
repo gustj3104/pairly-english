@@ -1,0 +1,10 @@
+{
+  "description": "Engage in collaborative English learning by reading news articles, writing, and discussing while receiving real-time feedback on language usage.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
