@@ -1,3 +1,5 @@
 [tools]
 node = "22"
-"npm:pnpm" = "10.34.3"
+# pnpm 10.34.0-10.34.3 lack npm provenance that 10.33.0 had; tracked as a
+# pnpm trust-comparison bug (pnpm/pnpm#10622), not a compromised release.
+"npm:pnpm" = { version = "10.34.3", trust_policy_excludes = ["pnpm@10.34.3"] }
