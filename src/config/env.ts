@@ -1,6 +1,12 @@
-import 'dotenv/config';
+import { config as loadDotenv } from 'dotenv';
 import { z } from 'zod';
 import { isAllowedModel } from '../services/mindlogic/credit-rates.js';
+
+// `.env.local` is where real, git-ignored secrets live (see README /
+// .env.example); `.env` is an optional non-local fallback. dotenv does not
+// override a value already set by an earlier file in the list (or by the
+// real OS environment), so .env.local takes priority over .env.
+loadDotenv({ path: ['.env.local', '.env'], quiet: true });
 
 const envSchema = z
   .object({

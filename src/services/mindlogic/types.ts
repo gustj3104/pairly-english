@@ -1,11 +1,30 @@
 export interface MindlogicModel {
   id: string;
+  object?: string;
+  created?: number;
+  owned_by?: string;
+  profile_image_url?: string;
+  type?: string;
   [key: string]: unknown;
 }
 
-export interface MindlogicCreditsResponse {
+/** The gateway wraps the model list in an envelope, not a bare array. */
+export interface MindlogicModelsResponse {
+  object: string;
+  data: MindlogicModel[];
+}
+
+export interface MindlogicCreditsPeriodSummary {
+  quota: number;
+  used: number;
   remaining: number;
-  [key: string]: unknown;
+}
+
+export interface MindlogicCreditsResponse {
+  object: string;
+  monthly_allocated: MindlogicCreditsPeriodSummary & { renewal_date: string };
+  purchased: MindlogicCreditsPeriodSummary;
+  total: MindlogicCreditsPeriodSummary;
 }
 
 export interface ChatMessage {

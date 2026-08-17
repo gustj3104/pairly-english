@@ -1,4 +1,3 @@
-import { env } from '../../config/env.js';
 import { MindlogicApiError } from './types.js';
 import type {
   ChatCompletionRequest,
@@ -6,6 +5,7 @@ import type {
   MindlogicCreditsResponse,
   MindlogicErrorCode,
   MindlogicModel,
+  MindlogicModelsResponse,
 } from './types.js';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -50,7 +50,10 @@ export class MindlogicClient {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
-  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  private async request<T>(
+    path: string,
+    init: RequestInit = {},
+  ): Promise<{ status: number; data: T }> {
     const url = buildMindlogicUrl(this.baseUrl, path);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -75,7 +78,7 @@ export class MindlogicClient {
         );
       }
 
-      return (await response.json()) as T;
+      return { status: response.status, data: (await response.json()) as T };
     } catch (error) {
       if (error instanceof MindlogicApiError) throw error;
       if (error instanceof Error && error.name === 'AbortError') {
@@ -87,22 +90,43 @@ export class MindlogicClient {
     }
   }
 
-  getModels(): Promise<MindlogicModel[]> {
-    return this.request<MindlogicModel[]>('/models', { method: 'GET' });
+  async getModels(): Promise<MindlogicModel[]> {
+    // Trailing slash matters for this gateway — the bare path (no
+    // trailing slash) is a different, undocumented route. The gateway
+    // wraps the list in an envelope ({ object, data }), not a bare array.
+    const { data } = await this.request<MindlogicModelsResponse>('models/', { method: 'GET' });
+    return data.data;
   }
 
-  getCredits(): Promise<MindlogicCreditsResponse> {
-    return this.request<MindlogicCreditsResponse>('/credits', { method: 'GET' });
+  async getCredits(): Promise<MindlogicCreditsResponse> {
+    const { data } = await this.request<MindlogicCreditsResponse>('credits/', { method: 'GET' });
+    return data;
   }
 
-  createChatCompletion(payload: ChatCompletionRequest): Promise<ChatCompletionResponse> {
-    return this.request<ChatCompletionResponse>('/chat/completions', {
+  async createChatCompletion(payload: ChatCompletionRequest): Promise<ChatCompletionResponse> {
+    const { data } = await this.request<ChatCompletionResponse>('/chat/completions', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
+    return data;
   }
-}
 
-export function createMindlogicClient(): MindlogicClient {
-  return new MindlogicClient({ apiKey: env.MINDLOGIC_API_KEY, baseUrl: env.MINDLOGIC_BASE_URL });
+  /**
+   * Status-aware variant used only by scripts/mindlogic-check.ts (a
+   * read-only operational health check, not part of any HTTP route).
+   * Business code should use getModels()/getCredits() above.
+   */
+  async getModelsWithStatus(): Promise<{ status: number; models: MindlogicModel[] }> {
+    const { status, data } = await this.request<MindlogicModelsResponse>('models/', {
+      method: 'GET',
+    });
+    return { status, models: data.data };
+  }
+
+  async getCreditsWithStatus(): Promise<{ status: number; credits: MindlogicCreditsResponse }> {
+    const { status, data } = await this.request<MindlogicCreditsResponse>('credits/', {
+      method: 'GET',
+    });
+    return { status, credits: data };
+  }
 }

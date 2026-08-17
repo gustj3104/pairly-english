@@ -17,7 +17,8 @@
     "test:all": "pnpm test:run && pnpm test:integration",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "mindlogic:check": "tsx scripts/mindlogic-check.ts"
   },
   "keywords": [],
   "author": "",

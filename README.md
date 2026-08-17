@@ -16,9 +16,12 @@ This service is intentionally a **separate git repository** from the frontend �
 - Keep the Mindlogic API key server-side only, never shipped to the browser.
 - Expose `/api/v1/usage` so the frontend can show usage/quota state to users.
 
-**Status: no real Mindlogic API calls are made anywhere in this codebase yet.** The Mindlogic
-client (`src/services/mindlogic/client.ts`) is a typed skeleton; nothing calls
-`createChatCompletion`, `getModels`, or `getCredits` from a route.
+**Status: no generative (POST) Mindlogic call has ever been made.** The Mindlogic client
+(`src/services/mindlogic/client.ts`) is wired up and its two read-only GET endpoints have been
+verified against the real gateway via `pnpm mindlogic:check` (see
+[Mindlogic connectivity check](#mindlogic-connectivity-check) below) — but
+`createChatCompletion` has never been called from anywhere, and no HTTP route calls any
+Mindlogic method yet.
 
 ## Tech stack
 
@@ -74,7 +77,43 @@ Validation happens in `src/config/env.ts` via Zod. Invalid configuration throws 
 with the field name and a generic reason — **secret values are never included in the error
 message**, so a bad `MINDLOGIC_API_KEY` never gets echoed anywhere.
 
+`src/config/env.ts` loads `.env.local` first and `.env` as a fallback (`.env.local` values
+win); a plain `dotenv/config` import — the previous behavior — only reads `.env`, which this
+project never uses, so real secrets in `.env.local` were silently never loaded. Fixed once
+this was caught while wiring up the first real Mindlogic connectivity check.
+
 `.env`, `.env.local`, and `.env.*.local` are git-ignored. Only `.env.example` is tracked.
+
+## Mindlogic connectivity check
+
+```bash
+pnpm mindlogic:check
+```
+
+`scripts/mindlogic-check.ts` is a standalone, read-only operational script — **not** part of
+the running application (not imported by `src/app.ts`/`src/server.ts`, and excluded from
+`pnpm build`'s output since `tsconfig.build.json` only includes `src/**`). It exists to answer
+"can this server actually reach Mindlogic with the configured credentials" without risking any
+credit spend.
+
+It performs exactly two requests and nothing else:
+
+- `GET /models/` — reports HTTP status, total model count, and whether the configured
+  `MINDLOGIC_MODEL` is present in the response.
+- `GET /credits/` — reports HTTP status, `monthly_allocated.{quota,used,remaining}`,
+  its `renewal_date`, `purchased`/`total` summaries, and whether the reported `quota` matches
+  `MINDLOGIC_MONTHLY_CREDIT_LIMIT` (mismatches are reported, never auto-corrected).
+
+It never sends a POST, never calls `createChatCompletion`, never prints the API key or an
+`Authorization` header, and never dumps a full raw response body — only the summarized fields
+above. `MindlogicClient` (`src/services/mindlogic/client.ts`) itself has no dependency on
+`src/config/env.ts`, specifically so this script can run with only the four `MINDLOGIC_*`
+variables set — it does not require `DATABASE_URL`. The app's own env wiring
+(`createMindlogicClient()` in `src/services/mindlogic/create-client.ts`, for future route use)
+is what pulls in the full env schema; this script bypasses that on purpose.
+
+Its core logic (`runMindlogicCheck`) is unit-tested with a mocked `fetchImpl`
+(`scripts/mindlogic-check.test.ts`) — no real network call happens in `pnpm test:run`.
 
 ## Development server
 
@@ -93,15 +132,16 @@ pnpm test:integration  # real PostgreSQL integration tests via Testcontainers �
 pnpm test:all          # test:run + test:integration
 ```
 
-### Fast unit tests (`pnpm test:run`, 50 tests, no Docker)
+### Fast unit tests (`pnpm test:run`, 57 tests, no Docker)
 
 Cover: env validation, CORS allow/deny + wildcard rejection, credit calculation and rounding,
 80/90%/exhausted warning levels, Asia/Seoul month-boundary and reset-date math, reservation
 limit rejection, requestId idempotency, requestId-payload-conflict rejection,
 invalid-state-transition rejection (double commit/release), the full credit lifecycle
 (reserve → commit / release), the Mindlogic client's status-code → error-code mapping and
-API-key non-leakage, and the `/health`, `/ready`, `/api/v1/usage` HTTP routes via Fastify's
-`inject()`.
+API-key non-leakage, the `/health`, `/ready`, `/api/v1/usage` HTTP routes via Fastify's
+`inject()`, and `scripts/mindlogic-check.ts`'s summary logic (GET-only, quota-mismatch
+detection, no key leakage) against a mocked `fetchImpl`.
 
 These run `CreditService`'s business rules against `InMemoryCreditRepository`
 (`tests/helpers/in-memory-credit-repository.ts`) — a plain JS `Map`, **not** a stand-in for

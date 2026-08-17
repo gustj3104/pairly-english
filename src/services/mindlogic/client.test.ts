@@ -77,10 +77,12 @@ describe('MindlogicClient error mapping', () => {
     expect(sentHeaders.Authorization).toBe(`Bearer ${FAKE_KEY}`);
   });
 
-  it('returns parsed JSON on a successful response', async () => {
+  it('unwraps the { object, data } envelope on a successful models response', async () => {
     const fetchImpl = vi
       .fn()
-      .mockResolvedValue(jsonResponse(200, [{ id: 'claude-haiku-4-5-20251001' }]));
+      .mockResolvedValue(
+        jsonResponse(200, { object: 'list', data: [{ id: 'claude-haiku-4-5-20251001' }] }),
+      );
     const client = new MindlogicClient({
       apiKey: FAKE_KEY,
       baseUrl: 'https://example.com/v1',

@@ -9,7 +9,7 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ['src/**/*.ts', 'tests/**/*.ts'],
+    files: ['src/**/*.ts', 'tests/**/*.ts', 'scripts/**/*.ts'],
     languageOptions: {
       parserOptions: {
         project: './tsconfig.json',
@@ -22,6 +22,13 @@ export default tseslint.config(
       ],
       '@typescript-eslint/consistent-type-imports': 'error',
       'no-console': ['warn', { allow: ['warn', 'error'] }],
+    },
+  },
+  {
+    // CLI scripts legitimately print their summary via console.log.
+    files: ['scripts/**/*.ts'],
+    rules: {
+      'no-console': 'off',
     },
   },
   eslintConfigPrettier,
