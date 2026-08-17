@@ -78,62 +78,139 @@ export interface ChatCompletionResponse {
 
 /**
  * Standard internal error taxonomy that all Mindlogic HTTP/network
- * failures map to.
+ * failures map to. Every code falls into exactly one of three buckets:
  *
- *  - unauthorized / payment_required / rate_limited / server_error: a
- *    real HTTP response was received — Mindlogic definitely got the
- *    request and definitely responded. Certain, safe to release credits.
- *  - connection_refused: the TCP/DNS connection itself never came up
- *    (ECONNREFUSED/ENOTFOUND/EAI_AGAIN) — certain the request bytes were
- *    never sent. Safe to release.
- *  - timeout / connection_reset / incomplete_response / unknown:
- *    transmission and billing status is UNKNOWN — the request may have
- *    reached Mindlogic and even completed generation before the failure.
- *    Never release credits for these; see UNCERTAIN_BILLING_ERROR_CODES.
+ *  1. RECEIVED_RESPONSE_ERROR_CODES — an actual HTTP response came back
+ *     with a status code. Mindlogic definitely got the request and
+ *     definitely responded with a clear rejection; certain, safe to
+ *     release credits (402 additionally marks the month exhausted and
+ *     is never retried). This covers every explicitly-named 4xx/5xx
+ *     below, plus a `client_error` catch-all for any OTHER 4xx we don't
+ *     have a specific name for — an unrecognized 4xx must never be
+ *     treated as uncertain just because we lack a name for it.
+ *  2. CERTAIN_NOT_SENT_ERROR_CODES (`connection_refused`) — the TCP/DNS
+ *     connection itself never came up (ECONNREFUSED/ENOTFOUND/
+ *     EAI_AGAIN). Certain the request bytes were never sent. Safe to
+ *     release.
+ *  3. UNCERTAIN_BILLING_ERROR_CODES (`timeout`, `connection_reset`,
+ *     `incomplete_response`, `unknown`) — transmission/billing status is
+ *     genuinely unknown; the request may have reached Mindlogic and even
+ *     completed generation before the failure. Never released — held as
+ *     'reconciliation_pending' instead.
+ *
+ * `request_timeout_response` (HTTP 408) is deliberately in bucket 1, not
+ * bucket 3: it is a real response Mindlogic's own server sent, distinct
+ * from our own client-side `timeout` (an AbortController firing with no
+ * response at all).
  */
 export type MindlogicErrorCode =
-  | 'unauthorized'
-  | 'payment_required'
-  | 'rate_limited'
-  | 'server_error'
-  | 'timeout'
-  | 'connection_refused'
-  | 'connection_reset'
-  | 'incomplete_response'
-  | 'unknown';
+  | 'invalid_request' // 400
+  | 'unauthorized' // 401
+  | 'credits_exhausted' // 402
+  | 'forbidden' // 403
+  | 'not_found' // 404
+  | 'request_timeout_response' // 408 — a real response, not our own timeout
+  | 'conflict' // 409
+  | 'validation_error' // 422
+  | 'rate_limited' // 429
+  | 'provider_error' // 500-599
+  | 'client_error' // any other 4xx not named above — still a real, received response
+  | 'timeout' // our own AbortController fired; no response received
+  | 'connection_refused' // ECONNREFUSED / ENOTFOUND / EAI_AGAIN
+  | 'connection_reset' // ECONNRESET
+  | 'incomplete_response' // status/headers arrived but the body was truncated or malformed
+  | 'unknown'; // unrecognized network failure — the conservative default, not a guess
+
+/**
+ * Safe-to-log diagnostic detail about an upstream error. Deliberately
+ * narrow: never the raw response body, never the full error message,
+ * never anything that could echo user input. `providerErrorCode` is
+ * extracted only if it matches SAFE_SHORT_CODE_PATTERN (see client.ts) —
+ * a full message string is never stored.
+ */
+export interface MindlogicErrorObservability {
+  /** Allow-listed short code from the response body (e.g. body.error.code), if present and safe. */
+  providerErrorCode: string | null;
+  /** Provider-assigned request id from a recognized response header, if present. */
+  providerRequestId: string | null;
+  /** The response's Content-Type header, if a response was received. */
+  contentType: string | null;
+  /** Top-level key names of the parsed response body (never values), if parseable. */
+  responseTopLevelKeys: string[] | null;
+}
+
+export const EMPTY_ERROR_OBSERVABILITY: MindlogicErrorObservability = {
+  providerErrorCode: null,
+  providerRequestId: null,
+  contentType: null,
+  responseTopLevelKeys: null,
+};
 
 export class MindlogicApiError extends Error {
   readonly code: MindlogicErrorCode;
   readonly status: number;
+  readonly observability: MindlogicErrorObservability;
 
-  constructor(code: MindlogicErrorCode, status: number, message: string) {
+  constructor(
+    code: MindlogicErrorCode,
+    status: number,
+    message: string,
+    observability: MindlogicErrorObservability = EMPTY_ERROR_OBSERVABILITY,
+  ) {
     super(message);
     this.name = 'MindlogicApiError';
     this.code = code;
     this.status = status;
+    this.observability = observability;
   }
 }
 
 /**
  * 429/5xx retry policy, used by src/services/reflections/reflection-comparison-service.ts.
- * Only errors backed by an actual received HTTP response are retryable.
- * Every network-level code (timeout, connection_refused, connection_reset,
- * incomplete_response, unknown) is deliberately excluded: Mindlogic has no
- * Idempotency-Key support, so retrying anything where we cannot be
- * completely certain the original POST never reached/was processed by
- * the server risks double-billing a real generative call — even
- * connection_refused, though certain-not-sent, is left out here simply
- * because retry behavior for it was not part of this change; it is
- * still always safe to release (see CERTAIN_NOT_SENT_ERROR_CODES). 402
- * (payment/credit exhausted) must never retry.
+ * Only errors backed by an actual received HTTP response are retryable —
+ * and even then, only `rate_limited`/`provider_error`. Every network-level
+ * code (timeout, connection_refused, connection_reset, incomplete_response,
+ * unknown) is deliberately excluded: Mindlogic has no Idempotency-Key
+ * support, so retrying anything where we cannot be completely certain the
+ * original POST never reached/was processed by the server risks
+ * double-billing a real generative call — even connection_refused, though
+ * certain-not-sent, is left out here simply because retry behavior for it
+ * was not part of this change; it is still always safe to release (see
+ * CERTAIN_NOT_SENT_ERROR_CODES). The other received-response codes (400,
+ * 403, 404, 408, 409, 422, client_error) are client/config errors —
+ * retrying an unchanged request won't fix them. 402 (credits exhausted)
+ * must never retry.
  */
 export const RETRYABLE_ERROR_CODES: readonly MindlogicErrorCode[] = [
   'rate_limited',
-  'server_error',
+  'provider_error',
 ];
-export const NON_RETRYABLE_ERROR_CODES: readonly MindlogicErrorCode[] = [
+
+/** Every response actually received from Mindlogic with a non-2xx status — always safe to release. */
+export const RECEIVED_RESPONSE_ERROR_CODES: readonly MindlogicErrorCode[] = [
+  'invalid_request',
   'unauthorized',
-  'payment_required',
+  'credits_exhausted',
+  'forbidden',
+  'not_found',
+  'request_timeout_response',
+  'conflict',
+  'validation_error',
+  'rate_limited',
+  'provider_error',
+  'client_error',
+];
+
+export const NON_RETRYABLE_ERROR_CODES: readonly MindlogicErrorCode[] = [
+  'invalid_request',
+  'unauthorized',
+  'credits_exhausted',
+  'forbidden',
+  'not_found',
+  'request_timeout_response',
+  'conflict',
+  'validation_error',
+  'client_error',
   'timeout',
   'connection_refused',
   'connection_reset',

@@ -132,7 +132,7 @@ pnpm test:integration  # real PostgreSQL integration tests via Testcontainers �
 pnpm test:all          # test:run + test:integration
 ```
 
-### Fast unit tests (`pnpm test:run`, 137 tests, no Docker)
+### Fast unit tests (`pnpm test:run`, 158 tests, no Docker)
 
 Cover: env validation, CORS allow/deny + wildcard rejection, credit calculation and rounding,
 80/90%/exhausted warning levels, Asia/Seoul month-boundary and reset-date math, reservation
@@ -311,7 +311,7 @@ metadata is stored.
   instead of silently no-opping, and `reserved_credits` can never be double-decremented or
   driven negative — verified under real concurrent settlement attempts in the integration
   suite.
-- 402 (payment/credit exhausted) is never retried. 429/real 5xx (an actual received HTTP
+- 402 (credits exhausted) is never retried. 429/real 5xx (an actual received HTTP
   response) are retried up to `MAX_RETRY_ATTEMPTS` (`src/services/mindlogic/types.ts`) against
   the same reservation — this is now wired into
   `src/services/reflections/reflection-comparison-service.ts`, the reflection-comparison
@@ -343,18 +343,29 @@ confirmed and is being verified, do not resubmit it").
 
 Which `MindlogicErrorCode`s go to which outcome (`src/services/mindlogic/types.ts`):
 
-| Code                                                                  | Certainty                                                                                                                         | Outcome                                              |
-| --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `unauthorized` / `payment_required` / `rate_limited` / `server_error` | A real HTTP response was received                                                                                                 | Release (402 additionally marks the month exhausted) |
-| `connection_refused`                                                  | TCP/DNS connection never came up (`ECONNREFUSED`/`ENOTFOUND`/`EAI_AGAIN`) — certain the request bytes were never sent             | Release                                              |
-| `timeout`                                                             | Our own `AbortController` fired — no response, unknown whether Mindlogic received/processed it                                    | **`reconciliation_pending`**                         |
-| `connection_reset`                                                    | `ECONNRESET` — could have happened before or after the request was flushed                                                        | **`reconciliation_pending`**                         |
-| `incomplete_response`                                                 | HTTP status/headers arrived (so the request definitely reached Mindlogic) but the body was truncated or malformed while streaming | **`reconciliation_pending`**                         |
-| `unknown`                                                             | An unrecognized network failure — deliberately the conservative default rather than guessing                                      | **`reconciliation_pending`**                         |
+| Code                                                                                                                                                                                                                                                                                     | Certainty                                                                                                                                     | Outcome                                              |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `invalid_request` (400) / `unauthorized` (401) / `credits_exhausted` (402) / `forbidden` (403) / `not_found` (404) / `request_timeout_response` (408) / `conflict` (409) / `validation_error` (422) / `rate_limited` (429) / `provider_error` (500–599) / `client_error` (any other 4xx) | A real HTTP response was received — every status code maps to a specific name; an unrecognized 4xx still gets `client_error`, never `unknown` | Release (402 additionally marks the month exhausted) |
+| `connection_refused`                                                                                                                                                                                                                                                                     | TCP/DNS connection never came up (`ECONNREFUSED`/`ENOTFOUND`/`EAI_AGAIN`) — certain the request bytes were never sent                         | Release                                              |
+| `timeout`                                                                                                                                                                                                                                                                                | Our own `AbortController` fired — no response, unknown whether Mindlogic received/processed it                                                | **`reconciliation_pending`**                         |
+| `connection_reset`                                                                                                                                                                                                                                                                       | `ECONNRESET` — could have happened before or after the request was flushed                                                                    | **`reconciliation_pending`**                         |
+| `incomplete_response`                                                                                                                                                                                                                                                                    | HTTP status/headers arrived (so the request definitely reached Mindlogic) but the body was truncated or malformed while streaming             | **`reconciliation_pending`**                         |
+| `unknown`                                                                                                                                                                                                                                                                                | An unrecognized network-level failure — deliberately the conservative default rather than guessing                                            | **`reconciliation_pending`**                         |
 
-No code is retryable except `rate_limited`/`server_error` — see `RETRYABLE_ERROR_CODES`.
+`request_timeout_response` (HTTP 408) is a real response Mindlogic's own server sent, distinct
+from our own client-side `timeout` (an `AbortController` firing with no response at all) — it
+belongs in the received-response bucket, not the uncertain one.
+
+No code is retryable except `rate_limited`/`provider_error` — see `RETRYABLE_ERROR_CODES`.
 `connection_refused` is certain-safe-to-release but was deliberately left out of the retryable
 set too; expanding retry scope to it wasn't part of this change.
+
+Every non-2xx response also carries a `MindlogicErrorObservability` payload for safe logging
+(`src/services/mindlogic/types.ts`): `providerErrorCode` (allow-listed short code from
+`error.code`/`error.type`/`code`/`type`, never a free-text `message`), `providerRequestId`
+(from a recognized response header), `contentType`, and `responseTopLevelKeys` (key names only,
+never values). Routes spread this into their log line but never persist or return the raw
+response body.
 
 ### Reconciliation (`src/services/credits/reconciliation.ts`)
 

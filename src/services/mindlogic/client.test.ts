@@ -33,11 +33,19 @@ describe('buildMindlogicUrl', () => {
 
 describe('MindlogicClient error mapping', () => {
   const cases: { status: number; code: string }[] = [
+    { status: 400, code: 'invalid_request' },
     { status: 401, code: 'unauthorized' },
-    { status: 402, code: 'payment_required' },
+    { status: 402, code: 'credits_exhausted' },
+    { status: 403, code: 'forbidden' },
+    { status: 404, code: 'not_found' },
+    { status: 408, code: 'request_timeout_response' },
+    { status: 409, code: 'conflict' },
+    { status: 422, code: 'validation_error' },
     { status: 429, code: 'rate_limited' },
-    { status: 500, code: 'server_error' },
-    { status: 503, code: 'server_error' },
+    { status: 500, code: 'provider_error' },
+    { status: 503, code: 'provider_error' },
+    { status: 599, code: 'provider_error' },
+    { status: 418, code: 'client_error' },
   ];
 
   for (const { status, code } of cases) {
@@ -92,7 +100,7 @@ describe('MindlogicClient error mapping', () => {
     await expect(client.getModels()).resolves.toEqual([{ id: 'claude-haiku-4-5-20251001' }]);
   });
 
-  it("maps a timed-out request to code 'timeout', distinct from a real server_error", async () => {
+  it("maps a timed-out request to code 'timeout', distinct from a real provider_error", async () => {
     const fetchImpl = vi.fn().mockImplementation((_url: unknown, init?: RequestInit) => {
       return new Promise((_resolve, reject) => {
         init?.signal?.addEventListener('abort', () => {
@@ -186,5 +194,149 @@ describe('MindlogicClient error mapping', () => {
       code: 'incomplete_response',
       status: 200,
     });
+  });
+});
+
+describe('MindlogicClient error observability', () => {
+  it('extracts an allow-listed provider error code, request id header, content-type, and top-level keys', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: { code: 'invalid_api_key', message: 'do not store this part' } }),
+        {
+          status: 401,
+          headers: {
+            'Content-Type': 'application/json',
+            'x-request-id': 'req_abc123',
+          },
+        },
+      ),
+    );
+    const client = new MindlogicClient({
+      apiKey: FAKE_KEY,
+      baseUrl: 'https://example.com/v1',
+      fetchImpl,
+    });
+
+    let caught: unknown;
+    try {
+      await client.getModels();
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(MindlogicApiError);
+    const observability = (caught as MindlogicApiError).observability;
+    expect(observability.providerErrorCode).toBe('invalid_api_key');
+    expect(observability.providerRequestId).toBe('req_abc123');
+    expect(observability.contentType).toBe('application/json');
+    expect(observability.responseTopLevelKeys).toEqual(['error']);
+  });
+
+  it('never surfaces a free-text message field as the provider error code', async () => {
+    const longMessage =
+      'This is a long free-text error message that must never be stored verbatim, even if it reflects request content.';
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(400, { message: longMessage, code: undefined }));
+    const client = new MindlogicClient({
+      apiKey: FAKE_KEY,
+      baseUrl: 'https://example.com/v1',
+      fetchImpl,
+    });
+
+    let caught: unknown;
+    try {
+      await client.getModels();
+    } catch (error) {
+      caught = error;
+    }
+
+    const observability = (caught as MindlogicApiError).observability;
+    expect(observability.providerErrorCode).toBeNull();
+    const serialized = JSON.stringify(observability);
+    expect(serialized).not.toContain(longMessage);
+  });
+
+  it('ignores a request-id header value that does not look like a short safe code', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({}), {
+        status: 500,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-request-id': 'a'.repeat(200),
+        },
+      }),
+    );
+    const client = new MindlogicClient({
+      apiKey: FAKE_KEY,
+      baseUrl: 'https://example.com/v1',
+      fetchImpl,
+    });
+
+    let caught: unknown;
+    try {
+      await client.getModels();
+    } catch (error) {
+      caught = error;
+    }
+
+    expect((caught as MindlogicApiError).observability.providerRequestId).toBeNull();
+  });
+
+  it('leaves observability fields null when the error body is not valid JSON', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response('not json at all', {
+        status: 500,
+        headers: { 'Content-Type': 'text/plain' },
+      }),
+    );
+    const client = new MindlogicClient({
+      apiKey: FAKE_KEY,
+      baseUrl: 'https://example.com/v1',
+      fetchImpl,
+    });
+
+    let caught: unknown;
+    try {
+      await client.getModels();
+    } catch (error) {
+      caught = error;
+    }
+
+    const observability = (caught as MindlogicApiError).observability;
+    expect(observability.providerErrorCode).toBeNull();
+    expect(observability.responseTopLevelKeys).toBeNull();
+    expect(observability.contentType).toBe('text/plain');
+  });
+
+  it('extracts provider request id headers from the incomplete_response path (body already consumed)', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response('{"truncated": tr', {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-request-id': 'req_partial1',
+        },
+      }),
+    );
+    const client = new MindlogicClient({
+      apiKey: FAKE_KEY,
+      baseUrl: 'https://example.com/v1',
+      fetchImpl,
+    });
+
+    let caught: unknown;
+    try {
+      await client.getModels();
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({ code: 'incomplete_response' });
+    const observability = (caught as MindlogicApiError).observability;
+    expect(observability.providerRequestId).toBe('req_partial1');
+    expect(observability.contentType).toBe('application/json');
+    expect(observability.responseTopLevelKeys).toBeNull();
+    expect(observability.providerErrorCode).toBeNull();
   });
 });

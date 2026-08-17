@@ -1,9 +1,10 @@
-import { MindlogicApiError } from './types.js';
+import { EMPTY_ERROR_OBSERVABILITY, MindlogicApiError } from './types.js';
 import type {
   ChatCompletionRequest,
   ChatCompletionResponse,
   MindlogicCreditsResponse,
   MindlogicErrorCode,
+  MindlogicErrorObservability,
   MindlogicModel,
   MindlogicModelsResponse,
 } from './types.js';
@@ -17,11 +18,24 @@ export function buildMindlogicUrl(baseUrl: string, path: string): string {
   return `${normalizedBase}/${normalizedPath}`;
 }
 
+/**
+ * Maps every real received HTTP status to a specific code. Any 4xx not
+ * explicitly named still gets a real, received-response code
+ * ('client_error') — never 'unknown', which is reserved for genuinely
+ * unrecognized network-level failures (see classifyNetworkError below).
+ */
 function mapStatusToErrorCode(status: number): MindlogicErrorCode {
+  if (status === 400) return 'invalid_request';
   if (status === 401) return 'unauthorized';
-  if (status === 402) return 'payment_required';
+  if (status === 402) return 'credits_exhausted';
+  if (status === 403) return 'forbidden';
+  if (status === 404) return 'not_found';
+  if (status === 408) return 'request_timeout_response';
+  if (status === 409) return 'conflict';
+  if (status === 422) return 'validation_error';
   if (status === 429) return 'rate_limited';
-  if (status >= 500) return 'server_error';
+  if (status >= 500 && status <= 599) return 'provider_error';
+  if (status >= 400 && status <= 499) return 'client_error';
   return 'unknown';
 }
 
@@ -44,6 +58,78 @@ function classifyNetworkError(error: unknown): MindlogicErrorCode {
     return 'connection_reset';
   }
   return 'unknown';
+}
+
+/** Only ever extracts a short, safe-looking code — never a free-text message. */
+const SAFE_SHORT_CODE_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
+
+/** Header names checked, in order, for a provider-assigned request id. */
+const REQUEST_ID_HEADER_CANDIDATES = [
+  'x-request-id',
+  'x-requestid',
+  'request-id',
+  'x-mindlogic-request-id',
+];
+
+function extractProviderRequestId(headers: Headers): string | null {
+  for (const name of REQUEST_ID_HEADER_CANDIDATES) {
+    const value = headers.get(name);
+    if (value && SAFE_SHORT_CODE_PATTERN.test(value)) return value;
+  }
+  return null;
+}
+
+/**
+ * Looks for a short error code under a small allow-list of common field
+ * names (`error.code`, `error.type`, `code`, `type`). Never reads or
+ * returns a `message` field — messages can be arbitrarily long and may
+ * echo request content back.
+ */
+function extractProviderErrorCode(body: Record<string, unknown>): string | null {
+  const nestedError = body.error;
+  const candidates: unknown[] = [
+    nestedError && typeof nestedError === 'object'
+      ? (nestedError as Record<string, unknown>).code
+      : undefined,
+    nestedError && typeof nestedError === 'object'
+      ? (nestedError as Record<string, unknown>).type
+      : undefined,
+    body.code,
+    body.type,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && SAFE_SHORT_CODE_PATTERN.test(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+/**
+ * Builds safe diagnostic detail for a non-ok response, reading the body
+ * exactly once as text so a parse failure never throws here. The raw
+ * text itself is never retained — only the derived, allow-listed fields.
+ */
+async function buildErrorObservability(response: Response): Promise<MindlogicErrorObservability> {
+  const contentType = response.headers.get('content-type');
+  const providerRequestId = extractProviderRequestId(response.headers);
+  let responseTopLevelKeys: string[] | null = null;
+  let providerErrorCode: string | null = null;
+
+  try {
+    const text = await response.text();
+    const parsed: unknown = JSON.parse(text);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const record = parsed as Record<string, unknown>;
+      responseTopLevelKeys = Object.keys(record).slice(0, 20);
+      providerErrorCode = extractProviderErrorCode(record);
+    }
+  } catch {
+    // Body wasn't valid JSON, or couldn't be read — leave keys/code null.
+    // Never store the raw text.
+  }
+
+  return { providerErrorCode, providerRequestId, contentType, responseTopLevelKeys };
 }
 
 export interface MindlogicClientOptions {
@@ -94,10 +180,12 @@ export class MindlogicClient {
 
       if (!response.ok) {
         const code = mapStatusToErrorCode(response.status);
+        const observability = await buildErrorObservability(response);
         throw new MindlogicApiError(
           code,
           response.status,
           `Mindlogic request failed with status ${response.status}`,
+          observability,
         );
       }
 
@@ -109,11 +197,18 @@ export class MindlogicClient {
         // reached Mindlogic — but the body was truncated, malformed, or
         // the connection dropped while streaming it. We cannot tell
         // whether generation completed or what it cost; never treat this
-        // as a clean failure safe to release.
+        // as a clean failure safe to release. The body stream is already
+        // consumed by the failed .json() call, so only header-derived
+        // observability is available here.
         throw new MindlogicApiError(
           'incomplete_response',
           response.status,
           'Mindlogic response body was incomplete or malformed',
+          {
+            ...EMPTY_ERROR_OBSERVABILITY,
+            providerRequestId: extractProviderRequestId(response.headers),
+            contentType: response.headers.get('content-type'),
+          },
         );
       }
 

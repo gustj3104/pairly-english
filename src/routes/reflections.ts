@@ -100,7 +100,12 @@ export async function reflectionsRoutes(
 
       case 'upstream_failed':
         request.log.warn(
-          { ...logFields, upstreamCode: outcome.code, upstreamStatus: outcome.upstreamStatus },
+          {
+            ...logFields,
+            upstreamCode: outcome.code,
+            upstreamStatus: outcome.upstreamStatus,
+            ...outcome.observability,
+          },
           'reflection comparison upstream call failed',
         );
         return sendError(
@@ -133,7 +138,12 @@ export async function reflectionsRoutes(
 
       case 'reconciliation_pending':
         request.log.warn(
-          { ...logFields, upstreamCode: outcome.code, upstreamStatus: outcome.upstreamStatus },
+          {
+            ...logFields,
+            upstreamCode: outcome.code,
+            upstreamStatus: outcome.upstreamStatus,
+            ...outcome.observability,
+          },
           'reflection comparison transmission status unknown — held for reconciliation',
         );
         return sendError(

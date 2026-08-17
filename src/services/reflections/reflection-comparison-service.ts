@@ -5,6 +5,7 @@ import { calculateCredits } from '../credits/credit-calculator.js';
 import { getBillingMonth } from '../credits/billing-period.js';
 import type { MindlogicClient } from '../mindlogic/client.js';
 import {
+  EMPTY_ERROR_OBSERVABILITY,
   MindlogicApiError,
   MAX_RETRY_ATTEMPTS,
   RETRYABLE_ERROR_CODES,
@@ -15,6 +16,7 @@ import type {
   ChatCompletionResponse,
   ChatMessage,
   MindlogicErrorCode,
+  MindlogicErrorObservability,
 } from '../mindlogic/types.js';
 import { getFeatureModelConfig } from '../mindlogic/feature-config.js';
 import { estimateChatRequestInputTokens } from '../mindlogic/token-estimate.js';
@@ -52,7 +54,12 @@ export type ReflectionComparisonOutcome = {
   | { status: 'ok'; result: ReflectionComparisonResult }
   | { status: 'limit_exceeded'; usage: UsageSummary }
   | { status: 'provider_exhausted' }
-  | { status: 'upstream_failed'; code: MindlogicErrorCode; upstreamStatus: number }
+  | {
+      status: 'upstream_failed';
+      code: MindlogicErrorCode;
+      upstreamStatus: number;
+      observability: MindlogicErrorObservability;
+    }
   | { status: 'upstream_schema_error' }
   | { status: 'reservation_exceeded' }
   /**
@@ -61,7 +68,12 @@ export type ReflectionComparisonOutcome = {
    * reservation is held as 'reconciliation_pending', not released, and
    * this requestId must not be retried until an operator reconciles it.
    */
-  | { status: 'reconciliation_pending'; code: MindlogicErrorCode; upstreamStatus: number }
+  | {
+      status: 'reconciliation_pending';
+      code: MindlogicErrorCode;
+      upstreamStatus: number;
+      observability: MindlogicErrorObservability;
+    }
 );
 
 /** Default retries after the first attempt (2 retries = 3 total attempts), i.e. MAX_RETRY_ATTEMPTS unchanged. */
@@ -177,9 +189,11 @@ export async function compareReflections(
         requestId,
         code: (reservation.record.errorCode as MindlogicErrorCode | null) ?? 'unknown',
         // Only the error code is persisted on the DB record, not the raw
-        // HTTP status from the original attempt — 0 here just means
-        // "not available from this replay path", not "no response".
+        // HTTP status/observability from the original attempt — these
+        // defaults mean "not available from this replay path", not "no
+        // response".
         upstreamStatus: 0,
+        observability: EMPTY_ERROR_OBSERVABILITY,
         accounting,
       };
     }
@@ -206,8 +220,8 @@ export async function compareReflections(
     );
   } catch (error) {
     if (error instanceof MindlogicApiError) {
-      if (error.code === 'payment_required') {
-        await deps.creditService.releaseCredits(requestId, 'mindlogic_payment_required');
+      if (error.code === 'credits_exhausted') {
+        await deps.creditService.releaseCredits(requestId, 'mindlogic_credits_exhausted');
         await deps.creditService.markExhausted(getBillingMonth(now()));
         return { status: 'provider_exhausted', requestId, accounting };
       }
@@ -226,19 +240,23 @@ export async function compareReflections(
           requestId,
           code: error.code,
           upstreamStatus: error.status,
+          observability: error.observability,
           accounting,
         };
       }
 
       // Every other code here is backed by either an actual HTTP
-      // response (401/429/5xx) or a certain "never reached the server"
-      // signal (connection_refused) — safe to release.
+      // response (400/401/403/404/408/409/422/429/5xx/client_error) or a
+      // certain "never reached the server" signal (connection_refused) —
+      // safe to release. A received response with a clear rejection
+      // means no billable generation occurred.
       await deps.creditService.releaseCredits(requestId, error.code);
       return {
         status: 'upstream_failed',
         requestId,
         code: error.code,
         upstreamStatus: error.status,
+        observability: error.observability,
         accounting,
       };
     }

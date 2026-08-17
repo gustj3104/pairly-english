@@ -184,6 +184,45 @@ describe('compareReflections — 402 is never retried and marks the month exhaus
   });
 });
 
+describe('compareReflections — full received-response status table releases (never pending)', () => {
+  const receivedResponseCases: { status: number; code: string }[] = [
+    { status: 400, code: 'invalid_request' },
+    { status: 403, code: 'forbidden' },
+    { status: 404, code: 'not_found' },
+    { status: 408, code: 'request_timeout_response' },
+    { status: 409, code: 'conflict' },
+    { status: 422, code: 'validation_error' },
+    { status: 418, code: 'client_error' },
+  ];
+
+  for (const { status, code } of receivedResponseCases) {
+    it(`releases (does not hold pending) on HTTP ${status} → '${code}'`, async () => {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValue(jsonResponse(status, { error: { code: 'provider_code' } }));
+      const creditService = buildCreditService();
+      const mindlogicClient = buildMindlogicClient(fetchImpl);
+
+      const outcome = await compareReflections(INPUT, {
+        creditService,
+        mindlogicClient,
+        sleep: noopSleep,
+      });
+
+      expect(outcome.status).toBe('upstream_failed');
+      if (outcome.status === 'upstream_failed') {
+        expect(outcome.code).toBe(code);
+        expect(outcome.upstreamStatus).toBe(status);
+        expect(outcome.observability.providerErrorCode).toBe('provider_code');
+      }
+
+      const usage = await creditService.getUsageSummary();
+      expect(usage.reservedCredits).toBe(0);
+      expect(usage.usedCredits).toBe(0);
+    });
+  }
+});
+
 describe('compareReflections — 429/5xx retry policy', () => {
   it('retries a 500 and succeeds on a later attempt, reusing the same reservation (no new reserve call)', async () => {
     let call = 0;
