@@ -91,4 +91,24 @@ describe('MindlogicClient error mapping', () => {
 
     await expect(client.getModels()).resolves.toEqual([{ id: 'claude-haiku-4-5-20251001' }]);
   });
+
+  it("maps a timed-out request to code 'timeout', distinct from a real server_error", async () => {
+    const fetchImpl = vi.fn().mockImplementation((_url: unknown, init?: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          const abortError = new Error('The operation was aborted');
+          abortError.name = 'AbortError';
+          reject(abortError);
+        });
+      });
+    });
+    const client = new MindlogicClient({
+      apiKey: FAKE_KEY,
+      baseUrl: 'https://example.com/v1',
+      fetchImpl,
+      timeoutMs: 10,
+    });
+
+    await expect(client.getModels()).rejects.toMatchObject({ code: 'timeout' });
+  });
 });

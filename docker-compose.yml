@@ -1,0 +1,32 @@
+name: pairly-english-server-dev
+
+# Local development database only. Never used by tests: fast unit tests
+# use no database at all, and `pnpm test:integration` boots its own
+# throwaway Testcontainers PostgreSQL on an ephemeral Docker-assigned
+# port — this file and that one can run at the same time without
+# conflict. Credentials below are dev-only defaults, not secrets; do not
+# reuse them for anything that isn't this local container.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: pairly-english-server-dev-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DEV_DB_USER:-pairly}
+      POSTGRES_PASSWORD: ${DEV_DB_PASSWORD:-pairly_dev_only_password}
+      POSTGRES_DB: ${DEV_DB_NAME:-pairly_english_dev}
+    ports:
+      # Deliberately not 5432, so this never collides with a developer's
+      # own local PostgreSQL install.
+      - '5433:5432'
+    volumes:
+      - pairly_postgres_dev_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        ['CMD-SHELL', 'pg_isready -U ${DEV_DB_USER:-pairly} -d ${DEV_DB_NAME:-pairly_english_dev}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pairly_postgres_dev_data:

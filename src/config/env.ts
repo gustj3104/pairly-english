@@ -19,6 +19,13 @@ const envSchema = z
     MINDLOGIC_BASE_URL: z.string().url().default('https://factchat-cloud.mindlogic.ai/v1/gateway'),
     MINDLOGIC_MODEL: z.string().default('claude-haiku-4-5-20251001'),
     MINDLOGIC_MONTHLY_CREDIT_LIMIT: z.coerce.number().int().positive().default(5000),
+    /**
+     * Temporary pre-auth gate for AI routes until real authentication
+     * exists. Optional so env parsing itself never requires it — the
+     * routes fail closed on their own when it's unset (see
+     * src/plugins/dev-ai-gate.ts). Never bundled into the frontend.
+     */
+    AI_DEV_ACCESS_TOKEN: z.string().min(1).optional(),
   })
   .superRefine((value, ctx) => {
     if (value.FRONTEND_ORIGIN === '*') {

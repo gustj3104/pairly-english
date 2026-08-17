@@ -132,30 +132,40 @@ pnpm test:integration  # real PostgreSQL integration tests via Testcontainers �
 pnpm test:all          # test:run + test:integration
 ```
 
-### Fast unit tests (`pnpm test:run`, 57 tests, no Docker)
+### Fast unit tests (`pnpm test:run`, 105 tests, no Docker)
 
 Cover: env validation, CORS allow/deny + wildcard rejection, credit calculation and rounding,
 80/90%/exhausted warning levels, Asia/Seoul month-boundary and reset-date math, reservation
 limit rejection, requestId idempotency, requestId-payload-conflict rejection,
 invalid-state-transition rejection (double commit/release), the full credit lifecycle
-(reserve → commit / release), the Mindlogic client's status-code → error-code mapping and
-API-key non-leakage, the `/health`, `/ready`, `/api/v1/usage` HTTP routes via Fastify's
-`inject()`, and `scripts/mindlogic-check.ts`'s summary logic (GET-only, quota-mismatch
-detection, no key leakage) against a mocked `fetchImpl`.
+(reserve → commit / release), the Mindlogic client's status-code → error-code mapping
+(including the dedicated, non-retryable `timeout` code) and API-key non-leakage, conservative
+token estimation, the reflection-comparison request/response Zod schemas (length/blank
+bounds, exactly-3-topics, `additionalProperties: false` parity), the full
+reserve→call→settle credit pipeline for reflection comparison (429/5xx retry, no-retry on 402
+and timeout, release-on-failure, actual-usage-exceeds-reservation fail-closed, no
+silent-double-charge on requestId reuse) against a mocked Mindlogic `fetchImpl`, and the
+`/health`, `/ready`, `/api/v1/usage`, `/api/v1/reflections/compare` HTTP routes via Fastify's
+`inject()` — including the pre-auth gate (prod always 404, missing-token 503, wrong-token 401)
+and a log-capture test proving reflection text/names/the API key never reach the logger. Also
+covers `scripts/mindlogic-check.ts`'s summary logic (GET-only, quota-mismatch detection, no
+key leakage) against a mocked `fetchImpl`.
 
 These run `CreditService`'s business rules against `InMemoryCreditRepository`
 (`tests/helpers/in-memory-credit-repository.ts`) — a plain JS `Map`, **not** a stand-in for
 PostgreSQL. It verifies `CreditService`'s logic, never PostgreSQL's transaction/locking
 semantics — that's what the integration suite below is for.
 
-### PostgreSQL integration tests (`pnpm test:integration`, 24 tests, requires Docker)
+### PostgreSQL integration tests (`pnpm test:integration`, 27 tests, requires Docker)
 
 Uses [Testcontainers](https://node.testcontainers.org/) to boot a real, throwaway
 `postgres:16-alpine` container per test file, apply the actual Drizzle migrations from
-`src/db/migrations/`, and exercise `DrizzleCreditRepository` directly against it. The
-container is torn down in `afterAll`; tables are `TRUNCATE`d in `beforeEach` for isolation
-between tests. **Never connects to a developer's local or remote database** — Docker must be
-running, or these tests fail to start (they do not fall back to SQLite or any other engine).
+`src/db/migrations/`, and exercise `DrizzleCreditRepository` (and, for the reflections route,
+the full Fastify app) directly against it. Containers are torn down in `afterAll`; tables are
+`TRUNCATE`d in `beforeEach` for isolation between tests. **Never connects to a developer's
+local or remote database** — Docker must be running, or these tests fail to start (they do
+not fall back to SQLite or any other engine). This is entirely separate from the
+Docker-Compose dev database described below.
 
 - `tests/integration/credit-repository.postgres.test.ts` — basic reservation, successful
   settlement, failure release, idempotency, **20 truly concurrent requests sharing one
@@ -170,6 +180,11 @@ running, or these tests fail to start (they do not fall back to SQLite or any ot
   database, migration re-run is a no-op, foreign key / enum / `CHECK` constraint enforcement
   at the database level, and integer round-trip precision (no numeric/bigint string coercion,
   since the schema uses `integer` throughout).
+- `tests/integration/reflections.postgres.test.ts` — `POST /api/v1/reflections/compare` driven
+  through Fastify `inject()` with a **real** PostgreSQL-backed `CreditService` and a **mocked**
+  Mindlogic HTTP layer: a successful comparison reserves and commits real rows, a non-retryable
+  upstream failure releases the real reservation, and an already-exhausted real ledger blocks
+  the Mindlogic call entirely.
 
 ## Database / migrations
 
@@ -186,7 +201,31 @@ The initial migration (`src/db/migrations/0000_salty_mariko_yashida.sql`) has be
 and is applied automatically to a throwaway container by every `pnpm test:integration` run,
 but it has **not been applied to any persistent or remote database** — no such connection was
 available while building this project. Run `pnpm db:migrate` yourself once `DATABASE_URL` in
-`.env.local` points at a real, reachable PostgreSQL instance.
+`.env.local` points at a real, reachable PostgreSQL instance — for example, the local Docker
+Compose database below.
+
+### Local development database (Docker Compose)
+
+```bash
+docker compose up -d      # start a persistent local PostgreSQL for `pnpm dev`
+pnpm db:migrate            # apply migrations to it (once DATABASE_URL in .env.local points at it)
+docker compose down        # stop it (add -v to also delete its data volume)
+```
+
+`docker-compose.yml` runs a single **development-only** `postgres:16-alpine` container:
+
+- Host port **5433** (not 5432), so it never collides with a developer's own local PostgreSQL.
+- Named volume `pairly_postgres_dev_data` for persistence across restarts.
+- Default credentials (`pairly` / `pairly_dev_only_password` / db `pairly_english_dev`) are
+  **dev-only placeholders committed on purpose** — not secrets, overridable via
+  `DEV_DB_USER` / `DEV_DB_PASSWORD` / `DEV_DB_NAME` if you want different local values. Never
+  reuse them anywhere that isn't this local container.
+- Point `.env.local`'s `DATABASE_URL` at it, e.g.
+  `postgres://pairly:pairly_dev_only_password@localhost:5433/pairly_english_dev`.
+
+This is entirely separate from `pnpm test:integration`'s Testcontainers database: that one is
+an ephemeral container on a random Docker-assigned port, created and destroyed per test run,
+and never shares state or a port with this persistent dev container — both can run at once.
 
 This migration was regenerated once (originally `0000_puzzling_brood.sql`) to add the `CHECK`
 constraints described below, discovered while writing the integration tests. Since it had
@@ -269,6 +308,105 @@ generic message, the same way `src/plugins/error-handler.ts` already does for un
 | `InvalidCreditTransitionError` | `INVALID_CREDIT_TRANSITION` | `commitCredits`/`releaseCredits` called on a record that isn't currently `'reserved'`.                                                                                                   |
 | `CreditRecordNotFoundError`    | `CREDIT_RECORD_NOT_FOUND`   | `commitCredits`/`releaseCredits` called with an unknown `requestId`.                                                                                                                     |
 
+## Reflection comparison — first real AI feature
+
+`POST /api/v1/reflections/compare` is the first endpoint that actually calls Mindlogic
+(`createChatCompletion`, structured JSON output). **No real call to it has been made** — every
+test uses a mocked `fetchImpl`; see [Endpoints implemented](#endpoints-implemented) below for
+the request/response contract and [Mindlogic connectivity check](#mindlogic-connectivity-check)
+for the two GET endpoints that have been verified for real.
+
+- **Request contract**: `{ article: { title, sourceUrl?, summary? }, mine: { displayName,
+reflection }, partner: { displayName, reflection } }`. Validated with Zod
+  (`src/services/reflections/schema.ts`): `article.title`/`displayName`/`reflection` required
+  and rejected if blank/whitespace-only; `reflection` bounded to 50–6,000 characters (trimmed);
+  `displayName` ≤ 80 chars; `sourceUrl` (if present) must be a valid URL. Overall body size is
+  capped by Fastify's existing 100 KB `bodyLimit`. This is a length/blank check only, not a
+  content filter — prompt-injection-style text in a reflection is valid input; the defense
+  against it lives in the prompt (see below), not in validation.
+- **Response contract**: `{ requestId, commonGround: { point, mine, partner }[], differences:
+{ topic, mine: { stance, quote }, partner: { stance, quote } }[], topics: { question, reason,
+difficulty: 'Intermediate' | 'Advanced' }[] (exactly 3) }`. Deliberately uses `mine`/`partner`
+  — **not** the frontend mock's `hj`/`js` field names, which are tied to specific display names
+  rather than a generic role. See [Differences from the current frontend
+  contract](#differences-from-the-current-frontend-contract) below.
+- **Prompt** (`src/services/reflections/prompt.ts`): a fixed system prompt instructs the model
+  to treat both reflections as untrusted data (never follow instructions embedded in them),
+  never invent facts beyond the article/reflections, never distort either person's stance,
+  ground every point in a quote, never rank/grade either person, produce exactly 3 English
+  discussion questions, and output only JSON matching the schema. User content is passed as an
+  explicitly labeled JSON data block, never string-interpolated into prose.
+- **Structured output**: `response_format` is a strict JSON Schema
+  (`REFLECTION_COMPARISON_RESPONSE_FORMAT`, `additionalProperties: false` throughout, `topics`
+  pinned to `minItems`/`maxItems: 3`). The parsed response is **re-validated with Zod**
+  independently (`reflectionComparisonSchema`) — the request-side schema alone isn't trusted.
+  A response that fails `JSON.parse` (e.g. wrapped in ` ```json ` fences) or fails schema
+  validation is treated as a genuine upstream error, **never silently patched or stripped**.
+- **Model / token ceiling**: fixed per-feature in `src/services/mindlogic/feature-config.ts` —
+  `claude-haiku-4-5-20251001`, `max_tokens: 1500`. The client cannot choose either.
+- **Input token estimate**: no real Claude tokenizer is available, so
+  `src/services/mindlogic/token-estimate.ts` intentionally **over-estimates** (1 token per 3
+  UTF-8 bytes, vs. English's real ~4 bytes/token) so a reservation is never sized smaller than
+  likely actual usage.
+- **Credit pipeline** (`src/services/reflections/reflection-comparison-service.ts`): validate →
+  estimate input tokens → `reserveCredits()` → call Mindlogic (with retry) → validate
+  response/usage → settle. Returns a discriminated-union outcome (`ok` /
+  `limit_exceeded` / `provider_exhausted` / `upstream_failed` / `upstream_schema_error` /
+  `reservation_exceeded`) rather than throwing, so the route maps each case to a stable HTTP
+  response.
+  - Reservation rejected (limit exceeded) → Mindlogic is **never called**.
+  - Failure before any Mindlogic response (network/4xx/5xx/timeout) → `releaseCredits()`.
+  - A response that arrives but fails schema validation or is missing `usage` → **settles to
+    actual usage where known** (or the full reservation if `usage` itself is absent) rather
+    than releasing it for free, since Mindlogic still did billable work.
+  - `402` from Mindlogic → release + `markExhausted()` on our own ledger, never retried.
+  - `429`/real `5xx` (an actual received HTTP response) → retried up to `MAX_RETRY_ATTEMPTS`
+    (3 total attempts) against the **same** `requestId`/reservation — no new reservation per
+    retry.
+  - **Timeouts are never retried.** Mindlogic has no Idempotency-Key support, so if our own
+    `AbortController` fires we cannot tell whether Mindlogic received and is processing (and
+    will bill) the request; retrying could double-execute a real generative call. This is
+    intentionally more conservative than the 429/5xx policy — see `RETRYABLE_ERROR_CODES` in
+    `src/services/mindlogic/types.ts`.
+  - If actual usage (from Mindlogic's reported `usage`) ever exceeds the reservation — meaning
+    the conservative estimator's own invariant was violated — the commit is **capped at the
+    reserved amount**, the month is marked exhausted, and the AI result is **not** returned to
+    the client, even though Mindlogic produced one: this is treated as a credit-accounting
+    fault, not a normal response.
+- **Logging**: only `requestId`, `feature`, `model`, estimated/actual token counts,
+  reserved/actual credits, HTTP outcome, and duration are logged
+  (`ReflectionComparisonAccounting` in the service, consumed by `src/routes/reflections.ts`).
+  Reflection text, article body, display names, the API key, the `Authorization` header, and
+  the model's raw response are never logged — verified by
+  `tests/reflections.test.ts`'s log-capture test.
+- **Pre-auth gate** (`src/plugins/dev-ai-gate.ts`): real authentication doesn't exist yet, so
+  this (and any future AI route) fails closed two ways — **always 404 in production**
+  regardless of any token, and in development/test requires
+  `Authorization: Bearer <AI_DEV_ACCESS_TOKEN>` matching a server-only env var; if that var
+  isn't set at all, the route refuses with 503 rather than defaulting to open access. The token
+  is never bundled into the frontend build.
+
+### Differences from the current frontend contract
+
+The frontend mock (`mockAIService.compareReflections`) and `AIComparisonPage` currently:
+
+1. Take two bare reflection strings (no article, no display names) —
+   `compareReflections(myReflection: string, partnerReflection: string)`. The server's request
+   shape is richer (article + both display names) and does not match this signature; the
+   frontend page currently even calls it with an **empty partner reflection**
+   (`aiService.compareReflections(state.reflection.body, '')`), which is itself an existing gap
+   unrelated to this work.
+2. Use `hj`/`js` as the two-person field names in `ComparisonResult`, tied to specific display
+   names rather than a generic role. The server intentionally uses `mine`/`partner` instead —
+   per this task's own instruction not to carry `hj`/`js` into the server API.
+3. `Article` (`mockNewsService.ts`) has no `sourceUrl` field — the server's optional
+   `article.sourceUrl` has no current frontend source.
+
+None of this was changed in the frontend repository (read-only per this task). Wiring the
+frontend to this endpoint will need: an `AIService` implementation that builds
+`CompareReflectionsRequest` from article + both reflections + both display names, and a
+mapping from `{ mine, partner }` back to whatever field names `AIComparisonPage` ends up using.
+
 ## Endpoints implemented
 
 - `GET /health` — liveness only; no DB or Mindlogic dependency.
@@ -276,6 +414,8 @@ generic message, the same way `src/plugins/error-handler.ts` already does for un
   **not** call Mindlogic.
 - `GET /api/v1/usage` — returns a `UsageSummary` computed entirely from our own database
   ledger (`credit_periods` / `credit_usage_records`). No outbound Mindlogic call.
+- `POST /api/v1/reflections/compare` — the reflection-comparison AI feature described above.
+  Gated by the dev pre-auth token; disabled entirely in production.
 
 ## Security notes
 
@@ -289,10 +429,10 @@ generic message, the same way `src/plugins/error-handler.ts` already does for un
 - Pino redacts `Authorization` and `Cookie` headers from logs (`src/app.ts`). The Mindlogic
   client never logs or returns the API key (see `src/services/mindlogic/client.test.ts` for
   the corresponding test).
-- **No authentication/authorization is implemented yet.** All routes are currently open.
-  Before this service is exposed beyond local development, it needs an auth layer (e.g.
-  session or token-based) gating `/api/v1/*` — deliberately deferred so this initial scaffold
-  stays minimal per the current project stage.
+- **No real authentication/authorization exists yet.** `/health`, `/ready`, and
+  `/api/v1/usage` remain fully open. `/api/v1/reflections/compare` — the one route that can
+  spend real money — has the temporary fail-closed dev-token gate described above; every
+  future AI route should reuse `createDevAiGate` until real auth lands.
 
 ## Relationship to the frontend repository
 
@@ -310,13 +450,50 @@ project's account, blowing through the credit cap outside of this server's contr
 Keeping the key server-side, behind this repository's own credit-reservation logic, is the
 only way the monthly hard cap can actually be enforced.
 
+## Procedure for a one-time real smoke test
+
+`POST /api/v1/reflections/compare` has never made a real Mindlogic call — everything above was
+verified with a mocked `fetchImpl`. Before relying on it, run one real call deliberately:
+
+1. Confirm `.env.local` has a real `MINDLOGIC_API_KEY` (`pnpm mindlogic:check` should already
+   pass — see [Mindlogic connectivity check](#mindlogic-connectivity-check)).
+2. Start the app locally (`pnpm dev`) against either the Docker Compose dev database or a real
+   PostgreSQL, with `AI_DEV_ACCESS_TOKEN` set.
+3. `pnpm db:migrate` if the target database doesn't have the schema yet.
+4. Send exactly one request:
+   ```bash
+   curl -X POST http://127.0.0.1:3001/api/v1/reflections/compare \
+     -H "Authorization: Bearer $AI_DEV_ACCESS_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"article":{"title":"Smoke test article"},"mine":{"displayName":"A","reflection":"<50+ real characters>"},"partner":{"displayName":"B","reflection":"<50+ real characters>"}}'
+   ```
+5. Check the response is `200` with exactly 3 `topics`, and immediately check `GET
+/api/v1/usage` to confirm `usedCredits` moved by a small, expected amount (not the full
+   1,500-`max_tokens` reservation, and nowhere near 5,000).
+6. If the response or request field names turn out to differ from what
+   `src/services/mindlogic/types.ts` assumes, that's exactly what this smoke test exists to
+   catch — fix the types before relying on the endpoint further.
+
+This deliberately was **not** run as part of this work — the task explicitly required stopping
+before any real generative call, pending separate approval.
+
 ## Next steps (not yet implemented)
 
-- Wire an actual AI route that calls `CreditService.reserveCredits()` →
-  `MindlogicClient.createChatCompletion()` → `commitCredits()`/`releaseCredits()`.
-- Apply the 429/5xx retry policy (types already exist) to real outbound Mindlogic calls.
-- Authentication/authorization for `/api/v1/*`.
+- **A real smoke test of `POST /api/v1/reflections/compare`** — see
+  [Procedure for a one-time real smoke test](#procedure-for-a-one-time-real-smoke-test) below.
+  The `/chat/completions/` request/response shape (snake_case `max_tokens`,
+  `response_format`, `usage.{prompt,completion}_tokens`, `choices[].message.content`) is
+  inferred from the confirmed `/models/`/`/credits/` convention and general OpenAI-compatible
+  norms — **never verified against the real endpoint**.
+- Real authentication/authorization for `/api/v1/*`, replacing the temporary dev-token gate.
 - CI wiring for `pnpm test:integration` (Docker-in-CI) — not yet added; see
   [Tests](#tests) for the scripts this would run.
 - Reconciliation job comparing `provider_reported_credits` (from Mindlogic's own `getCredits()`)
   against our internal ledger, using the existing `reconciliation_adjustment` feature enum.
+- Decide with the frontend team how to reconcile `mine`/`partner` (this server) against
+  `hj`/`js` (current frontend mock) and the missing article/display-name fields in the current
+  `compareReflections(myReflection, partnerReflection)` call signature — see
+  [Differences from the current frontend contract](#differences-from-the-current-frontend-contract).
+- Consider whether a genuinely lost-request timeout should ever be resolvable other than by a
+  brand-new client-initiated request (e.g. a status-check endpoint keyed by `requestId`) —
+  right now a timeout just fails closed with no automatic recovery path.

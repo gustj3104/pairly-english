@@ -10,3 +10,4 @@ process.env.MINDLOGIC_API_KEY ??= 'test-fake-api-key';
 process.env.MINDLOGIC_BASE_URL ??= 'https://factchat-cloud.mindlogic.ai/v1/gateway';
 process.env.MINDLOGIC_MODEL ??= 'claude-haiku-4-5-20251001';
 process.env.MINDLOGIC_MONTHLY_CREDIT_LIMIT ??= '5000';
+process.env.AI_DEV_ACCESS_TOKEN ??= 'test-fake-dev-access-token';

@@ -33,9 +33,11 @@ export interface MindlogicClientOptions {
 }
 
 /**
- * Thin, typed skeleton over the Mindlogic gateway. No generative call is
- * ever triggered by this stage of the project — routes do not call
- * createChatCompletion yet. Never returns or logs the API key.
+ * Thin, typed client over the Mindlogic gateway. Never returns or logs
+ * the API key. As of this stage, createChatCompletion's request/response
+ * shape is inferred (never exercised against the real endpoint — see
+ * scripts/mindlogic-check.ts for the two GET endpoints that have been
+ * verified for real).
  */
 export class MindlogicClient {
   private readonly apiKey: string;
@@ -82,7 +84,11 @@ export class MindlogicClient {
     } catch (error) {
       if (error instanceof MindlogicApiError) throw error;
       if (error instanceof Error && error.name === 'AbortError') {
-        throw new MindlogicApiError('server_error', 504, 'Mindlogic request timed out');
+        // Distinct from a real 5xx: we never received a response, so we
+        // cannot tell whether Mindlogic processed (and will bill) this
+        // request. See RETRYABLE_ERROR_CODES in types.ts for why this is
+        // deliberately excluded from the retry policy.
+        throw new MindlogicApiError('timeout', 0, 'Mindlogic request timed out');
       }
       throw new MindlogicApiError('unknown', 0, 'Mindlogic request failed');
     } finally {
@@ -104,7 +110,10 @@ export class MindlogicClient {
   }
 
   async createChatCompletion(payload: ChatCompletionRequest): Promise<ChatCompletionResponse> {
-    const { data } = await this.request<ChatCompletionResponse>('/chat/completions', {
+    // Trailing slash for consistency with the confirmed /models/ and
+    // /credits/ convention — unverified for this endpoint specifically,
+    // since no real chat completion call has been made yet.
+    const { data } = await this.request<ChatCompletionResponse>('chat/completions/', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
