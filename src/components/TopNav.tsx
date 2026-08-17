@@ -1,5 +1,7 @@
+import { useState } from 'react'
 import type { Page } from '../App'
 import { useLearning, getInitials } from '../state/LearningContext'
+import { logout } from '../services/api/authService'
 
 interface Props {
   page: Page
@@ -13,8 +15,24 @@ const NAV_LINKS: { label: string; page: Page }[] = [
 ]
 
 export default function TopNav({ page, setPage }: Props) {
-  const { state } = useLearning()
+  const { state, reset } = useLearning()
   const myInitials = getInitials(state.partner.myName || 'Hyunji')
+  const [loggingOut, setLoggingOut] = useState(false)
+
+  const handleLogout = async () => {
+    if (loggingOut) return
+    setLoggingOut(true)
+    try {
+      await logout()
+    } catch {
+      // Best-effort: even if the server call fails, forget local state and
+      // send the user back to landing — there's nothing else useful to do
+      // with a failed logout request client-side.
+    } finally {
+      reset()
+      setPage('landing')
+    }
+  }
 
   return (
     <nav style={{
@@ -81,6 +99,14 @@ export default function TopNav({ page, setPage }: Props) {
           <div style={{ width: 34, height: 34, borderRadius: '50%', background: 'linear-gradient(135deg, #4f46e5, #7c3aed)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
             {myInitials}
           </div>
+          {/* Logout */}
+          <button
+            onClick={handleLogout}
+            disabled={loggingOut}
+            style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid #e7e5e4', backgroundColor: 'white', fontSize: 13, color: '#57534e', cursor: loggingOut ? 'default' : 'pointer' }}
+          >
+            {loggingOut ? 'Logging out...' : 'Log out'}
+          </button>
         </div>
       </div>
     </nav>

@@ -1,11 +1,35 @@
 import { expect, test } from '@playwright/test'
 
 test('full learning flow: landing to dashboard', async ({ page }) => {
+  // No real backend runs alongside this e2e suite (see playwright.config.ts —
+  // only the frontend dev server is started). The one real network dependency
+  // this flow has is the auth API, so it's mocked at the network layer here —
+  // everything else (news/AI/partner) already goes through the frontend's own
+  // mock services in this config.
+  await page.route('**/api/v1/auth/session', async route => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ authenticated: false }),
+    })
+  })
+  await page.route('**/api/v1/auth/login', async route => {
+    const body = route.request().postDataJSON() as { name: string }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ name: body.name.trim() }),
+    })
+  })
+
   await page.goto('/')
 
-  // Landing -> Partner Connection -> Onboarding
+  // Landing -> Login -> Partner Connection -> Onboarding
   await page.getByText('Get Started', { exact: true }).first().click()
-  await page.getByPlaceholder('e.g. Hyunji').fill('TestUser')
+  await page.getByLabel('Name').fill('TestUser')
+  await page.getByLabel('Password').fill('shared-password')
+  await page.getByText('Continue', { exact: true }).click()
+  await expect(page.getByText('Welcome, TestUser!')).toBeVisible()
   await page.getByText('Simulate Partner Joining ✓').click()
   await expect(page.getByText("You're paired up!")).toBeVisible()
   await page.getByText('Start Learning Together →').click()

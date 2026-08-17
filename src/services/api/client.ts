@@ -2,14 +2,6 @@ import { ApiError } from './errors'
 
 const DEFAULT_TIMEOUT_MS = 20_000
 
-function getBaseUrl(): string {
-  const url = import.meta.env.VITE_API_BASE_URL
-  if (!url) {
-    throw new Error('VITE_API_BASE_URL is not configured')
-  }
-  return url
-}
-
 /** Best-effort extraction of `{ error: { code, requestId } }` — never throws on a malformed body. */
 function readErrorEnvelope(payload: unknown): { code?: string; requestId?: string } {
   if (typeof payload !== 'object' || payload === null || !('error' in payload)) return {}
@@ -23,6 +15,9 @@ function readErrorEnvelope(payload: unknown): { code?: string; requestId?: strin
 function mapErrorResponse(status: number, payload: unknown): ApiError {
   const { requestId } = readErrorEnvelope(payload)
 
+  if (status === 401) {
+    return new ApiError('unauthorized', '인증이 필요합니다.', { status, requestId })
+  }
   if (status === 402) {
     return new ApiError('credit_limit_exceeded', '이번 달 AI 학습 한도를 모두 사용했습니다.', { status, requestId })
   }
@@ -45,20 +40,15 @@ function mapErrorResponse(status: number, payload: unknown): ApiError {
   return new ApiError('unknown', '알 수 없는 오류가 발생했습니다.', { status, requestId })
 }
 
-export interface PostJsonOptions {
+export interface RequestOptions {
   timeoutMs?: number
   signal?: AbortSignal
 }
 
-/**
- * No API key, no dev access token, no Authorization header — the browser
- * relies entirely on the backend's dev Origin bypass (development only)
- * or, in production, this route simply doesn't exist yet.
- */
-export async function postJson<TResponse>(
+async function request<TResponse>(
   path: string,
-  body: unknown,
-  options: PostJsonOptions = {},
+  init: RequestInit,
+  options: RequestOptions = {},
 ): Promise<TResponse> {
   const controller = new AbortController()
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
@@ -71,11 +61,16 @@ export async function postJson<TResponse>(
 
   let response: Response
   try {
-    response = await fetch(`${getBaseUrl()}${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+    response = await fetch(path, {
+      // Relative path (e.g. "/api/v1/...") — resolved against the current
+      // origin, never an absolute backend URL. In dev, Vite's own proxy
+      // (see vite.config.ts) forwards it to the backend; in production,
+      // the deployment's own rewrite is expected to do the same (see
+      // README). `credentials: 'include'` so the HttpOnly session cookie
+      // is sent — there is no API key or token for this client to hold.
+      credentials: 'include',
       signal: controller.signal,
+      ...init,
     })
   } catch {
     throw new ApiError('backend_unavailable', '서버에 연결할 수 없습니다. 네트워크를 확인해 주세요.')
@@ -85,7 +80,7 @@ export async function postJson<TResponse>(
 
   let payload: unknown
   try {
-    payload = await response.json()
+    payload = response.status === 204 ? undefined : await response.json()
   } catch {
     payload = undefined
   }
@@ -95,4 +90,20 @@ export async function postJson<TResponse>(
   }
 
   return payload as TResponse
+}
+
+export function postJson<TResponse>(
+  path: string,
+  body: unknown,
+  options: RequestOptions = {},
+): Promise<TResponse> {
+  return request<TResponse>(
+    path,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+    options,
+  )
+}
+
+export function getJson<TResponse>(path: string, options: RequestOptions = {}): Promise<TResponse> {
+  return request<TResponse>(path, { method: 'GET' }, options)
 }

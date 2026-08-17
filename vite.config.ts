@@ -34,6 +34,17 @@ export default defineConfig(({ mode }) => {
       port: parseInt(process.env.PORT || '8443'),
       strictPort: true,
       watch: { ignored: ['**/.figma/**'] },
+      // Same-origin proxy to the backend (pairly-english-server) so the
+      // browser only ever talks to this dev server: no CORS preflight,
+      // and the backend's HttpOnly session cookie (no explicit Domain)
+      // is scoped to this origin from the browser's point of view. Kept
+      // to just this one key so it can't shadow any other dev-server route.
+      proxy: {
+        '/api': {
+          target: process.env.BACKEND_URL || 'http://localhost:3001',
+          changeOrigin: true,
+        },
+      },
     },
     preview: {
       host: '0.0.0.0',

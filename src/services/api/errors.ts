@@ -8,6 +8,7 @@
  */
 export type ApiErrorKind =
   | 'validation'
+  | 'unauthorized'
   | 'credit_limit_exceeded'
   | 'reconciliation_pending'
   | 'rate_limited'

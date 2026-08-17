@@ -1,32 +1,178 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Page } from '../App'
 import { useLearning } from '../state/LearningContext'
 import { partnerService } from '../services'
+import { login, getSession } from '../services/api/authService'
+import { ApiError } from '../services/api/errors'
 
 interface Props { setPage: (p: Page) => void }
 
+type View = 'checking' | 'hero' | 'login' | 'connect' | 'connected'
+type LoginStatus = 'idle' | 'loading' | 'error'
+
 export default function LandingPage({ setPage }: Props) {
   const { state, update } = useLearning()
-  const [showConnect, setShowConnect] = useState(false)
-  const [connected, setConnected] = useState(state.partner.connected)
+  const [view, setView] = useState<View>('checking')
+  const [sessionExpired, setSessionExpired] = useState(false)
+
+  const [name, setName] = useState('')
+  const [password, setPassword] = useState('')
+  const [loginStatus, setLoginStatus] = useState<LoginStatus>('idle')
+  const [loginError, setLoginError] = useState<string | null>(null)
+
   const [connecting, setConnecting] = useState(false)
-  const [name, setName] = useState(state.partner.myName)
+
+  /** Where to land once we know the user is authenticated (fresh login or restored session). */
+  function goPastLogin() {
+    if (state.partner.connected) {
+      setPage(state.onboarding.complete ? 'dashboard' : 'onboarding')
+    } else {
+      setView('connect')
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    getSession()
+      .then(session => {
+        if (cancelled) return
+        if (session.authenticated) {
+          update({ partner: { ...state.partner, myName: session.name } })
+          goPastLogin()
+        } else {
+          // A name already saved locally but no valid session means a
+          // previous session expired (rather than "never logged in").
+          setSessionExpired(!!state.partner.myName)
+          setView('hero')
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setView('hero')
+      })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const handleLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (loginStatus === 'loading') return
+    setLoginStatus('loading')
+    setLoginError(null)
+    try {
+      const response = await login(name, password)
+      setPassword('') // never held in state past the request that needed it
+      update({ partner: { ...state.partner, myName: response.name } })
+      setLoginStatus('idle')
+      goPastLogin()
+    } catch (error) {
+      setPassword('')
+      setLoginStatus('error')
+      setLoginError(error instanceof ApiError ? error.message : '알 수 없는 오류가 발생했습니다.')
+    }
+  }
 
   const handleSimulateJoin = async () => {
     setConnecting(true)
     const { partnerName } = await partnerService.connectPartner('PRL-7829')
-    update({ partner: { ...state.partner, connected: true, myName: name || 'Hyunji', partnerName } })
+    update({ partner: { ...state.partner, connected: true, partnerName } })
     setConnecting(false)
-    setConnected(true)
+    setView('connected')
   }
 
   const handleStartLearning = () => {
     setPage(state.onboarding.complete ? 'dashboard' : 'onboarding')
   }
 
-  if (connected) {
+  if (view === 'checking') {
     return (
-      <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fafaf9', gap: 32, padding: 24 }}>
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fafaf9' }}>
+        <div style={{ width: 40, height: 40, borderRadius: '50%', border: '3px solid #e7e5e4', borderTopColor: '#4f46e5', animation: 'spin 0.8s linear infinite' }} />
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    )
+  }
+
+  if (view === 'login') {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fafaf9', padding: 24 }}>
+        <div style={{ width: '100%', maxWidth: 400, backgroundColor: 'white', borderRadius: 24, padding: 40, boxShadow: '0 8px 40px rgba(0,0,0,0.08)', border: '1px solid #e7e5e4' }}>
+          <div style={{ marginBottom: 28 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 20 }}>
+              <span style={{ width: 28, height: 28, borderRadius: 8, background: 'linear-gradient(135deg, #4f46e5, #7c3aed)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <circle cx="4.5" cy="7" r="3" fill="white" opacity="0.9"/>
+                  <circle cx="9.5" cy="7" r="3" fill="white" opacity="0.6"/>
+                </svg>
+              </span>
+              <span style={{ fontFamily: 'DM Serif Display, Georgia, serif', fontSize: 16, color: '#1c1917' }}>Pairly English</span>
+            </div>
+            <h2 style={{ fontFamily: 'DM Serif Display, Georgia, serif', fontSize: 26, color: '#1c1917', margin: 0, marginBottom: 8 }}>Sign in</h2>
+            <p style={{ color: '#78716c', fontSize: 14, margin: 0 }}>Enter your name and the shared password to continue.</p>
+          </div>
+
+          {sessionExpired && (
+            <div style={{ padding: '10px 14px', backgroundColor: '#fffbeb', border: '1px solid #fde68a', borderRadius: 10, fontSize: 13, color: '#92400e', marginBottom: 18 }}>
+              세션이 만료되었습니다. 다시 로그인해 주세요.
+            </div>
+          )}
+
+          <form onSubmit={handleLoginSubmit}>
+            <div style={{ marginBottom: 16 }}>
+              <label htmlFor="login-name" style={{ fontSize: 13, fontWeight: 500, color: '#44403c', display: 'block', marginBottom: 6 }}>Name</label>
+              <input
+                id="login-name"
+                name="name"
+                autoComplete="name"
+                value={name}
+                onChange={e => setName(e.target.value)}
+                placeholder="e.g. Hyunji"
+                maxLength={40}
+                required
+                style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1.5px solid #e7e5e4', fontSize: 14, outline: 'none', fontFamily: 'inherit', boxSizing: 'border-box' }}
+              />
+            </div>
+
+            <div style={{ marginBottom: 20 }}>
+              <label htmlFor="login-password" style={{ fontSize: 13, fontWeight: 500, color: '#44403c', display: 'block', marginBottom: 6 }}>Password</label>
+              <input
+                id="login-password"
+                name="password"
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                placeholder="Shared password"
+                required
+                style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1.5px solid #e7e5e4', fontSize: 14, outline: 'none', fontFamily: 'inherit', boxSizing: 'border-box' }}
+              />
+            </div>
+
+            {loginStatus === 'error' && loginError && (
+              <div style={{ padding: '10px 14px', backgroundColor: '#fef2f2', border: '1px solid #fecaca', borderRadius: 10, fontSize: 13, color: '#b91c1c', marginBottom: 18 }}>
+                {loginError}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={loginStatus === 'loading'}
+              style={{ width: '100%', padding: '12px', borderRadius: 10, backgroundColor: loginStatus === 'loading' ? '#a5b4fc' : '#4f46e5', color: 'white', fontSize: 14, fontWeight: 600, border: 'none', cursor: loginStatus === 'loading' ? 'default' : 'pointer' }}
+            >
+              {loginStatus === 'loading' ? 'Signing in...' : 'Continue'}
+            </button>
+          </form>
+
+          <button onClick={() => setView('hero')} style={{ width: '100%', marginTop: 14, padding: '8px', background: 'none', border: 'none', color: '#78716c', fontSize: 13, cursor: 'pointer' }}>
+            ← Back
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (view === 'connected') {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 28, backgroundColor: '#fafaf9', padding: 24 }}>
         <div style={{ textAlign: 'center' }}>
           <div style={{ fontFamily: 'DM Serif Display, Georgia, serif', fontSize: 28, color: '#1c1917', marginBottom: 8 }}>You're paired up!</div>
           <p style={{ color: '#78716c', fontSize: 15 }}>Your study partner has joined. Ready to start learning together?</p>
@@ -34,9 +180,9 @@ export default function LandingPage({ setPage }: Props) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 24, padding: '28px 40px', backgroundColor: 'white', borderRadius: 20, boxShadow: '0 4px 24px rgba(0,0,0,0.07)', border: '1px solid #e7e5e4' }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{ width: 64, height: 64, borderRadius: '50%', background: 'linear-gradient(135deg, #4f46e5, #7c3aed)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: 20, fontWeight: 700, margin: '0 auto 8px' }}>
-              {name ? name[0].toUpperCase() : 'H'}
+              {(state.partner.myName || 'H')[0].toUpperCase()}
             </div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: '#1c1917' }}>{name || 'Hyunji'}</div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: '#1c1917' }}>{state.partner.myName || 'Hyunji'}</div>
             <div style={{ fontSize: 12, color: '#4f46e5', marginTop: 2 }}>Me</div>
           </div>
           <div style={{ fontSize: 22, color: '#d6d3d1' }}>⟷</div>
@@ -55,7 +201,7 @@ export default function LandingPage({ setPage }: Props) {
     )
   }
 
-  if (showConnect) {
+  if (view === 'connect') {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fafaf9', padding: 24 }}>
         <div style={{ width: '100%', maxWidth: 440, backgroundColor: 'white', borderRadius: 24, padding: 40, boxShadow: '0 8px 40px rgba(0,0,0,0.08)', border: '1px solid #e7e5e4' }}>
@@ -69,18 +215,8 @@ export default function LandingPage({ setPage }: Props) {
               </span>
               <span style={{ fontFamily: 'DM Serif Display, Georgia, serif', fontSize: 16, color: '#1c1917' }}>Pairly English</span>
             </div>
-            <h2 style={{ fontFamily: 'DM Serif Display, Georgia, serif', fontSize: 26, color: '#1c1917', margin: 0, marginBottom: 8 }}>Connect with your partner</h2>
+            <h2 style={{ fontFamily: 'DM Serif Display, Georgia, serif', fontSize: 26, color: '#1c1917', margin: 0, marginBottom: 8 }}>Welcome, {state.partner.myName}!</h2>
             <p style={{ color: '#78716c', fontSize: 14, margin: 0 }}>Share your invite code or link so your study partner can join.</p>
-          </div>
-
-          <div style={{ marginBottom: 20 }}>
-            <label style={{ fontSize: 13, fontWeight: 500, color: '#44403c', display: 'block', marginBottom: 6 }}>Your nickname</label>
-            <input
-              value={name}
-              onChange={e => setName(e.target.value)}
-              placeholder="e.g. Hyunji"
-              style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1.5px solid #e7e5e4', fontSize: 14, outline: 'none', fontFamily: 'inherit', boxSizing: 'border-box' }}
-            />
           </div>
 
           <div style={{ backgroundColor: '#f5f5f4', borderRadius: 12, padding: 16, marginBottom: 20 }}>
@@ -139,10 +275,10 @@ export default function LandingPage({ setPage }: Props) {
             <span style={{ fontFamily: 'DM Serif Display, Georgia, serif', fontSize: 18, color: 'white', letterSpacing: '-0.3px' }}>Pairly English</span>
           </div>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 12 }}>
-            <button onClick={() => setPage('dashboard')} style={{ padding: '8px 20px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.25)', backgroundColor: 'transparent', color: 'white', fontSize: 14, cursor: 'pointer' }}>
+            <button onClick={() => setView('login')} style={{ padding: '8px 20px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.25)', backgroundColor: 'transparent', color: 'white', fontSize: 14, cursor: 'pointer' }}>
               Sign in
             </button>
-            <button onClick={() => setShowConnect(true)} style={{ padding: '8px 20px', borderRadius: 10, backgroundColor: '#4f46e5', color: 'white', fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer' }}>
+            <button onClick={() => setView('login')} style={{ padding: '8px 20px', borderRadius: 10, backgroundColor: '#4f46e5', color: 'white', fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer' }}>
               Get Started
             </button>
           </div>
@@ -165,14 +301,11 @@ export default function LandingPage({ setPage }: Props) {
               대화하며 영어를 배워보세요.
             </p>
             <div style={{ display: 'flex', gap: 14 }}>
-              <button onClick={() => setShowConnect(true)} style={{ padding: '14px 32px', borderRadius: 12, backgroundColor: '#4f46e5', color: 'white', fontSize: 15, fontWeight: 600, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <button onClick={() => setView('login')} style={{ padding: '14px 32px', borderRadius: 12, backgroundColor: '#4f46e5', color: 'white', fontSize: 15, fontWeight: 600, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
                 Get Started
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M5 12h14M12 5l7 7-7 7"/>
                 </svg>
-              </button>
-              <button onClick={() => setPage('dashboard')} style={{ padding: '14px 24px', borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.08)', color: 'white', fontSize: 15, border: '1px solid rgba(255,255,255,0.2)', cursor: 'pointer' }}>
-                View Demo
               </button>
             </div>
 
@@ -286,7 +419,7 @@ export default function LandingPage({ setPage }: Props) {
       <div style={{ background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 100%)', padding: '72px 40px', textAlign: 'center' }}>
         <h2 style={{ fontFamily: 'DM Serif Display, Georgia, serif', fontSize: 38, color: 'white', margin: '0 0 16px' }}>Start learning with a partner today</h2>
         <p style={{ color: '#c7d2fe', fontSize: 16, margin: '0 0 32px' }}>No credit card. No downloads. Just you, your partner, and better English.</p>
-        <button onClick={() => setShowConnect(true)} style={{ padding: '16px 44px', borderRadius: 14, backgroundColor: '#4f46e5', color: 'white', fontSize: 16, fontWeight: 700, border: 'none', cursor: 'pointer' }}>
+        <button onClick={() => setView('login')} style={{ padding: '16px 44px', borderRadius: 14, backgroundColor: '#4f46e5', color: 'white', fontSize: 16, fontWeight: 700, border: 'none', cursor: 'pointer' }}>
           Get Started Free
         </button>
       </div>

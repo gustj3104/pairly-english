@@ -49,3 +49,21 @@ export const reflectionComparisonResponseSchema = z.object({
 })
 
 export type ComparisonResult = z.infer<typeof reflectionComparisonResponseSchema>
+
+/**
+ * Mirrors pairly-english-server's `/api/v1/auth/*` contract (see that
+ * repo's `src/routes/auth.ts`).
+ */
+
+export const loginResponseSchema = z.object({
+  name: z.string().min(1),
+})
+
+export type LoginResponse = z.infer<typeof loginResponseSchema>
+
+export const sessionResponseSchema = z.discriminatedUnion('authenticated', [
+  z.object({ authenticated: z.literal(true), name: z.string().min(1) }),
+  z.object({ authenticated: z.literal(false) }),
+])
+
+export type SessionResponse = z.infer<typeof sessionResponseSchema>

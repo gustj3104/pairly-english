@@ -10,6 +10,7 @@ interface Props { setPage: (p: Page) => void }
 type ComparisonStatus =
   | 'loading'
   | 'success'
+  | 'session_expired'
   | 'credit_limit_exceeded'
   | 'reconciliation_pending'
   | 'rate_limited'
@@ -19,16 +20,21 @@ type ComparisonStatus =
 
 function statusFromErrorKind(kind: ApiErrorKind): ComparisonStatus {
   if (kind === 'validation' || kind === 'unknown') return 'error'
+  if (kind === 'unauthorized') return 'session_expired'
   return kind
 }
 
-const STATUS_COPY: Record<Exclude<ComparisonStatus, 'loading' | 'success'>, { title: string; icon: string; canRetry: boolean }> = {
-  credit_limit_exceeded: { title: '이번 달 AI 학습 한도를 모두 사용했습니다', icon: '📊', canRetry: false },
-  reconciliation_pending: { title: '이전 요청을 확인하는 중입니다', icon: '⏳', canRetry: false },
-  rate_limited: { title: '요청이 너무 많습니다', icon: '🐢', canRetry: true },
-  backend_unavailable: { title: '서버에 연결할 수 없습니다', icon: '🔌', canRetry: true },
-  invalid_response: { title: '서버 응답을 처리할 수 없습니다', icon: '⚠️', canRetry: true },
-  error: { title: '문제가 발생했습니다', icon: '❗', canRetry: true },
+const STATUS_COPY: Record<
+  Exclude<ComparisonStatus, 'loading' | 'success'>,
+  { title: string; icon: string; action: 'retry' | 'login' | 'none' }
+> = {
+  session_expired: { title: '세션이 만료되었습니다', icon: '🔒', action: 'login' },
+  credit_limit_exceeded: { title: '이번 달 AI 학습 한도를 모두 사용했습니다', icon: '📊', action: 'none' },
+  reconciliation_pending: { title: '이전 요청을 확인하는 중입니다', icon: '⏳', action: 'none' },
+  rate_limited: { title: '요청이 너무 많습니다', icon: '🐢', action: 'retry' },
+  backend_unavailable: { title: '서버에 연결할 수 없습니다', icon: '🔌', action: 'retry' },
+  invalid_response: { title: '서버 응답을 처리할 수 없습니다', icon: '⚠️', action: 'retry' },
+  error: { title: '문제가 발생했습니다', icon: '❗', action: 'retry' },
 }
 
 export default function AIComparisonPage({ setPage }: Props) {
@@ -109,12 +115,20 @@ export default function AIComparisonPage({ setPage }: Props) {
         <div style={{ fontSize: 36 }}>{copy.icon}</div>
         <h2 style={{ fontFamily: 'DM Serif Display, Georgia, serif', fontSize: 22, color: '#1c1917', margin: 0 }}>{copy.title}</h2>
         {errorMessage && <p style={{ color: '#78716c', fontSize: 14, maxWidth: 420, margin: 0 }}>{errorMessage}</p>}
-        {copy.canRetry && (
+        {copy.action === 'retry' && (
           <button
             onClick={runComparison}
             style={{ marginTop: 12, padding: '11px 28px', borderRadius: 12, backgroundColor: '#4f46e5', color: 'white', fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer' }}
           >
             Retry
+          </button>
+        )}
+        {copy.action === 'login' && (
+          <button
+            onClick={() => setPage('landing')}
+            style={{ marginTop: 12, padding: '11px 28px', borderRadius: 12, backgroundColor: '#4f46e5', color: 'white', fontSize: 14, fontWeight: 600, border: 'none', cursor: 'pointer' }}
+          >
+            Log in again
           </button>
         )}
       </div>

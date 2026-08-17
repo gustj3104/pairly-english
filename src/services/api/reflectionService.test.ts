@@ -41,8 +41,9 @@ describe('reflectionService.compareReflections', () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(1)
     const [url, init] = fetchSpy.mock.calls[0]
-    expect(url).toBe('http://localhost:3001/api/v1/reflections/compare')
+    expect(url).toBe('/api/v1/reflections/compare')
     expect(init.method).toBe('POST')
+    expect(init.credentials).toBe('include')
     expect(JSON.parse(init.body as string)).toEqual(VALID_REQUEST)
     expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json')
     expect((init.headers as Record<string, string>).Authorization).toBeUndefined()
@@ -53,6 +54,7 @@ describe('reflectionService.compareReflections', () => {
   })
 
   it.each([
+    [401, 'unauthorized'],
     [402, 'credit_limit_exceeded'],
     [409, 'reconciliation_pending'],
     [429, 'rate_limited'],
