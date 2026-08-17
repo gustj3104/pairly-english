@@ -1,0 +1,1 @@
+ALTER TYPE "public"."credit_feature" ADD VALUE 'provider_contract_check';

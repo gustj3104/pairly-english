@@ -58,6 +58,9 @@ export const creditFeatureEnum = pgEnum('credit_feature', [
   'vocabulary_extraction',
   'news_processing',
   'reconciliation_adjustment',
+  // Minimal bare-messages provider contract check (scripts/mindlogic-contract-check.ts)
+  // — not a user-facing feature, but still goes through the real credit ledger.
+  'provider_contract_check',
 ]);
 
 /**

@@ -17,6 +17,11 @@ pnpm-debug.log*
 .vscode/
 .idea/
 
-# Smoke-test guard: presence of this file blocks scripts/mindlogic-smoke-test.ts
-# from running a second time. Delete it manually if a genuine re-run is intended.
+# Smoke-test guards: presence of each file blocks its corresponding script
+# from running a second time. Delete manually if a genuine re-run is
+# intended. Each real generative-call script gets its own guard filename —
+# never reused across rounds, so every approved call leaves a permanent,
+# distinct record.
 .mindlogic-smoke-test-completed.json
+.mindlogic-contract-check-completed.json
+.mindlogic-smoke-test-round2-completed.json

@@ -1,0 +1,244 @@
+{
+  "id": "01768409-1dd5-4108-a312-5f3064bed460",
+  "prevId": "4b825cdc-aa0a-4cb1-b9ed-90d389bec210",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.credit_periods": {
+      "name": "credit_periods",
+      "schema": "",
+      "columns": {
+        "billing_month": {
+          "name": "billing_month",
+          "type": "varchar(7)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "committed_credits": {
+          "name": "committed_credits",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "reserved_credits": {
+          "name": "reserved_credits",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "provider_reported_credits": {
+          "name": "provider_reported_credits",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "exhausted": {
+          "name": "exhausted",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "credit_periods_committed_credits_non_negative": {
+          "name": "credit_periods_committed_credits_non_negative",
+          "value": "\"credit_periods\".\"committed_credits\" >= 0"
+        },
+        "credit_periods_reserved_credits_non_negative": {
+          "name": "credit_periods_reserved_credits_non_negative",
+          "value": "\"credit_periods\".\"reserved_credits\" >= 0"
+        },
+        "credit_periods_provider_reported_credits_non_negative": {
+          "name": "credit_periods_provider_reported_credits_non_negative",
+          "value": "\"credit_periods\".\"provider_reported_credits\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.credit_usage_records": {
+      "name": "credit_usage_records",
+      "schema": "",
+      "columns": {
+        "request_id": {
+          "name": "request_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "billing_month": {
+          "name": "billing_month",
+          "type": "varchar(7)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "feature": {
+          "name": "feature",
+          "type": "credit_feature",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model": {
+          "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "requested_at": {
+          "name": "requested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "input_tokens": {
+          "name": "input_tokens",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "output_tokens": {
+          "name": "output_tokens",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "credits_reserved": {
+          "name": "credits_reserved",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "credits_used": {
+          "name": "credits_used",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "credit_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "error_code": {
+          "name": "error_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "user_ref": {
+          "name": "user_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "retry_count": {
+          "name": "retry_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "credit_usage_records_billing_month_credit_periods_billing_month_fk": {
+          "name": "credit_usage_records_billing_month_credit_periods_billing_month_fk",
+          "tableFrom": "credit_usage_records",
+          "tableTo": "credit_periods",
+          "columnsFrom": [
+            "billing_month"
+          ],
+          "columnsTo": [
+            "billing_month"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "credit_usage_records_input_tokens_non_negative": {
+          "name": "credit_usage_records_input_tokens_non_negative",
+          "value": "\"credit_usage_records\".\"input_tokens\" >= 0"
+        },
+        "credit_usage_records_output_tokens_non_negative": {
+          "name": "credit_usage_records_output_tokens_non_negative",
+          "value": "\"credit_usage_records\".\"output_tokens\" >= 0"
+        },
+        "credit_usage_records_credits_reserved_non_negative": {
+          "name": "credit_usage_records_credits_reserved_non_negative",
+          "value": "\"credit_usage_records\".\"credits_reserved\" >= 0"
+        },
+        "credit_usage_records_credits_used_non_negative": {
+          "name": "credit_usage_records_credits_used_non_negative",
+          "value": "\"credit_usage_records\".\"credits_used\" IS NULL OR \"credit_usage_records\".\"credits_used\" >= 0"
+        },
+        "credit_usage_records_retry_count_non_negative": {
+          "name": "credit_usage_records_retry_count_non_negative",
+          "value": "\"credit_usage_records\".\"retry_count\" >= 0"
+        },
+        "credit_usage_records_reconciliation_pending_has_error_code": {
+          "name": "credit_usage_records_reconciliation_pending_has_error_code",
+          "value": "\"credit_usage_records\".\"status\" != 'reconciliation_pending' OR \"credit_usage_records\".\"error_code\" IS NOT NULL"
+        }
+      },
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {
+    "public.credit_feature": {
+      "name": "credit_feature",
+      "schema": "public",
+      "values": [
+        "reflection_comparison",
+        "grammar_feedback",
+        "vocabulary_extraction",
+        "news_processing",
+        "reconciliation_adjustment",
+        "provider_contract_check"
+      ]
+    },
+    "public.credit_status": {
+      "name": "credit_status",
+      "schema": "public",
+      "values": [
+        "reserved",
+        "completed",
+        "failed",
+        "released",
+        "reconciliation_pending"
+      ]
+    }
+  },
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

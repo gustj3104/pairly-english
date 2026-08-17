@@ -54,6 +54,8 @@ export interface ChatCompletionRequest {
   max_tokens: number;
   temperature?: number;
   response_format?: JsonSchemaResponseFormat;
+  /** Explicitly false for non-streaming callers that want it stated rather than merely defaulted. */
+  stream?: boolean;
 }
 
 export interface ChatCompletionUsage {

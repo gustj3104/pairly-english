@@ -14,7 +14,10 @@ export type CreditFeature =
   | 'grammar_feedback'
   | 'vocabulary_extraction'
   | 'news_processing'
-  | 'reconciliation_adjustment';
+  | 'reconciliation_adjustment'
+  // Minimal bare-messages provider contract check (scripts/mindlogic-contract-check.ts)
+  // — not a user-facing feature, but still goes through the real credit ledger.
+  | 'provider_contract_check';
 
 export interface CreditUsageRecord {
   requestId: string;

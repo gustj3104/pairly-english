@@ -162,7 +162,7 @@ export class MindlogicClient {
   private async request<T>(
     path: string,
     init: RequestInit = {},
-  ): Promise<{ status: number; data: T }> {
+  ): Promise<{ status: number; data: T; headers: Headers }> {
     const url = buildMindlogicUrl(this.baseUrl, path);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -212,7 +212,7 @@ export class MindlogicClient {
         );
       }
 
-      return { status: response.status, data };
+      return { status: response.status, data, headers: response.headers };
     } catch (error) {
       if (error instanceof MindlogicApiError) throw error;
       if (error instanceof Error && error.name === 'AbortError') {
@@ -269,5 +269,29 @@ export class MindlogicClient {
       method: 'GET',
     });
     return { status, credits: data };
+  }
+
+  /**
+   * Status- and header-aware variant used only by
+   * scripts/mindlogic-contract-check.ts (a one-shot, credit-ledger-backed
+   * diagnostic call, not part of any HTTP route). Exposes the same
+   * allow-listed provider request id extraction used for error
+   * observability, but on the success path, since a diagnostic contract
+   * check needs it regardless of outcome. Business code should use
+   * createChatCompletion() above.
+   */
+  async createChatCompletionWithStatus(payload: ChatCompletionRequest): Promise<{
+    status: number;
+    completion: ChatCompletionResponse;
+    providerRequestId: string | null;
+  }> {
+    const { status, data, headers } = await this.request<ChatCompletionResponse>(
+      'chat/completions/',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+    );
+    return { status, completion: data, providerRequestId: extractProviderRequestId(headers) };
   }
 }

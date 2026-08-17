@@ -340,3 +340,62 @@ describe('MindlogicClient error observability', () => {
     expect(observability.providerErrorCode).toBeNull();
   });
 });
+
+describe('MindlogicClient.createChatCompletionWithStatus', () => {
+  it('returns status, the parsed completion, and a provider request id extracted from a success response header', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: 'chatcmpl-fixture',
+          model: 'claude-haiku-4-5-20251001',
+          choices: [{ message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', 'x-request-id': 'req_success1' },
+        },
+      ),
+    );
+    const client = new MindlogicClient({
+      apiKey: FAKE_KEY,
+      baseUrl: 'https://example.com/v1',
+      fetchImpl,
+    });
+
+    const result = await client.createChatCompletionWithStatus({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 20,
+      messages: [{ role: 'user', content: 'hi' }],
+      stream: false,
+    });
+
+    expect(result.status).toBe(200);
+    expect(result.completion.choices[0]?.message.content).toBe('OK');
+    expect(result.providerRequestId).toBe('req_success1');
+  });
+
+  it('returns a null provider request id when no recognized header is present', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        id: 'chatcmpl-fixture',
+        model: 'claude-haiku-4-5-20251001',
+        choices: [{ message: { role: 'assistant', content: 'OK' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
+      }),
+    );
+    const client = new MindlogicClient({
+      apiKey: FAKE_KEY,
+      baseUrl: 'https://example.com/v1',
+      fetchImpl,
+    });
+
+    const result = await client.createChatCompletionWithStatus({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 20,
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    expect(result.providerRequestId).toBeNull();
+  });
+});
