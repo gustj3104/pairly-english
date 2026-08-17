@@ -127,6 +127,116 @@ describe('POST /api/v1/reflections/compare — pre-auth gate', () => {
   });
 });
 
+const ALLOWED_ORIGIN = 'http://localhost:5173';
+
+describe('POST /api/v1/reflections/compare — browser dev-origin bypass', () => {
+  it('allows a matching Origin in development with no token at all', async () => {
+    const app = buildTestApp({
+      devAiGateOptions: { nodeEnv: 'development', frontendOrigin: ALLOWED_ORIGIN },
+    });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/reflections/compare',
+      headers: { origin: ALLOWED_ORIGIN },
+      payload: VALID_BODY,
+    });
+    expect(response.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it('does not bypass for a mismatched Origin — still falls through to the token gate', async () => {
+    const app = buildTestApp({
+      devAiGateOptions: {
+        nodeEnv: 'development',
+        frontendOrigin: ALLOWED_ORIGIN,
+        devAccessToken: DEV_TOKEN,
+      },
+    });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/reflections/compare',
+      headers: { origin: 'https://evil.example.com' },
+      payload: VALID_BODY,
+    });
+    expect(response.statusCode).toBe(401);
+    await app.close();
+  });
+
+  it('does not bypass outside NODE_ENV=development, even with a matching Origin (test still requires the token)', async () => {
+    const app = buildTestApp({
+      devAiGateOptions: {
+        nodeEnv: 'test',
+        frontendOrigin: ALLOWED_ORIGIN,
+        devAccessToken: DEV_TOKEN,
+      },
+    });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/reflections/compare',
+      headers: { origin: ALLOWED_ORIGIN },
+      payload: VALID_BODY,
+    });
+    expect(response.statusCode).toBe(401);
+    await app.close();
+  });
+
+  it('is always 404 in production, even with a matching Origin', async () => {
+    const app = buildTestApp({
+      devAiGateOptions: { nodeEnv: 'production', frontendOrigin: ALLOWED_ORIGIN },
+    });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/reflections/compare',
+      headers: { origin: ALLOWED_ORIGIN },
+      payload: VALID_BODY,
+    });
+    expect(response.statusCode).toBe(404);
+    await app.close();
+  });
+
+  it('refuses with 503 for a matching Origin outside development when no token is configured either', async () => {
+    const app = buildTestApp({
+      devAiGateOptions: {
+        nodeEnv: 'test',
+        frontendOrigin: ALLOWED_ORIGIN,
+        devAccessToken: undefined,
+      },
+    });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/reflections/compare',
+      headers: { origin: ALLOWED_ORIGIN },
+      payload: VALID_BODY,
+    });
+    expect(response.statusCode).toBe(503);
+    await app.close();
+  });
+});
+
+describe('POST /api/v1/reflections/compare — rate limiting', () => {
+  it('returns 429 once the per-caller limit is exceeded, without ever exceeding it for a single caller', async () => {
+    const app = buildTestApp();
+
+    const responses = [];
+    for (let i = 0; i < 11; i++) {
+      responses.push(
+        await app.inject({
+          method: 'POST',
+          url: '/api/v1/reflections/compare',
+          headers: { authorization: `Bearer ${DEV_TOKEN}` },
+          payload: VALID_BODY,
+        }),
+      );
+    }
+
+    const statusCodes = responses.map((r) => r.statusCode);
+    expect(statusCodes.filter((code) => code === 200)).toHaveLength(10);
+    expect(statusCodes.filter((code) => code === 429)).toHaveLength(1);
+
+    await app.close();
+  });
+});
+
 describe('POST /api/v1/reflections/compare — input validation', () => {
   it('returns 400 for a missing article.title', async () => {
     const app = buildTestApp();

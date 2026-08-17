@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyInstance } from 'fastify';
+import rateLimit from '@fastify/rate-limit';
 import { env } from './config/env.js';
 import { registerCors } from './plugins/cors.js';
 import { registerErrorHandler } from './plugins/error-handler.js';
@@ -53,6 +54,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   registerErrorHandler(app);
   registerCors(app, options.corsOrigin ?? env.FRONTEND_ORIGIN);
+  // `global: false`: no route is rate-limited unless it explicitly opts in
+  // via `config: { rateLimit: ... }` (see REFLECTIONS_COMPARE_RATE_LIMIT).
+  app.register(rateLimit, { global: false });
 
   app.decorate(
     'creditService',

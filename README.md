@@ -433,9 +433,9 @@ reflection }, partner: { displayName, reflection } }`. Validated with Zod
 - **Response contract**: `{ requestId, commonGround: { point, mine, partner }[], differences:
 { topic, mine: { stance, quote }, partner: { stance, quote } }[], topics: { question, reason,
 difficulty: 'Intermediate' | 'Advanced' }[] (exactly 3) }`. Deliberately uses `mine`/`partner`
-  — **not** the frontend mock's `hj`/`js` field names, which are tied to specific display names
-  rather than a generic role. See [Differences from the current frontend
-  contract](#differences-from-the-current-frontend-contract) below.
+  — **not** the frontend mock's old `hj`/`js` field names, which were tied to specific display
+  names rather than a generic role. See [Frontend contract alignment
+  (resolved)](#frontend-contract-alignment-resolved) below.
 - **Prompt** (`src/services/reflections/prompt.ts`): a fixed system prompt instructs the model
   to treat both reflections as untrusted data (never follow instructions embedded in them),
   never invent facts beyond the article/reflections, never distort either person's stance,
@@ -521,32 +521,48 @@ difficulty: 'Intermediate' | 'Advanced' }[] (exactly 3) }`. Deliberately uses `m
   the model's raw response are never logged — verified by
   `tests/reflections.test.ts`'s log-capture test.
 - **Pre-auth gate** (`src/plugins/dev-ai-gate.ts`): real authentication doesn't exist yet, so
-  this (and any future AI route) fails closed two ways — **always 404 in production**
-  regardless of any token, and in development/test requires
-  `Authorization: Bearer <AI_DEV_ACCESS_TOKEN>` matching a server-only env var; if that var
-  isn't set at all, the route refuses with 503 rather than defaulting to open access. The token
-  is never bundled into the frontend build.
+  this (and any future AI route) fails closed in every direction:
+  - **Always 404 in production**, regardless of any token or Origin.
+  - **In development, a request whose `Origin` header exactly equals `FRONTEND_ORIGIN` is let
+    through with no token at all.** This is what lets the browser frontend call this route
+    directly — it never needs to hold any secret. The `Origin` header is **not an
+    authentication mechanism**: it's client-supplied and any non-browser caller (curl, a
+    script) can set it to anything. This bypass exists purely to stop a *browser* pointed at
+    the wrong environment from silently reaching this route without a token; CORS
+    (`src/plugins/cors.ts`) separately and independently enforces the same single origin for
+    actual cross-origin browser requests, which is the real defense a browser can't route
+    around.
+  - **Everything else** (development with a missing/mismatched Origin, or any other
+    `NODE_ENV`) still requires `Authorization: Bearer <AI_DEV_ACCESS_TOKEN>` matching a
+    server-only env var; if that var isn't set at all, the route refuses with 503 rather than
+    defaulting to open access. This is the path the CLI smoke script uses. The token is never
+    bundled into the frontend build, and no `VITE_*`-prefixed equivalent exists.
+- **Rate limiting** (`@fastify/rate-limit`, registered with `global: false` in `src/app.ts`):
+  `POST /api/v1/reflections/compare` is the only route that opts in
+  (`REFLECTIONS_COMPARE_RATE_LIMIT` in `src/routes/reflections.ts`), capped at 10 requests per
+  minute per caller (IP-keyed, the plugin's default). This is independent of, and much
+  tighter than, the 5,000/month credit cap — it exists to blunt a buggy retry loop or a single
+  caller hammering the route, not to budget spend. Exceeding it returns `429`.
 
-### Differences from the current frontend contract
+### Frontend contract alignment (resolved)
 
-The frontend mock (`mockAIService.compareReflections`) and `AIComparisonPage` currently:
+An earlier round of this backend's work flagged three contract gaps against the frontend's
+mock AI service; the frontend repository has since been updated to close all three (see its
+own README / `src/services/api/` for the client-side half):
 
-1. Take two bare reflection strings (no article, no display names) —
-   `compareReflections(myReflection: string, partnerReflection: string)`. The server's request
-   shape is richer (article + both display names) and does not match this signature; the
-   frontend page currently even calls it with an **empty partner reflection**
-   (`aiService.compareReflections(state.reflection.body, '')`), which is itself an existing gap
-   unrelated to this work.
-2. Use `hj`/`js` as the two-person field names in `ComparisonResult`, tied to specific display
-   names rather than a generic role. The server intentionally uses `mine`/`partner` instead —
-   per this task's own instruction not to carry `hj`/`js` into the server API.
-3. `Article` (`mockNewsService.ts`) has no `sourceUrl` field — the server's optional
-   `article.sourceUrl` has no current frontend source.
+1. `AIService.compareReflections` now takes a single request object shaped like
+   `CompareReflectionsRequest` (article + both display names + both reflections) instead of two
+   bare strings, and `AIComparisonPage` no longer calls it with an empty partner reflection —
+   it now waits for a real (mock-partner-service-sourced, for now) partner reflection before
+   calling at all.
+2. The frontend's `ComparisonResult` type now uses `mine`/`partner` field names, matching this
+   server's response contract exactly instead of the old `hj`/`js` names.
+3. `Article` (`mockNewsService.ts`) now carries an optional `sourceUrl`, matching this server's
+   optional `article.sourceUrl`.
 
-None of this was changed in the frontend repository (read-only per this task). Wiring the
-frontend to this endpoint will need: an `AIService` implementation that builds
-`CompareReflectionsRequest` from article + both reflections + both display names, and a
-mapping from `{ mine, partner }` back to whatever field names `AIComparisonPage` ends up using.
+The frontend defines its own Zod schema for this contract (`src/services/api/schemas.ts` in
+that repo) rather than trusting hand-written TypeScript types, so a future response-shape
+change here would fail loudly on the frontend instead of silently mismatching.
 
 ## Endpoints implemented
 
@@ -556,7 +572,8 @@ mapping from `{ mine, partner }` back to whatever field names `AIComparisonPage`
 - `GET /api/v1/usage` — returns a `UsageSummary` computed entirely from our own database
   ledger (`credit_periods` / `credit_usage_records`). No outbound Mindlogic call.
 - `POST /api/v1/reflections/compare` — the reflection-comparison AI feature described above.
-  Gated by the dev pre-auth token; disabled entirely in production.
+  Gated by the dev pre-auth gate (Origin bypass for the browser frontend, token for everything
+  else) and rate-limited to 10 requests/minute/caller; disabled entirely in production.
 
 ## Security notes
 
@@ -572,8 +589,16 @@ mapping from `{ mine, partner }` back to whatever field names `AIComparisonPage`
   the corresponding test).
 - **No real authentication/authorization exists yet.** `/health`, `/ready`, and
   `/api/v1/usage` remain fully open. `/api/v1/reflections/compare` — the one route that can
-  spend real money — has the temporary fail-closed dev-token gate described above; every
+  spend real money — has the temporary fail-closed dev pre-auth gate (Origin bypass for the
+  browser + token for everything else) described above, plus a per-caller rate limit; every
   future AI route should reuse `createDevAiGate` until real auth lands.
+- **This gate is not a substitute for real auth, and must never be deployed publicly as-is.**
+  Anyone who can reach this server in development (same machine, same LAN, a misconfigured
+  public dev deploy) can call `/api/v1/reflections/compare` from a browser tab pointed at
+  `FRONTEND_ORIGIN` — there is no per-user identity, so nothing stops one visitor from spending
+  another's share of the shared 5,000-credit/month budget. The Origin bypass only narrows *who
+  can reach the route without a token*, not *who is allowed to*. Real user auth is still the
+  documented next step (see [Next steps](#next-steps-not-yet-implemented)).
 
 ## Relationship to the frontend repository
 
@@ -618,6 +643,25 @@ verified with a mocked `fetchImpl`. Before relying on it, run one real call deli
 This deliberately was **not** run as part of this work — the task explicitly required stopping
 before any real generative call, pending separate approval.
 
+## Manual browser verification (frontend ↔ backend wiring only, no real Mindlogic call)
+
+Before the smoke test above (and before setting `VITE_USE_MOCK_AI=false` for real), confirm the
+browser can actually reach this server through the dev Origin bypass, still against a mocked
+Mindlogic client if you want to avoid spending credits, or against the real one once you're
+ready:
+
+1. `pnpm dev` here (backend) with `.env.local` set, `FRONTEND_ORIGIN=http://localhost:5173` (or
+   whatever port the frontend actually runs on), and `DATABASE_URL` pointing at a running
+   Postgres.
+2. In the frontend repo, `pnpm dev` with `.env.local` set to
+   `VITE_API_BASE_URL=http://localhost:3001` and `VITE_USE_MOCK_AI=false`.
+3. Open the frontend in an actual browser tab (not curl — the Origin bypass only ever applies
+   to a real browser request, since it depends on the browser setting the `Origin` header
+   itself). Walk the flow to `AIComparisonPage` and confirm the request succeeds with **no**
+   `Authorization` header sent (check the Network tab) and **no** CORS error in the console.
+4. Confirm a request from a *different* origin (e.g. open the same page served from a different
+   port) is rejected — this proves the bypass isn't accidentally wide open.
+
 ## Next steps (not yet implemented)
 
 - **A real smoke test of `POST /api/v1/reflections/compare`** — see
@@ -626,7 +670,9 @@ before any real generative call, pending separate approval.
   `response_format`, `usage.{prompt,completion}_tokens`, `choices[].message.content`) is
   inferred from the confirmed `/models/`/`/credits/` convention and general OpenAI-compatible
   norms — **never verified against the real endpoint**.
-- Real authentication/authorization for `/api/v1/*`, replacing the temporary dev-token gate.
+- Real authentication/authorization for `/api/v1/*`, replacing the temporary dev pre-auth gate
+  (Origin bypass + token) entirely — see the security-notes warning above about why the current
+  gate must never be exposed publicly as-is.
 - CI wiring for `pnpm test:integration` (Docker-in-CI) — not yet added; see
   [Tests](#tests) for the scripts this would run.
 - **Automatic reconciliation.** `evaluateReconciliation()` (decision logic) and
@@ -635,7 +681,8 @@ before any real generative call, pending separate approval.
   acts on the verdict automatically — that wiring (a CLI, an admin route, or a scheduled job)
   is deliberately left for a follow-up, per this round's task. Until it exists, any
   `reconciliation_pending` row requires a human to run the reconciliation manually.
-- Decide with the frontend team how to reconcile `mine`/`partner` (this server) against
-  `hj`/`js` (current frontend mock) and the missing article/display-name fields in the current
-  `compareReflections(myReflection, partnerReflection)` call signature — see
-  [Differences from the current frontend contract](#differences-from-the-current-frontend-contract).
+- **A real user sync/pairing backend.** Partner reflections are currently sourced from the
+  frontend's own mock partner service (`mockPartnerService.getPartnerReflection`), not from a
+  second real user's actual submission — see that repo's README for the current MVP shape.
+  This server has no notion of "partners" or pairing at all yet; it only ever sees two
+  already-collected `{ displayName, reflection }` values per request.
