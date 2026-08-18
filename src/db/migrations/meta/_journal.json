@@ -15,6 +15,13 @@
       "when": 1786981523686,
       "tag": "0001_polite_warlock",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787031985660,
+      "tag": "0002_watery_raider",
+      "breakpoints": true
     }
   ]
 }

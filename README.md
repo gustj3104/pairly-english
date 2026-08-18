@@ -72,21 +72,22 @@ copied into this project.
 cp .env.example .env.local
 ```
 
-| Variable                         | Required | Default                                          | Notes                                                                                                      |
-| -------------------------------- | -------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
-| `NODE_ENV`                       | no       | `development`                                    | `development` \| `test` \| `production`                                                                    |
-| `PORT`                           | no       | `3001`                                           |                                                                                                            |
-| `HOST`                           | no       | `127.0.0.1`                                      |                                                                                                            |
-| `DATABASE_URL`                   | **yes**  | —                                                | PostgreSQL connection string                                                                               |
-| `FRONTEND_ORIGIN`                | no       | `http://localhost:5173`                          | Single CORS origin — wildcards are rejected in every environment                                           |
-| `MINDLOGIC_API_KEY`              | **yes**  | —                                                | Never logged, never returned in any response                                                               |
-| `MINDLOGIC_BASE_URL`             | no       | `https://factchat-cloud.mindlogic.ai/v1/gateway` |                                                                                                            |
-| `MINDLOGIC_MODEL`                | no       | `claude-haiku-4-5-20251001`                      | Must be a key in `MODEL_CREDIT_RATES` (`src/services/mindlogic/credit-rates.ts`) — validated at boot       |
-| `MINDLOGIC_MONTHLY_CREDIT_LIMIT` | no       | `5000`                                           |                                                                                                            |
-| `APP_SHARED_PASSWORD`            | **yes**  | —                                                | Shared password both users log in with (see [Authentication](#authentication)). Min 4 chars. Never logged. |
-| `SESSION_SECRET`                 | **yes**  | —                                                | HMAC key for session JWTs. Min 32 chars. Never logged.                                                     |
-| `SESSION_MAX_AGE_SECONDS`        | no       | `2592000` (30 days)                              | Session cookie / JWT lifetime                                                                              |
-| `AI_DEV_ACCESS_TOKEN`            | no       | —                                                | CLI smoke-script-only bearer token; never accepted in production (see [Authentication](#authentication))   |
+| Variable                         | Required | Default                                          | Notes                                                                                                                                            |
+| -------------------------------- | -------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `NODE_ENV`                       | no       | `development`                                    | `development` \| `test` \| `production`                                                                                                          |
+| `PORT`                           | no       | `3001`                                           |                                                                                                                                                  |
+| `HOST`                           | no       | `127.0.0.1`                                      |                                                                                                                                                  |
+| `DATABASE_URL`                   | **yes**  | —                                                | PostgreSQL connection string                                                                                                                     |
+| `FRONTEND_ORIGIN`                | no       | `http://localhost:5173`                          | Single CORS origin — wildcards are rejected in every environment                                                                                 |
+| `MINDLOGIC_API_KEY`              | **yes**  | —                                                | Never logged, never returned in any response                                                                                                     |
+| `MINDLOGIC_BASE_URL`             | no       | `https://factchat-cloud.mindlogic.ai/v1/gateway` |                                                                                                                                                  |
+| `MINDLOGIC_MODEL`                | no       | `claude-haiku-4-5-20251001`                      | Must be a key in `MODEL_CREDIT_RATES` (`src/services/mindlogic/credit-rates.ts`) — validated at boot                                             |
+| `MINDLOGIC_MONTHLY_CREDIT_LIMIT` | no       | `5000`                                           |                                                                                                                                                  |
+| `APP_SHARED_PASSWORD`            | **yes**  | —                                                | Shared password both users log in with (see [Authentication](#authentication)). Min 4 chars. Never logged.                                       |
+| `SESSION_SECRET`                 | **yes**  | —                                                | HMAC key for session JWTs. Min 32 chars. Never logged.                                                                                           |
+| `SESSION_MAX_AGE_SECONDS`        | no       | `2592000` (30 days)                              | Session cookie / JWT lifetime                                                                                                                    |
+| `AI_DEV_ACCESS_TOKEN`            | no       | —                                                | CLI smoke-script-only bearer token; never accepted in production (see [Authentication](#authentication))                                         |
+| `STUDY_DAY_MAX_FUTURE_DAYS`      | no       | `1`                                              | How many days ahead of "today" (Asia/Seoul) a `study_days` date may be (see [Daily reflections](#daily-reflections--study-day-based-comparison)) |
 
 Validation happens in `src/config/env.ts` via Zod. Invalid configuration throws at startup
 with the field name and a generic reason — **secret values are never included in the error
@@ -189,7 +190,7 @@ pnpm test:integration  # real PostgreSQL integration tests via Testcontainers �
 pnpm test:all          # test:run + test:integration
 ```
 
-### Fast unit tests (`pnpm test:run`, 158 tests, no Docker)
+### Fast unit tests (`pnpm test:run`, 228 tests, no Docker)
 
 Cover: env validation, CORS allow/deny + wildcard rejection, credit calculation and rounding,
 80/90%/exhausted warning levels, Asia/Seoul month-boundary and reset-date math, reservation
@@ -218,12 +219,26 @@ log-capture test proving reflection text/names/the API key never reach the logge
 covers `scripts/mindlogic-check.ts`'s summary logic (GET-only, quota-mismatch detection, no
 key leakage) against a mocked `fetchImpl`.
 
+`tests/study-days.test.ts` covers the daily-reflections HTTP routes (see [Daily
+reflections](#daily-reflections--study-day-based-comparison)) against an in-memory
+`DailyReflectionRepository` fake (`tests/helpers/in-memory-daily-reflection-repository.ts`):
+401 without a session on all 3 routes, a successful submission's exact response shape,
+reflection length/blank validation, the `.strict()` schema rejecting a client-supplied identity
+field, idempotent same-participant resubmission (no duplicate row, no content overwrite),
+`ARTICLE_MISMATCH` for a different article on an already-registered date, status before/after
+the partner submits (never exposing partner content), `readyToCompare` only flipping true at 2
+distinct participants, `PARTNER_NOT_READY` on compare with 0 or 1 submitted, a successful
+compare against a mocked Mindlogic client, a genuine 3rd distinct name rejected with
+`PARTICIPANT_LIMIT_REACHED`, fixed-time date-range validation at and past the future boundary,
+and a log-capture test proving displayName/content/the raw participant key never reach the
+logger.
+
 These run `CreditService`'s business rules against `InMemoryCreditRepository`
 (`tests/helpers/in-memory-credit-repository.ts`) — a plain JS `Map`, **not** a stand-in for
 PostgreSQL. It verifies `CreditService`'s logic, never PostgreSQL's transaction/locking
 semantics — that's what the integration suite below is for.
 
-### PostgreSQL integration tests (`pnpm test:integration`, 35 tests, requires Docker)
+### PostgreSQL integration tests (`pnpm test:integration`, 44 tests, requires Docker)
 
 Uses [Testcontainers](https://node.testcontainers.org/) to boot a real, throwaway
 `postgres:16-alpine` container per test file, apply the actual Drizzle migrations from
@@ -250,15 +265,27 @@ Docker-Compose dev database described below.
   and re-`reserveCredits()`-ing a pending `requestId` is blocked (returns
   `reason: 'reconciliation_pending'`, creates no second reservation).
 - `tests/integration/migrations.postgres.test.ts` — migration applies cleanly to an empty
-  database, migration re-run is a no-op, foreign key / enum / `CHECK` constraint enforcement
-  at the database level (including the new `reconciliation_pending` requires-`error_code`
-  constraint), and integer round-trip precision (no numeric/bigint string coercion, since the
-  schema uses `integer` throughout).
+  database (now asserting `study_days`/`reflections`/`reflection_status` exist alongside the
+  credit tables), migration re-run is a no-op, foreign key / enum / `CHECK` / `UNIQUE`
+  constraint enforcement at the database level for both the credit tables (including the
+  `reconciliation_pending` requires-`error_code` constraint) and the daily-reflections tables
+  (missing-`study_days`-FK rejection, bad `reflection_status` enum value, blank `display_name`/
+  `content`, and a second `(study_date, participant_key)` row rejected as a unique violation),
+  and integer round-trip precision (no numeric/bigint string coercion, since the schema uses
+  `integer` throughout).
 - `tests/integration/reflections.postgres.test.ts` — `POST /api/v1/reflections/compare` driven
   through Fastify `inject()` with a **real** PostgreSQL-backed `CreditService` and a **mocked**
   Mindlogic HTTP layer: a successful comparison reserves and commits real rows, a non-retryable
   upstream failure releases the real reservation, and an already-exhausted real ledger blocks
   the Mindlogic call entirely.
+- `tests/integration/study-days.postgres.test.ts` — the daily-reflections feature against a
+  **real** PostgreSQL: two real distinct submitters both succeed and a genuine 3rd is rejected
+  by real Postgres (not a mock), status/compare reflect real database state and compare calls
+  the mocked Mindlogic client, fixed-time future-date-boundary rejection/acceptance, and —
+  the test that actually proves the `FOR UPDATE` locking works under real contention — **~20
+  truly concurrent `PUT` submissions for the same date with 20 distinct names**, asserted to
+  collapse into exactly 2 `reflections` rows (18 rejected with `PARTICIPANT_LIMIT_REACHED`, 0
+  unexpected errors, 0 deadlocks).
 
 ## Database / migrations
 
@@ -271,12 +298,14 @@ pnpm db:migrate    # apply pending migrations to DATABASE_URL
 pnpm db:studio     # open Drizzle Studio against DATABASE_URL
 ```
 
-The initial migration (`src/db/migrations/0000_glorious_dark_beast.sql`) has been generated
-and is applied automatically to a throwaway container by every `pnpm test:integration` run,
-but it has **not been applied to any persistent or remote database** — no such connection was
-available while building this project. Run `pnpm db:migrate` yourself once `DATABASE_URL` in
-`.env.local` points at a real, reachable PostgreSQL instance — for example, the local Docker
-Compose database below.
+The initial migration (`src/db/migrations/0000_glorious_dark_beast.sql`), the follow-up
+`0001_polite_warlock.sql` (adds the `provider_contract_check` credit-feature enum value), and
+`0002_watery_raider.sql` (adds the `study_days`/`reflections` tables and `reflection_status`
+enum for the daily-reflections feature — see [Daily
+reflections](#daily-reflections--study-day-based-comparison)) are all applied automatically to
+a throwaway container by every `pnpm test:integration` run, and have also been applied to the
+local Docker Compose dev database (below) via `pnpm db:migrate`. Run `pnpm db:migrate` yourself
+against any other target once `DATABASE_URL` in `.env.local` points at it.
 
 ### Local development database (Docker Compose)
 
@@ -328,6 +357,22 @@ below. `credit_usage_records` additionally requires `error_code IS NOT NULL` whe
 Deliberately **excluded** from `credit_usage_records`: essay/reflection text, full news
 articles, transcripts, audio files, or any other original learner content. Only accounting
 metadata is stored.
+
+- **`study_days`** — one row per calendar date (`study_date`, `date`, PK), seeded by whichever
+  participant submits first for that date; carries that day's `article_id`/`article_title`/
+  `article_source_url`/`article_summary`.
+- **`reflections`** — one row per participant per study day (`id` UUID PK), with `study_date`
+  (FK → `study_days.study_date`), `participant_key` (normalized session name),
+  `display_name`, `content`, a `reflection_status` enum (`submitted` only, this iteration never
+  persists drafts server-side), and `submitted_at`/`updated_at`. `UNIQUE (study_date,
+participant_key)` enforces at most one reflection per participant per day; `CHECK` constraints
+  reject a blank `display_name` or `content`. See [Daily
+  reflections](#daily-reflections--study-day-based-comparison) below.
+
+Unlike `credit_usage_records`, `reflections` deliberately DOES store the original content — it
+IS the record of what was submitted, not an accounting/ledger table. Only log lines are
+restricted (see [Daily reflections](#daily-reflections--study-day-based-comparison)'s logging
+discipline) — `participant_key`/`display_name`/`content` are never written to any log.
 
 ## Credit hard cap
 
@@ -614,6 +659,147 @@ The frontend defines its own Zod schema for this contract (`src/services/api/sch
 that repo) rather than trusting hand-written TypeScript types, so a future response-shape
 change here would fail loudly on the frontend instead of silently mismatching.
 
+## Daily reflections — study-day based comparison
+
+Replaces the old client-supplied-partner-reflection flow (`POST /api/v1/reflections/compare`,
+now deprecated — see above) with a server-owned notion of "today's study day": each participant
+submits their own reflection against a date, the server matches up the two submissions itself,
+and only then calls the same underlying `compareReflections()` AI comparison used by the old
+route. The client body for the compare step carries no reflection text at all — the server
+always reads both sides from the database, never from the caller.
+
+### Identity (MVP — no real user accounts)
+
+There is still no per-user accounts table (see [Authentication](#authentication)). A
+participant's identity for this feature is derived entirely from the session cookie's `name`:
+
+- `normalizeParticipantKey()` (`src/services/daily-reflections/participant-key.ts`) trims,
+  Unicode-NFKC-normalizes, and lowercases the session name to produce a stable
+  `participant_key` — this is what "the same person" means here.
+- The original (trimmed, non-lowercased) session name is kept as `display_name` for UI.
+- **The client is never trusted to supply the submitter's identity.** The request body schemas
+  (`src/services/daily-reflections/schema.ts`) don't even define a name/participant field —
+  they're `.strict()`, so a client that tries to add one gets `400 VALIDATION_ERROR`.
+- **MVP limitation, stated plainly: logging in under a different name is treated as a different
+  participant.** There is no way to prove two sessions belong to the same real person, so a
+  typo'd or differently-cased-then-later-fixed display name can accidentally "use up" one of a
+  study day's two participant slots. This is an accepted tradeoff for the shared-password MVP,
+  not a bug to silently work around.
+
+### Auth: `session-gate` vs. `auth-gate`
+
+The existing `POST /api/v1/reflections/compare` uses `createAuthGate`
+(`src/plugins/auth-gate.ts`), which only proves "some valid session exists" (plus a CLI
+dev-token escape hatch) — it never exposes who the caller is. This feature needs to know WHO is
+submitting, so all three new routes use a new, separate preHandler,
+`createSessionGate` (`src/plugins/session-gate.ts`):
+
+- Verifies the session cookie only — **no CLI dev-token escape hatch**, since that token carries
+  no name and this feature fundamentally needs one.
+- On success, sets `request.session` (a new `FastifyRequest` decoration registered in
+  `src/app.ts`) to the verified `{ name }` payload.
+- On failure, sends the exact same `401 { error: { message, code: 'UNAUTHORIZED', requestId } }`
+  envelope shape as `auth-gate.ts`.
+
+`auth-gate.ts` itself is untouched — `/reflections/compare`'s auth behavior is unchanged.
+
+### Concurrency: max 2 participants per study day
+
+The core correctness requirement is that at most 2 distinct participants can submit for a given
+`study_date`, even under real concurrent requests. `DrizzleDailyReflectionRepository
+.submitReflection()` (`src/services/daily-reflections/daily-reflection-repository.ts`) enforces
+this with the exact same pattern as `DrizzleCreditRepository.reserveCredits`
+(`src/services/credits/credit-repository.ts`) — a single `db.transaction()`:
+
+1. `INSERT INTO study_days ... ON CONFLICT (study_date) DO NOTHING` — guarantees the day's row
+   exists (idempotent, Postgres-serialized on the PK). The first submitter's article info wins.
+2. `SELECT ... FROM study_days WHERE study_date = $1 FOR UPDATE` — locks the one row every
+   submission for this date must pass through, serializing all concurrent submissions.
+3. While holding the lock: if the locked row's `article_id` doesn't match the submitted
+   article's `id`, abort → `409 ARTICLE_MISMATCH`. No reflection row is written.
+4. If a `reflections` row already exists for this exact `(study_date, participant_key)`, this is
+   the same participant re-submitting: return that row's existing `submittedAt` idempotently
+   (`200`, `submitted: true`). **Content is never overwritten** once submitted.
+5. Otherwise, count existing `reflections` rows for this `study_date` (still inside the
+   transaction, still holding the lock). If already 2, abort → `409 PARTICIPANT_LIMIT_REACHED`.
+6. Otherwise, insert the new `reflections` row and return success.
+
+The `FOR UPDATE` lock held across steps 2–6 is what makes this race-free — proven by
+`tests/integration/study-days.postgres.test.ts`'s ~20-way concurrent `PUT` test (see
+[Tests](#tests) below), not just by single-threaded mock assertions.
+
+### `PUT /api/v1/study-days/:date/reflection`
+
+Request:
+
+```json
+{
+  "article": {
+    "id": "string",
+    "title": "string",
+    "sourceUrl": "string | null",
+    "summary": "string | null"
+  },
+  "reflection": "string"
+}
+```
+
+Response `200`:
+
+```json
+{ "studyDate": "YYYY-MM-DD", "submitted": true, "submittedAt": "<ISO timestamp>" }
+```
+
+Errors: `400 VALIDATION_ERROR` (bad date, malformed body, reflection outside
+`REFLECTION_MIN_LENGTH`/`REFLECTION_MAX_LENGTH`), `401 UNAUTHORIZED`,
+`409 ARTICLE_MISMATCH`, `409 PARTICIPANT_LIMIT_REACHED`.
+
+`:date` must be a real `YYYY-MM-DD` calendar date, no more than `STUDY_DAY_MAX_FUTURE_DAYS` days
+(default `1`) ahead of "today" in Asia/Seoul — computed via
+`Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', ... })`. No lower bound; arbitrarily old
+past dates are always valid for the format itself. "Now" is injectable
+(`StudyDaysRoutesOptions.now` in `src/routes/study-days.ts`) for fixed-time tests.
+
+### `GET /api/v1/study-days/:date/status`
+
+Response `200`:
+
+```json
+{
+  "studyDate": "YYYY-MM-DD",
+  "mine": { "submitted": true, "displayName": "..." },
+  "partner": { "submitted": false, "displayName": null },
+  "readyToCompare": false
+}
+```
+
+`mine` is the row (if any) matching the caller's own `participant_key`; `partner` is the other
+participant's row (if any). **`partner.content` is never included anywhere in this response** —
+only `submitted`/`displayName`. `readyToCompare` is `true` only once exactly 2 distinct
+participants have submitted.
+
+### `POST /api/v1/study-days/:date/compare`
+
+No request body content beyond the date in the URL — the server sources both sides from the
+database itself, never from the caller. If fewer than 2 reflections exist for the date (covers
+both "you haven't submitted" and "your partner hasn't submitted" — one error code for both, by
+design), returns `409 PARTNER_NOT_READY`. Otherwise looks up the day's article and both
+reflection rows, then calls the same `compareReflections()` service function used by the
+deprecated `/reflections/compare` route, unchanged — response shape and the
+200/402/402/502/502/500/409 status-code mapping are identical (the mapping itself is now a
+shared helper, `respondToReflectionComparisonOutcome` in
+`src/services/reflections/http-mapping.ts`, reused by both routes so the switch isn't
+duplicated).
+
+### Logging discipline (tested)
+
+Allowed in logs for these three routes: `requestId`, `studyDate`, the participant key's
+irreversible truncated hash (`hashForLogging()` — SHA-256, truncated to 12 hex chars, never
+reversible back to the name), submit success/failure, `durationMs`. **Forbidden**: `displayName`,
+reflection `content`, `article_summary`, the raw (unhashed) `participant_key`, the session
+cookie value. `tests/study-days.test.ts` captures the Pino output stream and asserts none of the
+forbidden values ever appear.
+
 ## Endpoints implemented
 
 - `GET /health` — liveness only; no DB or Mindlogic dependency.
@@ -623,9 +809,15 @@ change here would fail loudly on the frontend instead of silently mismatching.
   ledger (`credit_periods` / `credit_usage_records`). No outbound Mindlogic call.
 - `POST /api/v1/auth/login`, `GET /api/v1/auth/session`, `POST /api/v1/auth/logout` — see
   [Authentication](#authentication).
-- `POST /api/v1/reflections/compare` — the reflection-comparison AI feature described above.
-  Requires a valid session (or the CLI dev token outside production) and is rate-limited to 10
-  requests/minute/caller.
+- `POST /api/v1/reflections/compare` — **deprecated**, superseded by
+  `POST /api/v1/study-days/:date/compare` below. Kept only for the CLI smoke-test scripts
+  (`scripts/mindlogic-smoke-test*.ts`) and backward compatibility — do not build new frontend
+  code against it. Requires a valid session (or the CLI dev token outside production) and is
+  rate-limited to 10 requests/minute/caller.
+- `PUT /api/v1/study-days/:date/reflection`, `GET /api/v1/study-days/:date/status`,
+  `POST /api/v1/study-days/:date/compare` — the daily-reflections feature; see [Daily
+  reflections](#daily-reflections--study-day-based-comparison) below. All three require a valid
+  session (no CLI dev-token escape hatch — see [Authentication](#authentication)).
 
 ## Security notes
 
@@ -759,8 +951,17 @@ you're ready:
   acts on the verdict automatically — that wiring (a CLI, an admin route, or a scheduled job)
   is deliberately left for a follow-up, per this round's task. Until it exists, any
   `reconciliation_pending` row requires a human to run the reconciliation manually.
-- **A real user sync/pairing backend.** Partner reflections are currently sourced from the
-  frontend's own mock partner service (`mockPartnerService.getPartnerReflection`), not from a
-  second real user's actual submission — see that repo's README for the current MVP shape.
-  This server has no notion of "partners" or pairing at all yet; it only ever sees two
-  already-collected `{ displayName, reflection }` values per request.
+- ~~A real user sync/pairing backend.~~ **Implemented** — see [Daily
+  reflections](#daily-reflections--study-day-based-comparison). `PUT
+/api/v1/study-days/:date/reflection` / `GET .../status` / `POST .../compare` now let each
+  participant submit their own reflection against a date and have the server itself match up
+  the two submissions (max 2 distinct participants per day, race-safe under real concurrency —
+  see the tests above), instead of the frontend's mock partner service supplying a canned
+  partner reflection. The frontend still needs to switch `AIComparisonPage` from
+  `mockPartnerService.getPartnerReflection` + `POST /reflections/compare` over to this new
+  flow — that wiring is being done in parallel against this round's contract.
+- **Still no real per-user accounts even for daily reflections.** As stated in [Daily
+  reflections](#daily-reflections--study-day-based-comparison), identity is derived from the
+  session's display name only — logging in under a different name is treated as a different
+  participant. A real accounts system remains a separate, larger piece of work (see the
+  "Per-user identity" bullet above).

@@ -46,3 +46,8 @@ export async function stopTestDatabase(testDb: TestDatabase): Promise<void> {
 export async function truncateCreditTables(pool: Pool): Promise<void> {
   await pool.query('TRUNCATE TABLE credit_usage_records, credit_periods RESTART IDENTITY CASCADE');
 }
+
+/** Clears both daily-reflection tables between tests so each test starts from an empty state. */
+export async function truncateStudyDayTables(pool: Pool): Promise<void> {
+  await pool.query('TRUNCATE TABLE reflections, study_days RESTART IDENTITY CASCADE');
+}

@@ -1,11 +1,13 @@
 import {
   boolean,
   check,
+  date,
   integer,
   pgEnum,
   pgTable,
   text,
   timestamp,
+  unique,
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
@@ -102,5 +104,67 @@ export const creditUsageRecords = pgTable(
       'credit_usage_records_reconciliation_pending_has_error_code',
       sql`${table.status} != 'reconciliation_pending' OR ${table.errorCode} IS NOT NULL`,
     ),
+  ],
+);
+
+/**
+ * One row per calendar day of the "daily reflection" MVP feature. Seeded
+ * by whichever participant submits first (INSERT ... ON CONFLICT DO
+ * NOTHING in DrizzleDailyReflectionRepository.submitReflection) — that
+ * first submitter's article info wins for the day. See
+ * src/services/daily-reflections/daily-reflection-repository.ts for the
+ * `SELECT ... FOR UPDATE` locking that makes the max-2-participants rule
+ * below race-safe.
+ */
+export const studyDays = pgTable('study_days', {
+  // 'YYYY-MM-DD', enforced by PostgreSQL's native date type.
+  studyDate: date('study_date', { mode: 'string' }).primaryKey(),
+  articleId: text('article_id').notNull(),
+  articleTitle: text('article_title').notNull(),
+  articleSourceUrl: text('article_source_url'),
+  articleSummary: text('article_summary'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const reflectionStatusEnum = pgEnum('reflection_status', [
+  // Only value for this iteration — drafts are never persisted server-side.
+  'submitted',
+]);
+
+/**
+ * One row per participant per study day. Deliberately excludes any
+ * hashed/derived form of participant_key in a separate accounting table —
+ * unlike credit_usage_records, this table itself IS the record of
+ * content, so participant_key and display_name are stored in the clear
+ * here (only log lines are restricted — see hashForLogging in
+ * src/services/daily-reflections/participant-key.ts).
+ */
+export const reflections = pgTable(
+  'reflections',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    studyDate: date('study_date', { mode: 'string' })
+      .notNull()
+      .references(() => studyDays.studyDate),
+    // Normalized (trim + NFKC + lowercase) session name — stable identity
+    // signal for "the same person" without a real accounts table.
+    participantKey: text('participant_key').notNull(),
+    displayName: text('display_name').notNull(),
+    content: text('content').notNull(),
+    status: reflectionStatusEnum('status').notNull().default('submitted'),
+    submittedAt: timestamp('submitted_at', { withTimezone: true }).notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    // At most one reflection per participant per day — the DB-level
+    // backstop for the same invariant the FOR UPDATE lock enforces at
+    // the application level.
+    unique('reflections_study_date_participant_key_unique').on(
+      table.studyDate,
+      table.participantKey,
+    ),
+    check('reflections_display_name_non_blank', sql`length(trim(${table.displayName})) > 0`),
+    check('reflections_content_non_blank', sql`length(trim(${table.content})) > 0`),
   ],
 );

@@ -52,6 +52,12 @@ const envSchema = z
     SESSION_SECRET: z.string().min(32, 'SESSION_SECRET must be at least 32 characters'),
     /** Session cookie/JWT lifetime. Defaults to 30 days. */
     SESSION_MAX_AGE_SECONDS: z.coerce.number().int().positive().default(2592000),
+    /**
+     * How many days ahead of "today" in Asia/Seoul a `study_days` date
+     * (see src/routes/study-days.ts) may be. No lower bound — arbitrarily
+     * old past dates are always valid for the date format itself.
+     */
+    STUDY_DAY_MAX_FUTURE_DAYS: z.coerce.number().int().min(0).default(1),
   })
   .superRefine((value, ctx) => {
     if (value.FRONTEND_ORIGIN === '*') {
@@ -105,5 +111,6 @@ export function redactedEnvSummary(value: Env = env) {
     monthlyCreditLimit: value.MINDLOGIC_MONTHLY_CREDIT_LIMIT,
     mindlogicMaxRetries: value.MINDLOGIC_MAX_RETRIES,
     sessionMaxAgeSeconds: value.SESSION_MAX_AGE_SECONDS,
+    studyDayMaxFutureDays: value.STUDY_DAY_MAX_FUTURE_DAYS,
   };
 }

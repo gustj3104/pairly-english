@@ -7,6 +7,7 @@ import {
   startTestDatabase,
   stopTestDatabase,
   truncateCreditTables,
+  truncateStudyDayTables,
   type TestDatabase,
 } from './helpers/postgres-container.js';
 
@@ -28,23 +29,30 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await truncateCreditTables(testDb.pool);
+  await truncateStudyDayTables(testDb.pool);
 });
 
 describe('migration application', () => {
-  it('creates both tables and both enum types', async () => {
+  it('creates all tables and enum types, including the daily-reflections feature', async () => {
     const tables = await testDb.pool.query<{ table_name: string }>(
       `select table_name from information_schema.tables where table_schema = 'public' order by table_name`,
     );
     expect(tables.rows.map((row) => row.table_name)).toEqual(
-      expect.arrayContaining(['credit_periods', 'credit_usage_records']),
+      expect.arrayContaining([
+        'credit_periods',
+        'credit_usage_records',
+        'study_days',
+        'reflections',
+      ]),
     );
 
     const enums = await testDb.pool.query<{ typname: string }>(
-      `select typname from pg_type where typname in ('credit_status', 'credit_feature')`,
+      `select typname from pg_type where typname in ('credit_status', 'credit_feature', 'reflection_status')`,
     );
     expect(enums.rows.map((row) => row.typname).sort()).toEqual([
       'credit_feature',
       'credit_status',
+      'reflection_status',
     ]);
   });
 
@@ -156,5 +164,80 @@ describe('integer round-trip precision', () => {
     );
     expect(typeof viaDrizzle.rows[0]?.committed_credits).toBe('number');
     expect(viaDrizzle.rows[0]?.committed_credits).toBe(largeValue);
+  });
+});
+
+describe('daily-reflections foreign key enforcement', () => {
+  it('rejects a reflections row referencing a study_date with no study_days row', async () => {
+    await expect(
+      testDb.pool.query(
+        `insert into reflections
+           (study_date, participant_key, display_name, content, submitted_at, updated_at)
+         values ('2099-01-01', 'alex', 'Alex', 'A sufficiently long reflection body for this test.', now(), now())`,
+      ),
+    ).rejects.toMatchObject({ code: '23503' }); // foreign_key_violation
+  });
+});
+
+describe('daily-reflections enum enforcement', () => {
+  it('rejects an out-of-range reflection_status value at the database level', async () => {
+    await testDb.pool.query(
+      `insert into study_days (study_date, article_id, article_title) values ('2026-08-17', 'a1', 'Title')`,
+    );
+    await expect(
+      testDb.pool.query(
+        `insert into reflections
+           (study_date, participant_key, display_name, content, status, submitted_at, updated_at)
+         values ('2026-08-17', 'alex', 'Alex', 'A sufficiently long reflection body for this test.', 'bogus_status', now(), now())`,
+      ),
+    ).rejects.toMatchObject({ code: '22P02' }); // invalid_text_representation (bad enum input)
+  });
+});
+
+describe('daily-reflections check constraint enforcement', () => {
+  it('rejects a blank display_name', async () => {
+    await testDb.pool.query(
+      `insert into study_days (study_date, article_id, article_title) values ('2026-08-17', 'a1', 'Title')`,
+    );
+    await expect(
+      testDb.pool.query(
+        `insert into reflections
+           (study_date, participant_key, display_name, content, submitted_at, updated_at)
+         values ('2026-08-17', 'alex', '   ', 'A sufficiently long reflection body for this test.', now(), now())`,
+      ),
+    ).rejects.toMatchObject({ code: '23514' }); // check_violation
+  });
+
+  it('rejects blank content', async () => {
+    await testDb.pool.query(
+      `insert into study_days (study_date, article_id, article_title) values ('2026-08-17', 'a1', 'Title')`,
+    );
+    await expect(
+      testDb.pool.query(
+        `insert into reflections
+           (study_date, participant_key, display_name, content, submitted_at, updated_at)
+         values ('2026-08-17', 'alex', 'Alex', '   ', now(), now())`,
+      ),
+    ).rejects.toMatchObject({ code: '23514' });
+  });
+});
+
+describe('daily-reflections unique constraint enforcement', () => {
+  it('rejects a second reflection for the same (study_date, participant_key)', async () => {
+    await testDb.pool.query(
+      `insert into study_days (study_date, article_id, article_title) values ('2026-08-17', 'a1', 'Title')`,
+    );
+    await testDb.pool.query(
+      `insert into reflections
+         (study_date, participant_key, display_name, content, submitted_at, updated_at)
+       values ('2026-08-17', 'alex', 'Alex', 'A sufficiently long reflection body for this test.', now(), now())`,
+    );
+    await expect(
+      testDb.pool.query(
+        `insert into reflections
+           (study_date, participant_key, display_name, content, submitted_at, updated_at)
+         values ('2026-08-17', 'alex', 'Alex', 'A different sufficiently long reflection body.', now(), now())`,
+      ),
+    ).rejects.toMatchObject({ code: '23505' }); // unique_violation
   });
 });

@@ -10,18 +10,32 @@ import { healthRoutes } from './routes/health.js';
 import { usageRoutes } from './routes/usage.js';
 import { authRoutes, type AuthRoutesOptions } from './routes/auth.js';
 import { reflectionsRoutes } from './routes/reflections.js';
+import { studyDaysRoutes, type StudyDaysRoutesOptions } from './routes/study-days.js';
 import { checkDatabaseConnection as defaultCheckDatabaseConnection } from './db/client.js';
 import { db } from './db/client.js';
 import { CreditService } from './services/credits/credit-service.js';
 import { DrizzleCreditRepository } from './services/credits/credit-repository.js';
 import type { MindlogicClient } from './services/mindlogic/client.js';
 import { createMindlogicClient } from './services/mindlogic/create-client.js';
+import { DailyReflectionService } from './services/daily-reflections/daily-reflection-service.js';
+import { DrizzleDailyReflectionRepository } from './services/daily-reflections/daily-reflection-repository.js';
+import type { SessionPayload } from './services/auth/session.js';
 
 declare module 'fastify' {
   interface FastifyInstance {
     creditService: CreditService;
     checkDatabaseConnection: () => Promise<boolean>;
     mindlogicClient: MindlogicClient;
+    dailyReflectionService: DailyReflectionService;
+  }
+  interface FastifyRequest {
+    /**
+     * Parsed session payload — set only by session-gate.ts's preHandler
+     * (src/plugins/session-gate.ts), used by the daily-reflections routes
+     * that need the caller's actual identity. auth-gate.ts (the older,
+     * still-used gate for /reflections/compare) does NOT set this.
+     */
+    session: SessionPayload | null;
   }
 }
 
@@ -32,6 +46,8 @@ export interface BuildAppOptions {
   mindlogicClient?: MindlogicClient;
   authGateOptions?: AuthGateOptions;
   authRoutesOptions?: AuthRoutesOptions;
+  dailyReflectionService?: DailyReflectionService;
+  studyDaysRoutesOptions?: StudyDaysRoutesOptions;
   /** Test-only: redirect Pino output somewhere inspectable instead of silent/stdout. */
   loggerStream?: NodeJS.WritableStream;
 }
@@ -62,6 +78,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   // LOGIN_RATE_LIMIT).
   app.register(rateLimit, { global: false });
   app.register(cookie);
+  app.decorateRequest('session', null);
 
   app.decorate(
     'creditService',
@@ -73,6 +90,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     options.checkDatabaseConnection ?? defaultCheckDatabaseConnection,
   );
   app.decorate('mindlogicClient', options.mindlogicClient ?? createMindlogicClient());
+  app.decorate(
+    'dailyReflectionService',
+    options.dailyReflectionService ??
+      new DailyReflectionService(new DrizzleDailyReflectionRepository(db)),
+  );
 
   app.register(healthRoutes);
   app.register(usageRoutes, { prefix: '/api/v1' });
@@ -88,6 +110,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.register(reflectionsRoutes, {
     prefix: '/api/v1',
     authGateOptions: options.authGateOptions,
+  });
+  app.register(studyDaysRoutes, {
+    prefix: '/api/v1',
+    ...(options.studyDaysRoutesOptions ?? {
+      sessionSecret: env.SESSION_SECRET,
+      maxFutureDays: env.STUDY_DAY_MAX_FUTURE_DAYS,
+    }),
   });
 
   return app;
