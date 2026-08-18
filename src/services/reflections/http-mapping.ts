@@ -139,3 +139,38 @@ export function respondToReflectionComparisonOutcome(
     }
   }
 }
+
+/**
+ * Status-code + code mapping for a failure ReflectionComparisonOutcome,
+ * extracted for reuse by `POST /study-days/:date/compare` and
+ * `POST /study-days/:date/comparison/retry` (src/routes/study-days.ts),
+ * which need the exact same HTTP status decisions as
+ * respondToReflectionComparisonOutcome above but a different JSON body
+ * shape (`{ status, code }`, matching `GET .../comparison`'s vocabulary,
+ * instead of the old flat `{ error: { message, code, requestId } }`
+ * envelope). Never called with `'ok'` — callers branch on that separately.
+ */
+export function mapReflectionComparisonFailureToHttp(
+  status: Exclude<ReflectionComparisonOutcome['status'], 'ok'>,
+): { statusCode: number; code: string } {
+  switch (status) {
+    case 'limit_exceeded':
+      return { statusCode: 402, code: 'CREDIT_LIMIT_EXCEEDED' };
+    case 'provider_exhausted':
+      return { statusCode: 402, code: 'PROVIDER_CREDIT_EXHAUSTED' };
+    case 'upstream_failed':
+      return { statusCode: 502, code: 'UPSTREAM_REQUEST_FAILED' };
+    case 'upstream_schema_error':
+      return { statusCode: 502, code: 'UPSTREAM_SCHEMA_ERROR' };
+    case 'reservation_exceeded':
+      return { statusCode: 500, code: 'CREDIT_RESERVATION_EXCEEDED' };
+    case 'reconciliation_pending':
+      return { statusCode: 409, code: 'RECONCILIATION_PENDING' };
+    default: {
+      const exhaustive: never = status;
+      throw new Error(
+        `Unhandled reflection comparison failure status: ${JSON.stringify(exhaustive)}`,
+      );
+    }
+  }
+}

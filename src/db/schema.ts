@@ -3,6 +3,7 @@ import {
   check,
   date,
   integer,
+  jsonb,
   pgEnum,
   pgTable,
   text,
@@ -166,5 +167,63 @@ export const reflections = pgTable(
     ),
     check('reflections_display_name_non_blank', sql`length(trim(${table.displayName})) > 0`),
     check('reflections_content_non_blank', sql`length(trim(${table.content})) > 0`),
+  ],
+);
+
+export const comparisonStatusEnum = pgEnum('comparison_status', [
+  'processing',
+  'completed',
+  'failed',
+  // Mindlogic transmission/billing status for this attempt is unknown
+  // (mirrors credit_status's 'reconciliation_pending' — see
+  // src/services/credits/credit-repository.ts). Never auto-retried.
+  'reconciliation_pending',
+]);
+
+/**
+ * One row per calendar day, period — not one row per attempt. A retry
+ * after a 'failed' state UPDATEs this same row in place (new
+ * `request_id`, status back to 'processing') rather than inserting a
+ * second row; per-attempt history is deliberately NOT kept here. It's
+ * kept in `credit_usage_records` instead — every `request_id` that ever
+ * gets a credit reservation (including failed/retried attempts) already
+ * has its own permanent row there via the existing credit-ledger code,
+ * cross-referenceable by the shared `request_id` value. See
+ * src/services/daily-reflections/comparison-repository.ts for the
+ * claim-then-generate locking that makes this table's writes race-safe,
+ * and README "Study-day comparison" for the full two-phase design.
+ */
+export const studyDayComparisons = pgTable(
+  'study_day_comparisons',
+  {
+    studyDate: date('study_date', { mode: 'string' })
+      .primaryKey()
+      .references(() => studyDays.studyDate),
+    // Must be the exact same request_id that ends up in
+    // credit_usage_records for that attempt (see
+    // ReflectionComparisonDeps.generateRequestId) — lets an operator
+    // cross-reference the two tables during manual crash recovery.
+    requestId: uuid('request_id').notNull().unique(),
+    status: comparisonStatusEnum('status').notNull(),
+    model: text('model').notNull(),
+    // SHA-256 hex digest of the day's article id + both reflections'
+    // (participantKey, content) pairs, sorted by participantKey — see
+    // src/services/daily-reflections/comparison-fingerprint.ts. Never
+    // reversible back to reflection content.
+    inputFingerprint: text('input_fingerprint').notNull(),
+    result: jsonb('result'),
+    errorCode: text('error_code'),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    // A completed row always has a result; a non-completed row never
+    // does — mirrors credit_usage_records_reconciliation_pending_has_error_code's
+    // pattern of enforcing "every status has exactly the data it needs".
+    check(
+      'study_day_comparisons_completed_has_result',
+      sql`(${table.status} = 'completed') = (${table.result} IS NOT NULL)`,
+    ),
   ],
 );

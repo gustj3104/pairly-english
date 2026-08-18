@@ -76,7 +76,7 @@ function buildTestApp(overrides: Parameters<typeof buildApp>[0] = {}) {
   });
 }
 
-describe('POST /api/v1/reflections/compare — auth gate', () => {
+describe('POST /api/v1/reflections/compare — auth gate (dev-token-only, section 10 tightening)', () => {
   it('rejects a request with neither a session cookie nor a token with 401', async () => {
     const app = buildTestApp();
     const response = await app.inject({
@@ -88,7 +88,7 @@ describe('POST /api/v1/reflections/compare — auth gate', () => {
     await app.close();
   });
 
-  it('accepts a valid session cookie', async () => {
+  it('rejects a valid session cookie with 401 — this route no longer accepts session-cookie auth at all, only the dev bearer token (browser traffic must use the date-based study-days endpoints instead)', async () => {
     const app = buildTestApp();
     const response = await app.inject({
       method: 'POST',
@@ -96,62 +96,21 @@ describe('POST /api/v1/reflections/compare — auth gate', () => {
       headers: { cookie: validSessionCookie() },
       payload: VALID_BODY,
     });
-    expect(response.statusCode).toBe(200);
+    expect(response.statusCode).toBe(401);
     await app.close();
   });
 
-  it('accepts a valid session cookie in production too — the old blanket-404-in-production policy is gone', async () => {
+  it('rejects a valid session cookie in production too, same as in development — cookie auth is dropped for this route in every environment', async () => {
     const app = buildTestApp({
+      // sessionSecret is part of the shared AuthGateOptions type but is
+      // never consulted by the dev-token-only gate this route now uses
+      // (createDevTokenOnlyAuthGate) — included only to satisfy the type.
       authGateOptions: { nodeEnv: 'production', sessionSecret: SESSION_SECRET },
     });
     const response = await app.inject({
       method: 'POST',
       url: '/api/v1/reflections/compare',
       headers: { cookie: validSessionCookie() },
-      payload: VALID_BODY,
-    });
-    expect(response.statusCode).toBe(200);
-    await app.close();
-  });
-
-  it('rejects a tampered session cookie with 401', async () => {
-    const app = buildTestApp();
-    const cookie = validSessionCookie();
-    const tampered = cookie.endsWith('a') ? `${cookie.slice(0, -1)}b` : `${cookie.slice(0, -1)}a`;
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/v1/reflections/compare',
-      headers: { cookie: tampered },
-      payload: VALID_BODY,
-    });
-    expect(response.statusCode).toBe(401);
-    await app.close();
-  });
-
-  it('rejects a session cookie signed with the wrong secret with 401', async () => {
-    const app = buildTestApp();
-    const wrongSecretToken = signSession(
-      { name: 'Alex' },
-      'a-completely-different-32-char-secret!!',
-      2592000,
-    );
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/v1/reflections/compare',
-      headers: { cookie: `${SESSION_COOKIE_NAME}=${wrongSecretToken}` },
-      payload: VALID_BODY,
-    });
-    expect(response.statusCode).toBe(401);
-    await app.close();
-  });
-
-  it('rejects an expired session cookie with 401', async () => {
-    const app = buildTestApp();
-    const expiredToken = signSession({ name: 'Alex' }, SESSION_SECRET, -1);
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/v1/reflections/compare',
-      headers: { cookie: `${SESSION_COOKIE_NAME}=${expiredToken}` },
       payload: VALID_BODY,
     });
     expect(response.statusCode).toBe(401);
@@ -191,7 +150,7 @@ describe('POST /api/v1/reflections/compare — auth gate', () => {
     await app.close();
   });
 
-  it('refuses the CLI dev token in production, even if correct — only a real session works there', async () => {
+  it('refuses the CLI dev token in production, even if correct — nothing can authenticate this route in production', async () => {
     const app = buildTestApp({
       authGateOptions: {
         nodeEnv: 'production',

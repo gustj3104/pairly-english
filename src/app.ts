@@ -19,6 +19,8 @@ import type { MindlogicClient } from './services/mindlogic/client.js';
 import { createMindlogicClient } from './services/mindlogic/create-client.js';
 import { DailyReflectionService } from './services/daily-reflections/daily-reflection-service.js';
 import { DrizzleDailyReflectionRepository } from './services/daily-reflections/daily-reflection-repository.js';
+import { ComparisonService } from './services/daily-reflections/comparison-service.js';
+import { DrizzleComparisonRepository } from './services/daily-reflections/comparison-repository.js';
 import type { SessionPayload } from './services/auth/session.js';
 
 declare module 'fastify' {
@@ -27,6 +29,7 @@ declare module 'fastify' {
     checkDatabaseConnection: () => Promise<boolean>;
     mindlogicClient: MindlogicClient;
     dailyReflectionService: DailyReflectionService;
+    comparisonService: ComparisonService;
   }
   interface FastifyRequest {
     /**
@@ -47,6 +50,7 @@ export interface BuildAppOptions {
   authGateOptions?: AuthGateOptions;
   authRoutesOptions?: AuthRoutesOptions;
   dailyReflectionService?: DailyReflectionService;
+  comparisonService?: ComparisonService;
   studyDaysRoutesOptions?: StudyDaysRoutesOptions;
   /** Test-only: redirect Pino output somewhere inspectable instead of silent/stdout. */
   loggerStream?: NodeJS.WritableStream;
@@ -94,6 +98,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     'dailyReflectionService',
     options.dailyReflectionService ??
       new DailyReflectionService(new DrizzleDailyReflectionRepository(db)),
+  );
+  app.decorate(
+    'comparisonService',
+    options.comparisonService ?? new ComparisonService(new DrizzleComparisonRepository(db)),
   );
 
   app.register(healthRoutes);

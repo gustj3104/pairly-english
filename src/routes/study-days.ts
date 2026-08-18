@@ -8,7 +8,8 @@ import {
 } from '../services/daily-reflections/participant-key.js';
 import { submitReflectionRequestSchema } from '../services/daily-reflections/schema.js';
 import { compareReflections } from '../services/reflections/reflection-comparison-service.js';
-import { respondToReflectionComparisonOutcome } from '../services/reflections/http-mapping.js';
+import type { ReflectionComparisonOutcome } from '../services/reflections/reflection-comparison-service.js';
+import { mapReflectionComparisonFailureToHttp } from '../services/reflections/http-mapping.js';
 
 export interface StudyDaysRoutesOptions {
   sessionSecret: string;
@@ -52,6 +53,88 @@ function requireSession(request: FastifyRequest, reply: FastifyReply) {
     return undefined;
   }
   return session;
+}
+
+/**
+ * Derives the `error_code` persisted on a 'failed' study_day_comparisons
+ * row from a non-'ok' ReflectionComparisonOutcome — the outcome's own
+ * upstream code where one exists (upstream_failed's MindlogicErrorCode),
+ * otherwise the outcome's status name itself (limit_exceeded,
+ * provider_exhausted, upstream_schema_error, reservation_exceeded).
+ */
+function deriveComparisonFailureErrorCode(
+  outcome: Exclude<ReflectionComparisonOutcome, { status: 'ok' | 'reconciliation_pending' }>,
+): string {
+  return outcome.status === 'upstream_failed' ? outcome.code : outcome.status;
+}
+
+/**
+ * Phase 2, shared by POST /compare's 'claimed' branch and
+ * POST /comparison/retry's 'claimed' branch: settles the
+ * study_day_comparisons row for `requestId` based on `outcome`, logs the
+ * same allow-listed accounting fields as the deprecated
+ * /reflections/compare route, and returns the `{ status, ... }`-shaped
+ * body (GET .../comparison's vocabulary) rather than the old flat error
+ * envelope — see README "Study-day comparison" for the exact contract.
+ */
+async function finalizeComparisonOutcome(
+  app: FastifyInstance,
+  outcome: ReflectionComparisonOutcome,
+  studyDate: string,
+  requestId: string,
+  request: FastifyRequest,
+  reply: FastifyReply,
+  durationMs: number,
+  extraLogFields: Record<string, unknown>,
+): Promise<unknown> {
+  const logFields = {
+    requestId: outcome.requestId,
+    feature: outcome.accounting.feature,
+    model: outcome.accounting.model,
+    outcome: outcome.status,
+    estimatedInputTokens: outcome.accounting.estimatedInputTokens,
+    maxOutputTokens: outcome.accounting.maxOutputTokens,
+    reservedCredits: outcome.accounting.reservedCredits,
+    actualInputTokens: outcome.accounting.actualInputTokens,
+    actualOutputTokens: outcome.accounting.actualOutputTokens,
+    actualCredits: outcome.accounting.actualCredits,
+    durationMs,
+    ...extraLogFields,
+  };
+
+  if (outcome.status === 'ok') {
+    await app.comparisonService.completeWithResult(studyDate, requestId, outcome.result);
+    request.log.info(logFields, 'study-day comparison completed');
+    reply.code(200);
+    return { status: 'completed', cached: false, result: outcome.result };
+  }
+
+  const mapping = mapReflectionComparisonFailureToHttp(outcome.status);
+
+  if (outcome.status === 'reconciliation_pending') {
+    await app.comparisonService.completeWithReconciliationPending(
+      studyDate,
+      requestId,
+      outcome.code,
+    );
+    request.log.warn(
+      {
+        ...logFields,
+        upstreamCode: outcome.code,
+        upstreamStatus: outcome.upstreamStatus,
+        ...outcome.observability,
+      },
+      'study-day comparison transmission status unknown — held for reconciliation',
+    );
+    reply.code(mapping.statusCode);
+    return { status: 'reconciliation_pending' };
+  }
+
+  const errorCode = deriveComparisonFailureErrorCode(outcome);
+  await app.comparisonService.completeWithFailure(studyDate, requestId, errorCode);
+  request.log.warn(logFields, 'study-day comparison failed');
+  reply.code(mapping.statusCode);
+  return { status: 'failed', code: errorCode };
 }
 
 export async function studyDaysRoutes(
@@ -181,42 +264,272 @@ export async function studyDaysRoutes(
     if (session === undefined) return;
 
     const participantKey = normalizeParticipantKey(session.name);
-    const inputs = await app.dailyReflectionService.getComparisonInputs(date, participantKey);
-
-    if (!inputs.ok) {
-      reply.code(409);
-      return {
-        error: {
-          message: 'Your partner has not submitted a reflection for this study day yet',
-          code: 'PARTNER_NOT_READY',
-          requestId: request.id,
-        },
-      };
-    }
-
-    const startedAt = Date.now();
-    const outcome = await compareReflections(
-      {
-        article: {
-          title: inputs.article.title,
-          sourceUrl: inputs.article.sourceUrl ?? undefined,
-          summary: inputs.article.summary ?? undefined,
-        },
-        mine: { displayName: inputs.mine.displayName, reflection: inputs.mine.content },
-        partner: { displayName: inputs.partner.displayName, reflection: inputs.partner.content },
-      },
-      {
-        creditService: app.creditService,
-        mindlogicClient: app.mindlogicClient,
-        maxRetries: options.maxRetries ?? env.MINDLOGIC_MAX_RETRIES,
-        now,
-      },
-    );
-    const durationMs = Date.now() - startedAt;
-
-    return respondToReflectionComparisonOutcome(outcome, request, reply, durationMs, {
+    const logFields = {
+      requestId: request.id,
       studyDate: date,
       participantKeyHash: hashForLogging(participantKey),
-    });
+    };
+
+    // Phase 1: claim generation rights (one short transaction, never held
+    // across the Mindlogic call below) — see
+    // src/services/daily-reflections/comparison-repository.ts.
+    const claim = await app.comparisonService.claimGeneration(date);
+
+    switch (claim.outcome) {
+      case 'partner_not_ready':
+        reply.code(409);
+        return {
+          error: {
+            message: 'Your partner has not submitted a reflection for this study day yet',
+            code: 'PARTNER_NOT_READY',
+            requestId: request.id,
+          },
+        };
+
+      case 'in_progress':
+        request.log.info(logFields, 'study-day comparison already in progress');
+        reply.code(202);
+        return { status: 'processing' };
+
+      case 'reconciliation_pending':
+        request.log.warn(logFields, 'study-day comparison read: reconciliation pending');
+        reply.code(409);
+        return { status: 'reconciliation_pending' };
+
+      case 'failed':
+        // Never auto-retried by a plain POST — only the explicit retry
+        // endpoint below may transition a failed row.
+        request.log.info(
+          { ...logFields, errorCode: claim.errorCode },
+          'study-day comparison previously failed; not retried automatically',
+        );
+        reply.code(200);
+        return { status: 'failed', code: claim.errorCode };
+
+      case 'cached_corrupted':
+        request.log.error(logFields, 'study-day comparison stored result failed schema validation');
+        reply.code(500);
+        return { status: 'failed', code: 'CORRUPTED_RESULT' };
+
+      case 'cached':
+        request.log.info(logFields, 'study-day comparison served from cache');
+        reply.code(200);
+        return { status: 'completed', cached: true, result: claim.result };
+
+      case 'claimed': {
+        const inputs = await app.dailyReflectionService.getComparisonInputs(date, participantKey);
+        if (!inputs.ok) {
+          // Unreachable in practice: claimGeneration just confirmed exactly
+          // 2 reflections exist for this date under a DB lock, and
+          // reflections are never deleted or edited. Fail the claimed row
+          // rather than leave it stuck at 'processing' forever.
+          request.log.error(
+            logFields,
+            'study-day comparison claimed but reflections became unavailable',
+          );
+          await app.comparisonService.completeWithFailure(
+            date,
+            claim.requestId,
+            'partner_data_unavailable',
+          );
+          reply.code(500);
+          return { status: 'failed', code: 'partner_data_unavailable' };
+        }
+
+        const startedAt = Date.now();
+        const outcome = await compareReflections(
+          {
+            article: {
+              title: inputs.article.title,
+              sourceUrl: inputs.article.sourceUrl ?? undefined,
+              summary: inputs.article.summary ?? undefined,
+            },
+            mine: { displayName: inputs.mine.displayName, reflection: inputs.mine.content },
+            partner: {
+              displayName: inputs.partner.displayName,
+              reflection: inputs.partner.content,
+            },
+          },
+          {
+            creditService: app.creditService,
+            mindlogicClient: app.mindlogicClient,
+            maxRetries: options.maxRetries ?? env.MINDLOGIC_MAX_RETRIES,
+            now,
+            // Same request_id the caller claimed in study_day_comparisons
+            // lands in credit_usage_records too — the shared join key for
+            // manual crash recovery (README "Study-day comparison").
+            generateRequestId: () => claim.requestId,
+          },
+        );
+        const durationMs = Date.now() - startedAt;
+
+        return finalizeComparisonOutcome(
+          app,
+          outcome,
+          date,
+          claim.requestId,
+          request,
+          reply,
+          durationMs,
+          logFields,
+        );
+      }
+    }
   });
+
+  app.get('/study-days/:date/comparison', { preHandler: sessionGate }, async (request, reply) => {
+    const date = validateDateParam(request, reply, options.maxFutureDays, now);
+    if (date === undefined) return;
+
+    const session = requireSession(request, reply);
+    if (session === undefined) return;
+
+    const result = await app.comparisonService.getComparison(date);
+
+    request.log.info(
+      { requestId: request.id, studyDate: date, status: result.status },
+      'study-day comparison status checked',
+    );
+
+    switch (result.status) {
+      case 'not_started':
+        reply.code(200);
+        return { status: 'not_started' };
+      case 'processing':
+        reply.code(200);
+        return { status: 'processing' };
+      case 'completed':
+        reply.code(200);
+        return { status: 'completed', result: result.result };
+      case 'failed':
+        reply.code(200);
+        return { status: 'failed', code: result.errorCode };
+      case 'reconciliation_pending':
+        reply.code(200);
+        return { status: 'reconciliation_pending' };
+      case 'corrupted':
+        request.log.error(
+          { requestId: request.id, studyDate: date },
+          'stored study-day comparison result failed schema validation',
+        );
+        reply.code(500);
+        return { status: 'failed', code: 'CORRUPTED_RESULT' };
+    }
+  });
+
+  app.post(
+    '/study-days/:date/comparison/retry',
+    { preHandler: sessionGate },
+    async (request, reply) => {
+      const date = validateDateParam(request, reply, options.maxFutureDays, now);
+      if (date === undefined) return;
+
+      const session = requireSession(request, reply);
+      if (session === undefined) return;
+
+      const participantKey = normalizeParticipantKey(session.name);
+      const logFields = {
+        requestId: request.id,
+        studyDate: date,
+        participantKeyHash: hashForLogging(participantKey),
+      };
+
+      const claim = await app.comparisonService.claimRetry(date);
+
+      switch (claim.outcome) {
+        case 'not_started':
+          reply.code(409);
+          return {
+            error: {
+              message: 'There is no comparison to retry for this study day',
+              code: 'NOTHING_TO_RETRY',
+              requestId: request.id,
+            },
+          };
+
+        case 'processing':
+          // Not an error — someone else's retry (or the original attempt)
+          // is still in flight. Same 202 as POST /compare's 'in_progress'.
+          request.log.info(logFields, 'study-day comparison retry: already in progress');
+          reply.code(202);
+          return { status: 'processing' };
+
+        case 'completed':
+          reply.code(409);
+          return {
+            error: {
+              message: 'This study day already has a completed comparison',
+              code: 'ALREADY_COMPLETED',
+              requestId: request.id,
+            },
+          };
+
+        case 'reconciliation_pending':
+          reply.code(409);
+          return {
+            error: {
+              message:
+                'This comparison is pending reconciliation and cannot be retried until an operator resolves it',
+              code: 'RECONCILIATION_PENDING',
+              requestId: request.id,
+            },
+          };
+
+        case 'claimed': {
+          const inputs = await app.dailyReflectionService.getComparisonInputs(date, participantKey);
+          if (!inputs.ok) {
+            request.log.error(
+              logFields,
+              'study-day comparison retry claimed but reflections became unavailable',
+            );
+            await app.comparisonService.completeWithFailure(
+              date,
+              claim.requestId,
+              'partner_data_unavailable',
+            );
+            reply.code(500);
+            return { status: 'failed', code: 'partner_data_unavailable' };
+          }
+
+          const startedAt = Date.now();
+          const outcome = await compareReflections(
+            {
+              article: {
+                title: inputs.article.title,
+                sourceUrl: inputs.article.sourceUrl ?? undefined,
+                summary: inputs.article.summary ?? undefined,
+              },
+              mine: { displayName: inputs.mine.displayName, reflection: inputs.mine.content },
+              partner: {
+                displayName: inputs.partner.displayName,
+                reflection: inputs.partner.content,
+              },
+            },
+            {
+              creditService: app.creditService,
+              mindlogicClient: app.mindlogicClient,
+              maxRetries: options.maxRetries ?? env.MINDLOGIC_MAX_RETRIES,
+              now,
+              // A brand-new request_id — never the old failed attempt's.
+              // That old one's credit_usage_records row is left exactly
+              // as-is, permanently, as the failure history.
+              generateRequestId: () => claim.requestId,
+            },
+          );
+          const durationMs = Date.now() - startedAt;
+
+          return finalizeComparisonOutcome(
+            app,
+            outcome,
+            date,
+            claim.requestId,
+            request,
+            reply,
+            durationMs,
+            logFields,
+          );
+        }
+      }
+    },
+  );
 }

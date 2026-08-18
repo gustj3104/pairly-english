@@ -12,6 +12,8 @@ import { CreditService } from '../../src/services/credits/credit-service.js';
 import { DrizzleCreditRepository } from '../../src/services/credits/credit-repository.js';
 import { DailyReflectionService } from '../../src/services/daily-reflections/daily-reflection-service.js';
 import { DrizzleDailyReflectionRepository } from '../../src/services/daily-reflections/daily-reflection-repository.js';
+import { ComparisonService } from '../../src/services/daily-reflections/comparison-service.js';
+import { DrizzleComparisonRepository } from '../../src/services/daily-reflections/comparison-repository.js';
 import { MindlogicClient } from '../../src/services/mindlogic/client.js';
 import { SESSION_COOKIE_NAME, signSession } from '../../src/services/auth/session.js';
 import { reflections } from '../../src/db/schema.js';
@@ -70,6 +72,10 @@ function buildRealDailyReflectionService() {
   return new DailyReflectionService(new DrizzleDailyReflectionRepository(testDb.db));
 }
 
+function buildRealComparisonService() {
+  return new ComparisonService(new DrizzleComparisonRepository(testDb.db));
+}
+
 function buildRealCreditService(monthlyLimit = 5000) {
   return new CreditService(new DrizzleCreditRepository(testDb.db), monthlyLimit);
 }
@@ -118,6 +124,7 @@ function buildTestApp(
       ),
     }),
     dailyReflectionService: overrides.dailyReflectionService ?? buildRealDailyReflectionService(),
+    comparisonService: buildRealComparisonService(),
     studyDaysRoutesOptions: {
       sessionSecret: SESSION_SECRET,
       maxFutureDays: overrides.maxFutureDays ?? 1,
@@ -193,7 +200,8 @@ describe('daily reflections — real PostgreSQL end to end', () => {
       headers: { cookie: sessionCookie('Alex') },
     });
     expect(compare.statusCode).toBe(200);
-    expect(compare.json().topics).toHaveLength(3);
+    expect(compare.json().status).toBe('completed');
+    expect(compare.json().result.topics).toHaveLength(3);
 
     await app.close();
   });

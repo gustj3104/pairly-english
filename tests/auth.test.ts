@@ -308,10 +308,18 @@ describe('timingSafeEqualPassword', () => {
 });
 
 describe('session integration: a real login session can access the AI route', () => {
-  it('POST /auth/login then POST /reflections/compare with the resulting cookie succeeds', async () => {
+  it('POST /auth/login then PUT reflections + POST /study-days/:date/compare with the resulting cookies succeeds — the date-based route, not the now dev-token-only /reflections/compare (see section 10)', async () => {
     const { CreditService } = await import('../src/services/credits/credit-service.js');
     const { InMemoryCreditRepository } = await import('./helpers/in-memory-credit-repository.js');
     const { MindlogicClient } = await import('../src/services/mindlogic/client.js');
+    const { DailyReflectionService } =
+      await import('../src/services/daily-reflections/daily-reflection-service.js');
+    const { InMemoryDailyReflectionRepository } =
+      await import('./helpers/in-memory-daily-reflection-repository.js');
+    const { ComparisonService } =
+      await import('../src/services/daily-reflections/comparison-service.js');
+    const { InMemoryComparisonRepository } =
+      await import('./helpers/in-memory-comparison-repository.js');
 
     const fetchImpl = async () =>
       new Response(
@@ -345,6 +353,10 @@ describe('session integration: a real login session can access the AI route', ()
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       );
 
+    const dailyReflectionRepository = new InMemoryDailyReflectionRepository();
+    const STUDY_DATE = '2026-08-17';
+    const FIXED_NOW = new Date('2026-08-18T03:00:00.000Z'); // 2026-08-18 12:00 KST
+
     const app = buildTestApp({
       creditService: new CreditService(new InMemoryCreditRepository(), 5000),
       mindlogicClient: new MindlogicClient({
@@ -352,40 +364,82 @@ describe('session integration: a real login session can access the AI route', ()
         baseUrl: 'https://example.com/v1/gateway',
         fetchImpl,
       }),
-    });
-
-    const login = await app.inject({
-      method: 'POST',
-      url: '/api/v1/auth/login',
-      payload: { name: 'Alex', password: SHARED_PASSWORD },
-    });
-    expect(login.statusCode).toBe(200);
-    const sessionCookieHeader = Array.isArray(login.headers['set-cookie'])
-      ? login.headers['set-cookie'][0]!
-      : (login.headers['set-cookie'] as string);
-    const cookieValue = sessionCookieHeader.split(';')[0]!;
-
-    const compareResponse = await app.inject({
-      method: 'POST',
-      url: '/api/v1/reflections/compare',
-      headers: { cookie: cookieValue },
-      payload: {
-        article: { title: 'The Quiet Revolution', summary: 'A summary.' },
-        mine: {
-          displayName: 'Alex',
-          reflection:
-            'I found this article compelling because it connects Korean cultural investment to genuine artistic ambition.',
-        },
-        partner: {
-          displayName: 'Sam',
-          reflection:
-            'I found this article compelling because it connects Korean cultural investment to genuine artistic ambition too.',
-        },
+      dailyReflectionService: new DailyReflectionService(dailyReflectionRepository),
+      comparisonService: new ComparisonService(
+        new InMemoryComparisonRepository(dailyReflectionRepository),
+      ),
+      studyDaysRoutesOptions: {
+        sessionSecret: SESSION_SECRET,
+        maxFutureDays: 1,
+        now: () => FIXED_NOW,
       },
     });
 
+    async function loginCookie(name: string) {
+      const login = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/login',
+        payload: { name, password: SHARED_PASSWORD },
+      });
+      expect(login.statusCode).toBe(200);
+      const sessionCookieHeader = Array.isArray(login.headers['set-cookie'])
+        ? login.headers['set-cookie'][0]!
+        : (login.headers['set-cookie'] as string);
+      return sessionCookieHeader.split(';')[0]!;
+    }
+
+    const alexCookie = await loginCookie('Alex');
+    const samCookie = await loginCookie('Sam');
+
+    const reflectionBody = (reflection: string) => ({
+      article: { id: 'article-1', title: 'The Quiet Revolution', sourceUrl: null, summary: null },
+      reflection,
+    });
+
+    const alexPut = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/study-days/${STUDY_DATE}/reflection`,
+      headers: { cookie: alexCookie },
+      payload: reflectionBody(
+        'I found this article compelling because it connects Korean cultural investment to genuine artistic ambition.',
+      ),
+    });
+    expect(alexPut.statusCode).toBe(200);
+
+    const samPut = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/study-days/${STUDY_DATE}/reflection`,
+      headers: { cookie: samCookie },
+      payload: reflectionBody(
+        'I found this article compelling because it connects Korean cultural investment to genuine artistic ambition too.',
+      ),
+    });
+    expect(samPut.statusCode).toBe(200);
+
+    const compareResponse = await app.inject({
+      method: 'POST',
+      url: `/api/v1/study-days/${STUDY_DATE}/compare`,
+      headers: { cookie: alexCookie },
+    });
+
     expect(compareResponse.statusCode).toBe(200);
-    expect(compareResponse.json().topics).toHaveLength(3);
+    const body = compareResponse.json();
+    expect(body.status).toBe('completed');
+    expect(body.result.topics).toHaveLength(3);
+
+    // The now dev-token-only /reflections/compare route must reject this
+    // same real session cookie (section 10).
+    const oldRouteResponse = await app.inject({
+      method: 'POST',
+      url: '/api/v1/reflections/compare',
+      headers: { cookie: alexCookie },
+      payload: {
+        article: { title: 'The Quiet Revolution', summary: 'A summary.' },
+        mine: { displayName: 'Alex', reflection: 'x'.repeat(60) },
+        partner: { displayName: 'Sam', reflection: 'y'.repeat(60) },
+      },
+    });
+    expect(oldRouteResponse.statusCode).toBe(401);
 
     await app.close();
   });

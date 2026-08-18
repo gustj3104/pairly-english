@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { env } from '../config/env.js';
-import { createAuthGate, type AuthGateOptions } from '../plugins/auth-gate.js';
+import { createDevTokenOnlyAuthGate, type AuthGateOptions } from '../plugins/auth-gate.js';
 import { compareReflectionsRequestSchema } from '../services/reflections/schema.js';
 import { compareReflections } from '../services/reflections/reflection-comparison-service.js';
 import type { ReflectionComparisonOutcome } from '../services/reflections/reflection-comparison-service.js';
@@ -24,10 +24,9 @@ export async function reflectionsRoutes(
   app: FastifyInstance,
   options: ReflectionsRoutesOptions = {},
 ): Promise<void> {
-  const authGate = createAuthGate(
+  const authGate = createDevTokenOnlyAuthGate(
     options.authGateOptions ?? {
       nodeEnv: env.NODE_ENV,
-      sessionSecret: env.SESSION_SECRET,
       devAccessToken: env.AI_DEV_ACCESS_TOKEN,
     },
   );
@@ -35,10 +34,16 @@ export async function reflectionsRoutes(
   /**
    * Superseded by `POST /api/v1/study-days/:date/compare`
    * (src/routes/study-days.ts), which sources both sides' reflections
-   * from the database instead of trusting the caller to submit both —
-   * kept only for the CLI smoke-test scripts
-   * (scripts/mindlogic-smoke-test*.ts) and backward compatibility. Do
-   * not remove or restrict this route.
+   * from the database instead of trusting the caller to submit both.
+   * Nothing in the frontend calls this route anymore — kept only for the
+   * CLI smoke-test scripts (scripts/mindlogic-smoke-test*.ts), which
+   * always use the dev bearer token, never a session cookie. Its auth is
+   * therefore restricted to the dev-token-only gate (see
+   * createDevTokenOnlyAuthGate in src/plugins/auth-gate.ts) — a session
+   * cookie no longer works here, even a valid one. Removal plan: delete
+   * this route once the smoke-test scripts are migrated to hit
+   * `POST /study-days/:date/compare` directly, or once it's no longer
+   * needed at all.
    */
   app.post(
     '/reflections/compare',

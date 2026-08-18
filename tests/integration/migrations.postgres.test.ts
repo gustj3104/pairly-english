@@ -43,13 +43,15 @@ describe('migration application', () => {
         'credit_usage_records',
         'study_days',
         'reflections',
+        'study_day_comparisons',
       ]),
     );
 
     const enums = await testDb.pool.query<{ typname: string }>(
-      `select typname from pg_type where typname in ('credit_status', 'credit_feature', 'reflection_status')`,
+      `select typname from pg_type where typname in ('credit_status', 'credit_feature', 'reflection_status', 'comparison_status')`,
     );
     expect(enums.rows.map((row) => row.typname).sort()).toEqual([
+      'comparison_status',
       'credit_feature',
       'credit_status',
       'reflection_status',
@@ -237,6 +239,100 @@ describe('daily-reflections unique constraint enforcement', () => {
         `insert into reflections
            (study_date, participant_key, display_name, content, submitted_at, updated_at)
          values ('2026-08-17', 'alex', 'Alex', 'A different sufficiently long reflection body.', now(), now())`,
+      ),
+    ).rejects.toMatchObject({ code: '23505' }); // unique_violation
+  });
+});
+
+describe('study_day_comparisons foreign key enforcement', () => {
+  it('rejects a study_day_comparisons row referencing a study_date with no study_days row', async () => {
+    await expect(
+      testDb.pool.query(
+        `insert into study_day_comparisons
+           (study_date, request_id, status, model, input_fingerprint, started_at, updated_at)
+         values ('2099-01-01', gen_random_uuid(), 'processing', 'gpt-5.4-mini', 'deadbeef', now(), now())`,
+      ),
+    ).rejects.toMatchObject({ code: '23503' }); // foreign_key_violation
+  });
+});
+
+describe('study_day_comparisons enum enforcement', () => {
+  it('rejects an out-of-range comparison_status value at the database level', async () => {
+    await testDb.pool.query(
+      `insert into study_days (study_date, article_id, article_title) values ('2026-08-17', 'a1', 'Title')`,
+    );
+    await expect(
+      testDb.pool.query(
+        `insert into study_day_comparisons
+           (study_date, request_id, status, model, input_fingerprint, started_at, updated_at)
+         values ('2026-08-17', gen_random_uuid(), 'bogus_status', 'gpt-5.4-mini', 'deadbeef', now(), now())`,
+      ),
+    ).rejects.toMatchObject({ code: '22P02' }); // invalid_text_representation (bad enum input)
+  });
+});
+
+describe('study_day_comparisons check constraint enforcement', () => {
+  it('rejects a completed row with no result', async () => {
+    await testDb.pool.query(
+      `insert into study_days (study_date, article_id, article_title) values ('2026-08-17', 'a1', 'Title')`,
+    );
+    await expect(
+      testDb.pool.query(
+        `insert into study_day_comparisons
+           (study_date, request_id, status, model, input_fingerprint, started_at, updated_at)
+         values ('2026-08-17', gen_random_uuid(), 'completed', 'gpt-5.4-mini', 'deadbeef', now(), now())`,
+      ),
+    ).rejects.toMatchObject({ code: '23514' }); // check_violation
+  });
+
+  it('rejects a non-completed row that does have a result', async () => {
+    await testDb.pool.query(
+      `insert into study_days (study_date, article_id, article_title) values ('2026-08-17', 'a1', 'Title')`,
+    );
+    await expect(
+      testDb.pool.query(
+        `insert into study_day_comparisons
+           (study_date, request_id, status, model, input_fingerprint, result, started_at, updated_at)
+         values ('2026-08-17', gen_random_uuid(), 'processing', 'gpt-5.4-mini', 'deadbeef', '{}'::jsonb, now(), now())`,
+      ),
+    ).rejects.toMatchObject({ code: '23514' });
+  });
+
+  it('accepts a completed row that does have a result', async () => {
+    await testDb.pool.query(
+      `insert into study_days (study_date, article_id, article_title) values ('2026-08-17', 'a1', 'Title')`,
+    );
+    await expect(
+      testDb.pool.query(
+        `insert into study_day_comparisons
+           (study_date, request_id, status, model, input_fingerprint, result, started_at, updated_at, completed_at)
+         values ('2026-08-17', gen_random_uuid(), 'completed', 'gpt-5.4-mini', 'deadbeef', '{}'::jsonb, now(), now(), now())`,
+      ),
+    ).resolves.toMatchObject({ rowCount: 1 });
+  });
+});
+
+describe('study_day_comparisons unique constraint enforcement', () => {
+  it('rejects a second row with the same request_id', async () => {
+    await testDb.pool.query(
+      `insert into study_days (study_date, article_id, article_title) values ('2026-08-17', 'a1', 'Title')`,
+    );
+    await testDb.pool.query(
+      `insert into study_days (study_date, article_id, article_title) values ('2026-08-18', 'a1', 'Title')`,
+    );
+    const sharedRequestId = '11111111-1111-1111-1111-111111111111';
+    await testDb.pool.query(
+      `insert into study_day_comparisons
+         (study_date, request_id, status, model, input_fingerprint, started_at, updated_at)
+       values ('2026-08-17', $1, 'processing', 'gpt-5.4-mini', 'deadbeef', now(), now())`,
+      [sharedRequestId],
+    );
+    await expect(
+      testDb.pool.query(
+        `insert into study_day_comparisons
+           (study_date, request_id, status, model, input_fingerprint, started_at, updated_at)
+         values ('2026-08-18', $1, 'processing', 'gpt-5.4-mini', 'deadbeef', now(), now())`,
+        [sharedRequestId],
       ),
     ).rejects.toMatchObject({ code: '23505' }); // unique_violation
   });

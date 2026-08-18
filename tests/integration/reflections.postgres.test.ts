@@ -9,6 +9,7 @@ import { buildApp } from '../../src/app.js';
 import { CreditService } from '../../src/services/credits/credit-service.js';
 import { DrizzleCreditRepository } from '../../src/services/credits/credit-repository.js';
 import { MindlogicClient } from '../../src/services/mindlogic/client.js';
+import { SESSION_COOKIE_NAME, signSession } from '../../src/services/auth/session.js';
 
 /**
  * Combines a real, throwaway PostgreSQL instance (Testcontainers) with a
@@ -182,6 +183,37 @@ describe('POST /api/v1/reflections/compare — real PostgreSQL + mocked Mindlogi
 
     expect(response.statusCode).toBe(402);
     expect(mindlogicCalled).toBe(false);
+
+    await app.close();
+  });
+
+  it('rejects a valid session cookie — section 10 tightened this route to the dev bearer token only, never a session cookie, even against a real PostgreSQL-backed session', async () => {
+    const mindlogicClient = new MindlogicClient({
+      apiKey: 'test-fake-key',
+      baseUrl: 'https://example.com/v1/gateway',
+      fetchImpl: vi.fn(),
+    });
+    const creditService = buildRealCreditService();
+    const sessionSecret = 'integration-test-session-secret-at-least-32c';
+    const app = buildApp({
+      checkDatabaseConnection: async () => true,
+      creditService,
+      mindlogicClient,
+      authGateOptions: {
+        nodeEnv: 'development',
+        sessionSecret,
+        devAccessToken: DEV_TOKEN,
+      },
+    });
+
+    const token = signSession({ name: 'Alex' }, sessionSecret, 2592000);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/reflections/compare',
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` },
+      payload: VALID_BODY,
+    });
+    expect(response.statusCode).toBe(401);
 
     await app.close();
   });

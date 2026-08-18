@@ -4,7 +4,9 @@ import { buildApp } from '../src/app.js';
 import { CreditService } from '../src/services/credits/credit-service.js';
 import { InMemoryCreditRepository } from './helpers/in-memory-credit-repository.js';
 import { InMemoryDailyReflectionRepository } from './helpers/in-memory-daily-reflection-repository.js';
+import { InMemoryComparisonRepository } from './helpers/in-memory-comparison-repository.js';
 import { DailyReflectionService } from '../src/services/daily-reflections/daily-reflection-service.js';
+import { ComparisonService } from '../src/services/daily-reflections/comparison-service.js';
 import { MindlogicClient } from '../src/services/mindlogic/client.js';
 import { SESSION_COOKIE_NAME, signSession } from '../src/services/auth/session.js';
 
@@ -71,9 +73,12 @@ function buildTestApp(overrides: Parameters<typeof buildApp>[0] = {}) {
   const creditService =
     overrides.creditService ?? new CreditService(new InMemoryCreditRepository(), 5000);
   const mindlogicClient = overrides.mindlogicClient ?? successfulMindlogicClient();
+  const dailyReflectionRepository = new InMemoryDailyReflectionRepository();
   const dailyReflectionService =
-    overrides.dailyReflectionService ??
-    new DailyReflectionService(new InMemoryDailyReflectionRepository());
+    overrides.dailyReflectionService ?? new DailyReflectionService(dailyReflectionRepository);
+  const comparisonService =
+    overrides.comparisonService ??
+    new ComparisonService(new InMemoryComparisonRepository(dailyReflectionRepository));
   return buildApp({
     checkDatabaseConnection: async () => true,
     studyDaysRoutesOptions: {
@@ -85,6 +90,7 @@ function buildTestApp(overrides: Parameters<typeof buildApp>[0] = {}) {
     creditService,
     mindlogicClient,
     dailyReflectionService,
+    comparisonService,
   });
 }
 
@@ -366,9 +372,55 @@ describe('POST /api/v1/study-days/:date/compare', () => {
 
     expect(response.statusCode).toBe(200);
     const body = response.json();
-    expect(typeof body.requestId).toBe('string');
-    expect(body.topics).toHaveLength(3);
+    expect(body.status).toBe('completed');
+    expect(body.cached).toBe(false);
+    expect(body.result.topics).toHaveLength(3);
     expect(mindlogicCalled).toBe(true);
+
+    await app.close();
+  });
+
+  it('a second POST for the same date is served from cache with cached: true and no additional provider call', async () => {
+    let mindlogicCallCount = 0;
+    const mindlogicClient = successfulMindlogicClient(() => {
+      mindlogicCallCount++;
+    });
+    const app = buildTestApp({ mindlogicClient });
+
+    expect((await submit(app, 'Alex')).statusCode).toBe(200);
+    expect(
+      (await submit(app, 'Sam', validBody({ reflection: `${VALID_REFLECTION} Sam's own take.` })))
+        .statusCode,
+    ).toBe(200);
+
+    const first = await app.inject({
+      method: 'POST',
+      url: `/api/v1/study-days/${STUDY_DATE}/compare`,
+      headers: { cookie: sessionCookie('Alex') },
+    });
+    expect(first.statusCode).toBe(200);
+    expect(first.json().cached).toBe(false);
+
+    const second = await app.inject({
+      method: 'POST',
+      url: `/api/v1/study-days/${STUDY_DATE}/compare`,
+      headers: { cookie: sessionCookie('Sam') },
+    });
+    expect(second.statusCode).toBe(200);
+    const secondBody = second.json();
+    expect(secondBody.status).toBe('completed');
+    expect(secondBody.cached).toBe(true);
+    expect(secondBody.result).toEqual(first.json().result);
+
+    expect(mindlogicCallCount).toBe(1);
+
+    const getResponse = await app.inject({
+      method: 'GET',
+      url: `/api/v1/study-days/${STUDY_DATE}/comparison`,
+      headers: { cookie: sessionCookie('Alex') },
+    });
+    expect(getResponse.statusCode).toBe(200);
+    expect(getResponse.json()).toEqual({ status: 'completed', result: first.json().result });
 
     await app.close();
   });

@@ -190,7 +190,7 @@ pnpm test:integration  # real PostgreSQL integration tests via Testcontainers �
 pnpm test:all          # test:run + test:integration
 ```
 
-### Fast unit tests (`pnpm test:run`, 228 tests, no Docker)
+### Fast unit tests (`pnpm test:run`, 251 tests, no Docker)
 
 Cover: env validation, CORS allow/deny + wildcard rejection, credit calculation and rounding,
 80/90%/exhausted warning levels, Asia/Seoul month-boundary and reset-date math, reservation
@@ -233,12 +233,29 @@ compare against a mocked Mindlogic client, a genuine 3rd distinct name rejected 
 and a log-capture test proving displayName/content/the raw participant key never reach the
 logger.
 
+`tests/comparison-fingerprint.test.ts`, `tests/comparison-service.test.ts`, and
+`tests/study-days-comparison.test.ts` cover the study-day-comparison caching/locking feature
+(see [Study-day comparison](#study-day-comparison--caching-locking-crash-safety)) against an
+in-memory `ComparisonRepository` fake (`tests/helpers/in-memory-comparison-repository.ts`):
+`computeInputFingerprint`'s order-independence and irreversibility, `ComparisonService`'s
+read-side and write-side schema (re-)validation (a corrupted stored result is detected and
+never passed through as `'completed'`), `PARTNER_NOT_READY` with 0/1 reflections, exactly one
+provider call on first generation with the result persisted and returned via both `POST
+/compare` and `GET /comparison`, a second `POST /compare` served from cache (`cached: true`,
+zero additional provider calls) with both participants seeing the identical result via `GET`,
+a concurrent request arriving while phase 2 is still in flight getting `202 processing` without
+a second provider call, a certain upstream failure settling to `'failed'` and **never**
+auto-retried by plain `POST /compare` (provider call count stays flat across repeated POSTs),
+`POST .../comparison/retry`'s `NOTHING_TO_RETRY`/`ALREADY_COMPLETED`/`RECONCILIATION_PENDING`
+rejections, a successful retry on a `'failed'` row re-attempting generation, and a timeout
+settling to `'reconciliation_pending'` with retry rejected and the provider never re-called.
+
 These run `CreditService`'s business rules against `InMemoryCreditRepository`
 (`tests/helpers/in-memory-credit-repository.ts`) — a plain JS `Map`, **not** a stand-in for
 PostgreSQL. It verifies `CreditService`'s logic, never PostgreSQL's transaction/locking
 semantics — that's what the integration suite below is for.
 
-### PostgreSQL integration tests (`pnpm test:integration`, 44 tests, requires Docker)
+### PostgreSQL integration tests (`pnpm test:integration`, 58 tests, requires Docker)
 
 Uses [Testcontainers](https://node.testcontainers.org/) to boot a real, throwaway
 `postgres:16-alpine` container per test file, apply the actual Drizzle migrations from
@@ -265,14 +282,18 @@ Docker-Compose dev database described below.
   and re-`reserveCredits()`-ing a pending `requestId` is blocked (returns
   `reason: 'reconciliation_pending'`, creates no second reservation).
 - `tests/integration/migrations.postgres.test.ts` — migration applies cleanly to an empty
-  database (now asserting `study_days`/`reflections`/`reflection_status` exist alongside the
-  credit tables), migration re-run is a no-op, foreign key / enum / `CHECK` / `UNIQUE`
-  constraint enforcement at the database level for both the credit tables (including the
-  `reconciliation_pending` requires-`error_code` constraint) and the daily-reflections tables
-  (missing-`study_days`-FK rejection, bad `reflection_status` enum value, blank `display_name`/
-  `content`, and a second `(study_date, participant_key)` row rejected as a unique violation),
-  and integer round-trip precision (no numeric/bigint string coercion, since the schema uses
-  `integer` throughout).
+  database, from empty (now asserting `study_days`/`reflections`/`reflection_status` **and**
+  `study_day_comparisons`/`comparison_status` all exist alongside the credit tables), migration
+  re-run is a no-op, foreign key / enum / `CHECK` / `UNIQUE` constraint enforcement at the
+  database level for the credit tables (including the `reconciliation_pending`
+  requires-`error_code` constraint), the daily-reflections tables (missing-`study_days`-FK
+  rejection, bad `reflection_status` enum value, blank `display_name`/`content`, and a second
+  `(study_date, participant_key)` row rejected as a unique violation), and the
+  `study_day_comparisons` table (missing-`study_days`-FK rejection, bad `comparison_status`
+  enum value, the `(status = 'completed') = (result IS NOT NULL)` `CHECK` enforced in both
+  directions, and a duplicate `request_id` rejected as a unique violation), plus integer
+  round-trip precision (no numeric/bigint string coercion, since the schema uses `integer`
+  throughout).
 - `tests/integration/reflections.postgres.test.ts` — `POST /api/v1/reflections/compare` driven
   through Fastify `inject()` with a **real** PostgreSQL-backed `CreditService` and a **mocked**
   Mindlogic HTTP layer: a successful comparison reserves and commits real rows, a non-retryable
@@ -286,6 +307,40 @@ Docker-Compose dev database described below.
   truly concurrent `PUT` submissions for the same date with 20 distinct names**, asserted to
   collapse into exactly 2 `reflections` rows (18 rejected with `PARTICIPANT_LIMIT_REACHED`, 0
   unexpected errors, 0 deadlocks).
+- `tests/integration/study-days-comparison.postgres.test.ts` — the study-day-comparison
+  caching/locking feature (see [Study-day
+  comparison](#study-day-comparison--caching-locking-crash-safety)) against a **real**
+  PostgreSQL and a mocked Mindlogic HTTP layer — this is the suite that actually proves the
+  two-phase claim/generate design is race-safe, not just correct against a single-threaded
+  in-memory fake:
+  - **The core concurrency proof**: **~20 truly concurrent `POST /compare` requests for the
+    same date** (mixed callers, both real participants) against a mocked Mindlogic client that
+    counts its own invocations, with an artificial delay widening the race window — asserts
+    the mock was called **exactly once**, the `study_day_comparisons` row ends `'completed'`,
+    and **exactly one** `credit_usage_records` row exists for the winning `request_id` (in
+    fact, exactly one row total — no other reservation was created by the race at all).
+  - Completed result persisted and re-queried with zero additional provider calls, identical
+    result via `GET`.
+  - A certain upstream failure (`401`) settles to `'failed'`; repeated plain `POST /compare`
+    calls after that never re-call the provider, and the released `credit_usage_records` row
+    for that first `request_id` is confirmed present and untouched.
+  - `POST .../comparison/retry` on that `'failed'` row succeeds with a **new** `request_id`
+    (confirmed distinct from the original in the real `study_day_comparisons` row), calls the
+    provider a second time, and the **original** `credit_usage_records` row is confirmed still
+    present with its original `'released'` status — plus a **~10-way concurrent retry** race on
+    the same failed row (mocked provider call delayed to widen the window) asserted to call the
+    provider **exactly once more**, not once per concurrent retry request.
+  - A timeout (`AbortController` fires, no response) settles the row to
+    `'reconciliation_pending'`; a subsequent `POST /compare` never re-calls the provider, and
+    `POST .../comparison/retry` is rejected `409 RECONCILIATION_PENDING` with no provider call.
+  - A `result` JSONB manually corrupted via raw SQL (bypassing the app entirely) is detected by
+    `GET .../comparison`'s read-side validation — `500 { status: 'failed', code:
+'CORRUPTED_RESULT' }`, never the malformed blob passed through as a valid `'completed'`
+    response.
+  - A log-capture test confirms reflection text, the article summary, and the full AI result
+    JSON (`commonGround`/`differences`) never reach the logger across the whole lifecycle.
+  - Every Mindlogic interaction in this file — including the concurrency race — goes through a
+    mocked `fetchImpl`; nothing here ever calls the real Mindlogic API.
 
 ## Database / migrations
 
@@ -299,13 +354,21 @@ pnpm db:studio     # open Drizzle Studio against DATABASE_URL
 ```
 
 The initial migration (`src/db/migrations/0000_glorious_dark_beast.sql`), the follow-up
-`0001_polite_warlock.sql` (adds the `provider_contract_check` credit-feature enum value), and
+`0001_polite_warlock.sql` (adds the `provider_contract_check` credit-feature enum value),
 `0002_watery_raider.sql` (adds the `study_days`/`reflections` tables and `reflection_status`
 enum for the daily-reflections feature — see [Daily
-reflections](#daily-reflections--study-day-based-comparison)) are all applied automatically to
-a throwaway container by every `pnpm test:integration` run, and have also been applied to the
-local Docker Compose dev database (below) via `pnpm db:migrate`. Run `pnpm db:migrate` yourself
-against any other target once `DATABASE_URL` in `.env.local` points at it.
+reflections](#daily-reflections--study-day-based-comparison)), and
+`0003_familiar_madame_web.sql` (adds the `study_day_comparisons` table and `comparison_status`
+enum for the caching/locking feature — see [Study-day
+comparison](#study-day-comparison--caching-locking-crash-safety)) are all applied automatically
+to a throwaway container by every `pnpm test:integration` run, and have also been applied to
+the local Docker Compose dev database (below). Run `pnpm db:migrate` yourself against any other
+target once `DATABASE_URL` in `.env.local` points at it — **note**: on at least one Windows dev
+shell, the `drizzle-kit migrate` CLI has been observed to hang indefinitely mid-run with no
+error; when that happens, invoking `drizzle-orm/node-postgres/migrator`'s `migrate()` function
+directly (a small standalone script pointed at the same `migrationsFolder`, the same call
+`tests/integration/helpers/postgres-container.ts` already makes against the Testcontainers
+database) applies the exact same migration files without hanging.
 
 ### Local development database (Docker Compose)
 
@@ -373,6 +436,19 @@ Unlike `credit_usage_records`, `reflections` deliberately DOES store the origina
 IS the record of what was submitted, not an accounting/ledger table. Only log lines are
 restricted (see [Daily reflections](#daily-reflections--study-day-based-comparison)'s logging
 discipline) — `participant_key`/`display_name`/`content` are never written to any log.
+
+- **`study_day_comparisons`** — one row per calendar date (`study_date`, `date`, PK, FK →
+  `study_days.study_date`), period — not one row per attempt (a retry `UPDATE`s the same row in
+  place; see [Study-day comparison](#study-day-comparison--caching-locking-crash-safety)).
+  Carries `request_id` (UUID, `UNIQUE`, shared with the matching `credit_usage_records` row for
+  cross-referencing), a `comparison_status` enum (`processing` / `completed` / `failed` /
+  `reconciliation_pending`), `model`, `input_fingerprint` (SHA-256 hex, irreversible), a
+  nullable `result` JSONB, a nullable `error_code`, and `started_at`/`completed_at`/
+  `updated_at`. `CHECK (status = 'completed') = (result IS NOT NULL)` enforces that completed
+  rows always carry a result and non-completed rows never do. Like `credit_usage_records` (and
+  unlike `reflections`), this table deliberately excludes reflection content — only the
+  irreversible fingerprint and the AI-generated comparison result, never the inputs that
+  produced it.
 
 ## Credit hard cap
 
@@ -626,12 +702,15 @@ difficulty: 'Intermediate' | 'Advanced' }[] (exactly 3) }`. Deliberately uses `m
   Reflection text, article body, display names, the API key, the `Authorization` header, and
   the model's raw response are never logged — verified by
   `tests/reflections.test.ts`'s log-capture test.
-- **Auth gate** (`src/plugins/auth-gate.ts`): requires a valid session cookie (see
-  [Authentication](#authentication)) in **every** environment, including production — the
-  earlier "always 404 in production" placeholder is gone now that real login exists. The one
-  exception is the CLI smoke script's static `AI_DEV_ACCESS_TOKEN` bearer token, which still
-  works in development/test but is refused outright in production even if correct, so a leaked
-  static token alone can never reach a public deployment.
+- **Auth gate** (`src/plugins/auth-gate.ts`): **updated by the section 10 tightening** (see
+  [Study-day comparison](#study-day-comparison--caching-locking-crash-safety) above) — this
+  route now uses `createDevTokenOnlyAuthGate()`, which accepts **only** the CLI smoke script's
+  static `AI_DEV_ACCESS_TOKEN` bearer token, refused outright in production even if correct so a
+  leaked static token alone can never reach a public deployment. A session cookie — even a
+  valid one, from a real login, in any environment — is rejected here; nothing in the frontend
+  calls this route anymore, so general browser traffic must use the date-based `study-days`
+  endpoints instead. `createAuthGate()` (used elsewhere, e.g. historically by this same route)
+  is untouched by this addition.
 - **Rate limiting** (`@fastify/rate-limit`, registered with `global: false` in `src/app.ts`):
   `POST /api/v1/reflections/compare` is the only route that opts in
   (`REFLECTIONS_COMPARE_RATE_LIMIT` in `src/routes/reflections.ts`), capped at 10 requests per
@@ -688,11 +767,13 @@ participant's identity for this feature is derived entirely from the session coo
 
 ### Auth: `session-gate` vs. `auth-gate`
 
-The existing `POST /api/v1/reflections/compare` uses `createAuthGate`
-(`src/plugins/auth-gate.ts`), which only proves "some valid session exists" (plus a CLI
-dev-token escape hatch) — it never exposes who the caller is. This feature needs to know WHO is
-submitting, so all three new routes use a new, separate preHandler,
-`createSessionGate` (`src/plugins/session-gate.ts`):
+`POST /api/v1/reflections/compare` originally used `createAuthGate` (`src/plugins/auth-gate.ts`),
+which only proves "some valid session exists" (plus a CLI dev-token escape hatch) — it never
+exposes who the caller is (that route has since been tightened further to a dev-token-only
+gate — see [Study-day comparison](#study-day-comparison--caching-locking-crash-safety)'s
+section-10 note above, `createDevTokenOnlyAuthGate`). This feature needs to know WHO is
+submitting, so all five study-days routes (the original three plus the two comparison routes
+below) use a new, separate preHandler, `createSessionGate` (`src/plugins/session-gate.ts`):
 
 - Verifies the session cookie only — **no CLI dev-token escape hatch**, since that token carries
   no name and this feature fundamentally needs one.
@@ -783,13 +864,18 @@ participants have submitted.
 No request body content beyond the date in the URL — the server sources both sides from the
 database itself, never from the caller. If fewer than 2 reflections exist for the date (covers
 both "you haven't submitted" and "your partner hasn't submitted" — one error code for both, by
-design), returns `409 PARTNER_NOT_READY`. Otherwise looks up the day's article and both
-reflection rows, then calls the same `compareReflections()` service function used by the
-deprecated `/reflections/compare` route, unchanged — response shape and the
-200/402/402/502/502/500/409 status-code mapping are identical (the mapping itself is now a
-shared helper, `respondToReflectionComparisonOutcome` in
-`src/services/reflections/http-mapping.ts`, reused by both routes so the switch isn't
-duplicated).
+design), returns `409 PARTNER_NOT_READY` (unchanged from before). **Everything else about this
+route was replaced** — it no longer calls `compareReflections()` unconditionally on every
+request. It's now backed by the exactly-once, cached, crash-safe claim/generate design
+described in full in [Study-day
+comparison](#study-day-comparison--caching-locking-crash-safety) below: two concurrent clicks
+collapse into exactly one Mindlogic call, a completed result is served from cache on every
+subsequent request instead of re-calling the provider, and a `'failed'` comparison is never
+silently retried by this route (only the new `POST .../comparison/retry` endpoint can retry
+it). See that section for the exact response shapes for every state
+(`processing`/`completed`/`failed`/`reconciliation_pending`), the two new companion endpoints
+(`GET .../comparison`, `POST .../comparison/retry`), and the crash-safety/manual-recovery
+procedure.
 
 ### Logging discipline (tested)
 
@@ -800,6 +886,199 @@ reflection `content`, `article_summary`, the raw (unhashed) `participant_key`, t
 cookie value. `tests/study-days.test.ts` captures the Pino output stream and asserts none of the
 forbidden values ever appear.
 
+## Study-day comparison — caching, locking, crash-safety
+
+Before this feature, `POST /api/v1/study-days/:date/compare` called `compareReflections()`
+directly on **every** request: no locking, no caching, no persistence of the result. That meant
+two browsers clicking "Compare" at the same instant could both call real Mindlogic (double
+spend), a completed result was never reused (re-calling Mindlogic every time someone revisited
+the page), and there was no way for two participants to see the same stored result. This
+section replaces that with an exactly-once, cached, crash-safe design built around one new
+table, `study_day_comparisons` (see [Schema](#schema) above), and a strict two-phase claim/generate
+split so a database transaction is **never** held across the outbound Mindlogic call.
+
+### The two-phase design
+
+**Phase 1 — claim generation rights**
+(`DrizzleComparisonRepository.claimGeneration()`,
+`src/services/daily-reflections/comparison-repository.ts`). One short transaction, never held
+across the Mindlogic call:
+
+1. `SELECT ... FROM study_days WHERE study_date = $1 FOR UPDATE` — the same lock every
+   reflection `PUT` already passes through. No row → `partner_not_ready` (there can't be 2
+   reflections either).
+2. Count `reflections` for the date. Not exactly 2 → `partner_not_ready`. Nothing is written.
+3. Compute the input fingerprint (`computeInputFingerprint()`,
+   `src/services/daily-reflections/comparison-fingerprint.ts`) — a SHA-256 hex digest of the
+   day's `article.id` plus both reflections' `(participantKey, content)` pairs, **sorted by
+   `participantKey`** before hashing so the fingerprint is identical regardless of which
+   reflection happened to be read first. Pure, irreversible, independently unit-tested for the
+   "order doesn't matter" property (`tests/comparison-fingerprint.test.ts`).
+4. `SELECT ... FROM study_day_comparisons WHERE study_date = $1 FOR UPDATE` — may not exist yet;
+   that's fine.
+5. Branch on what's found:
+   - **No row** → `INSERT` a fresh row (`status: 'processing'`, a new `request_id`, the computed
+     `model`/`input_fingerprint`, `started_at: now`) — this transaction commits with the
+     `INSERT`. Outcome **`claimed`**: this caller now owns provider-call rights.
+   - **`completed`, fingerprint matches** → outcome **`cached`**: return the stored `result`
+     as-is (re-validated — see "Read-side validation" below). No write.
+   - **`completed`, fingerprint does NOT match** — defensive-only, effectively unreachable
+     (reflections are immutable once submitted, so a date's fingerprint can never legitimately
+     change): treated the same as "no row" — overwrite with a fresh `processing` claim and a new
+     `request_id`, since the recorded result no longer corresponds to the current inputs.
+   - **`processing`** → outcome **`in_progress`**. No write. This is what a losing concurrent
+     request sees.
+   - **`reconciliation_pending`** → outcome **`reconciliation_pending`**. No write. Never
+     auto-retried.
+   - **`failed`** → outcome **`failed`**. No write. `POST /compare` must **never** silently
+     re-claim a `'failed'` row — only the explicit retry endpoint below may transition
+     `failed → processing`, and only via its own separately-locked claim.
+
+**Phase 2 — outside any transaction, only for the caller who got `claimed`.** Calls the
+existing `compareReflections()` **unchanged**, with `deps.generateRequestId: () =>
+claimedRequestId` (it already accepted this injectable) — so the exact same `request_id` lands
+in both `study_day_comparisons` and `credit_usage_records`, the shared join key for manual
+crash recovery (below). The outcome is then mapped to a `study_day_comparisons` update
+(`ComparisonService.completeWithResult` / `.completeWithFailure` /
+`.completeWithReconciliationPending`):
+
+- `status: 'ok'` → the result is **re-validated** with `reflectionComparisonSchema.safeParse`
+  a second time, immediately before the `UPDATE` (defense in depth — it was already validated
+  once inside `compareReflections()`, but a storage boundary is never trusted on a single pass,
+  matching this codebase's existing philosophy elsewhere) → `status: 'completed'`, `result` set,
+  `completed_at`/`updated_at` set.
+- `'limit_exceeded' | 'provider_exhausted' | 'upstream_failed' | 'upstream_schema_error' |
+'reservation_exceeded'` → `status: 'failed'`, `error_code` set to the outcome's own upstream
+  code where one exists (`upstream_failed`'s `MindlogicErrorCode`, e.g. `'rate_limited'`) or the
+  outcome's status name itself otherwise (`'limit_exceeded'`, `'provider_exhausted'`,
+  `'upstream_schema_error'`, `'reservation_exceeded'`).
+- `'reconciliation_pending'` → `status: 'reconciliation_pending'`, `error_code` set to the
+  upstream `MindlogicErrorCode`. Credit-side, `compareReflections()` has already called
+  `markReconciliationPending()` itself — this only mirrors that state into
+  `study_day_comparisons`, never duplicates the credit-side logic.
+
+This "only the claimer calls the provider, and holds no lock while doing it" is what makes an
+external AI call never block on (or be blocked by) a database transaction or row lock.
+
+### `GET /api/v1/study-days/:date/comparison`
+
+Read-only, session-gated, same date validation as the other study-days routes. Reflection text
+**never** appears in any response here (this table doesn't store it — see `input_fingerprint`'s
+note above).
+
+| Stored state                | Response                                                                         |
+| --------------------------- | -------------------------------------------------------------------------------- |
+| No row                      | `200 { "status": "not_started" }`                                                |
+| `processing`                | `200 { "status": "processing" }`                                                 |
+| `completed` (valid)         | `200 { "status": "completed", "result": { commonGround, differences, topics } }` |
+| `completed` (**corrupted**) | `500 { "status": "failed", "code": "CORRUPTED_RESULT" }`                         |
+| `failed`                    | `200 { "status": "failed", "code": "<error_code>" }`                             |
+| `reconciliation_pending`    | `200 { "status": "reconciliation_pending" }`                                     |
+
+**Read-side validation**: a `completed` row's stored `result` JSONB is re-validated with
+`reflectionComparisonSchema.safeParse` before being returned — independent of the write-side
+check in Phase 2 above. If validation fails (a corrupted/tampered DB row — simulated in
+`tests/integration/study-days-comparison.postgres.test.ts` via a raw SQL `UPDATE` that bypasses
+the app entirely), the malformed blob is **never** passed through as if it were a valid
+`'completed'` response; a warning is logged (allow-listed fields only, no content) and the
+route responds `500 { status: 'failed', code: 'CORRUPTED_RESULT' }` instead — clearly
+distinguishable from a legitimate `completed` response.
+`reconciliation_pending`'s `error_code` is deliberately **not** exposed here (low-stakes either
+way, but kept internally consistent with not leaking raw upstream detail).
+
+### `POST /api/v1/study-days/:date/compare` (response shapes)
+
+| Phase 1 / Phase 2 outcome                              | HTTP                          | Body                                                                                          |
+| ------------------------------------------------------ | ----------------------------- | --------------------------------------------------------------------------------------------- |
+| `partner_not_ready`                                    | `409`                         | `{ error: { message, code: 'PARTNER_NOT_READY', requestId } }` (unchanged shape)              |
+| `in_progress`                                          | `202`                         | `{ "status": "processing" }`                                                                  |
+| `reconciliation_pending` (pre-existing stored state)   | `409`                         | `{ "status": "reconciliation_pending" }`                                                      |
+| `failed` (pre-existing stored state — **not retried**) | `200`                         | `{ "status": "failed", "code": "<error_code>" }`                                              |
+| `cached`                                               | `200`                         | `{ "status": "completed", "cached": true, "result": { commonGround, differences, topics } }`  |
+| `cached`, but the stored result is corrupted           | `500`                         | `{ "status": "failed", "code": "CORRUPTED_RESULT" }`                                          |
+| `claimed` → Phase 2 `ok`                               | `200`                         | `{ "status": "completed", "cached": false, "result": { commonGround, differences, topics } }` |
+| `claimed` → Phase 2 failure                            | `402`/`502`/`500` (see below) | `{ "status": "failed" \| "reconciliation_pending", "code"?: "<error_code>" }`                 |
+
+The `claimed` → Phase 2 failure HTTP status reuses the exact same decision table as the
+deprecated `/reflections/compare` route
+(`mapReflectionComparisonFailureToHttp()`, new export in
+`src/services/reflections/http-mapping.ts`, additive — the original
+`respondToReflectionComparisonOutcome()` used by `/reflections/compare` itself is untouched):
+`limit_exceeded`/`provider_exhausted` → `402`, `upstream_failed`/`upstream_schema_error` →
+`502`, `reservation_exceeded` → `500`, `reconciliation_pending` → `409`. Only the **body shape**
+differs from the old route — `{ status, code }` (matching `GET .../comparison`'s vocabulary)
+instead of the old flat `{ error: { message, code, requestId } }` envelope, since this is now
+internally consistent with the cached/completed success shape above.
+
+The pre-existing `failed` branch deliberately responds `200`, not an error status — it's
+successfully reporting current state (a stored fact), the same way `GET .../comparison` does
+for the identical case; it is **never** a trigger for Phase 2. A plain `POST /compare` on a
+`failed` row is proven, across repeated calls, to never increment the provider's call count
+(`tests/study-days-comparison.test.ts`, `tests/integration/study-days-comparison.postgres.test.ts`).
+
+### `POST /api/v1/study-days/:date/comparison/retry`
+
+Session-gated, same date validation. Only proceeds when the **current** stored status is
+`failed`:
+
+| Current stored state     | Response                                                                                                                                         |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| No row / `not_started`   | `409 { error: { message, code: 'NOTHING_TO_RETRY', requestId } }`                                                                                |
+| `processing`             | `202 { "status": "processing" }` — **not** an error; someone else's retry (or the original attempt) is still in flight                           |
+| `completed`              | `409 { error: { message, code: 'ALREADY_COMPLETED', requestId } }` — never re-run                                                                |
+| `reconciliation_pending` | `409 { error: { message, code: 'RECONCILIATION_PENDING', requestId } }` — never re-run; the hard "no retry while billing status is unknown" rule |
+| `failed`                 | Claims retry rights (below), then runs Phase 2 exactly as `POST /compare`'s `claimed` branch — same response shapes as the table above           |
+
+Claiming retry rights (`DrizzleComparisonRepository.claimRetry()`) is its own short,
+separately-locked transaction: `SELECT ... FROM study_day_comparisons WHERE study_date = $1 FOR
+UPDATE`, re-check the row is **still** `failed` while holding the lock (this is what makes
+concurrent retries collapse into exactly one winner — proven by a ~10-way concurrent retry test
+against real PostgreSQL), then atomically `UPDATE ... SET status = 'processing', request_id =
+<new uuid>, started_at = now(), updated_at = now()`. Only the transaction that wins this
+re-check proceeds; a concurrent loser sees the row already flipped to `processing` and returns
+the same `202` as the `processing` row above. The winner then runs Phase 2 with the **new**
+`request_id` — the old failed attempt's `request_id` (and its `credit_usage_records` row) is
+**never** reused or touched; it stays exactly as it was, permanently, as the failure history
+(confirmed in `tests/integration/study-days-comparison.postgres.test.ts` by re-querying that
+row directly after a retry).
+
+### Crash safety — no automatic takeover
+
+If the server process dies mid-Phase-2, the row is stuck at `status: 'processing'` **forever**
+— by design. Nothing in this codebase may automatically time it out or take it over (no
+lease/TTL takeover logic exists anywhere, mirroring the credit ledger's
+`reconciliation_pending` — see [Reconciliation](#reconciliation-srcservicescreditsreconciliationts)
+above — which has the identical no-automatic-action philosophy).
+
+- `ComparisonService.findStaleProcessing(olderThanMs)` /
+  `ComparisonRepository.findStaleProcessing()` is a **purely informational, read-only** method
+  an operator can call to find rows stuck at `processing` for longer than `olderThanMs`. It
+  takes no action — it exists only so an operator (via a future `pnpm` script, or a one-off
+  query/REPL call — this MVP does not require an automatic recovery scheduler) can find
+  candidates to investigate.
+- **Manual recovery procedure**: an operator who finds a stuck `processing` row cross-references
+  `credit_usage_records` by the **same `request_id`** (the shared join key — see Phase 2 above)
+  to determine whether Mindlogic was actually called/billed for that attempt, then manually
+  decides:
+  - Mark the row `failed` (via `ComparisonService.completeWithFailure(studyDate, requestId,
+reason)`, or an equivalent direct `UPDATE`) if it's safe to let a human-initiated retry
+    happen next — i.e. Mindlogic was confirmed **not** billed for this attempt (matching
+    `credit_usage_records.status = 'released'`, or no credible sign of a completed call).
+  - Mark the row `reconciliation_pending` (via
+    `ComparisonService.completeWithReconciliationPending(studyDate, requestId, reason)`) if
+    billing status is genuinely **unknown** — matching the credit ledger's own
+    `reconciliation_pending` state for that `request_id`, or any ambiguity at all. This is the
+    conservative default whenever in doubt.
+  - This mirrors `scripts/credit-reconcile.ts`'s existing operator-run manual-recovery pattern
+    for the credit ledger — no scheduler, every invocation a deliberate, human-triggered action.
+- **The risk, stated explicitly**: a crash between "Mindlogic responded/billed" and "we
+  persisted the result" could leave a real, billed generation that's invisible to both users —
+  the AI result was generated and paid for, but never reached `study_day_comparisons`. This is
+  exactly why no automatic action is taken here: an automatic timeout-based takeover could
+  either re-call Mindlogic for an already-billed request (double spend) or silently discard a
+  paid-for result, and there is no way to distinguish those cases without the same manual
+  `credit_usage_records` cross-reference described above.
+
 ## Endpoints implemented
 
 - `GET /health` — liveness only; no DB or Mindlogic dependency.
@@ -809,15 +1088,24 @@ forbidden values ever appear.
   ledger (`credit_periods` / `credit_usage_records`). No outbound Mindlogic call.
 - `POST /api/v1/auth/login`, `GET /api/v1/auth/session`, `POST /api/v1/auth/logout` — see
   [Authentication](#authentication).
-- `POST /api/v1/reflections/compare` — **deprecated**, superseded by
-  `POST /api/v1/study-days/:date/compare` below. Kept only for the CLI smoke-test scripts
-  (`scripts/mindlogic-smoke-test*.ts`) and backward compatibility — do not build new frontend
-  code against it. Requires a valid session (or the CLI dev token outside production) and is
-  rate-limited to 10 requests/minute/caller.
+- `POST /api/v1/reflections/compare` — **deprecated and restricted (section 10)**, superseded
+  by `POST /api/v1/study-days/:date/compare` below. Nothing in the frontend calls this route
+  anymore — kept only for the CLI smoke-test scripts (`scripts/mindlogic-smoke-test*.ts`), which
+  always authenticate with the dev bearer token, never a session cookie. Its auth was tightened
+  to match: `createDevTokenOnlyAuthGate()` (new export in `src/plugins/auth-gate.ts`, additive —
+  the shared `createAuthGate()` used elsewhere is untouched) accepts **only** the dev bearer
+  token, refused outright in production — a valid session cookie is rejected here even though
+  it works everywhere else. Rate-limited to 10 requests/minute/caller.
+  **Removal plan**: delete this route once the smoke-test scripts are migrated to call
+  `POST /study-days/:date/compare` directly, or once it's no longer needed at all.
 - `PUT /api/v1/study-days/:date/reflection`, `GET /api/v1/study-days/:date/status`,
   `POST /api/v1/study-days/:date/compare` — the daily-reflections feature; see [Daily
   reflections](#daily-reflections--study-day-based-comparison) below. All three require a valid
   session (no CLI dev-token escape hatch — see [Authentication](#authentication)).
+- `GET /api/v1/study-days/:date/comparison`, `POST /api/v1/study-days/:date/comparison/retry` —
+  the study-day-comparison caching/locking feature; see [Study-day
+  comparison](#study-day-comparison--caching-locking-crash-safety) below. Both require a valid
+  session, same as the three routes above.
 
 ## Security notes
 

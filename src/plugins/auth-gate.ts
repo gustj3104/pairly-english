@@ -49,3 +49,41 @@ export function createAuthGate(options: AuthGateOptions) {
     });
   };
 }
+
+/**
+ * Restricted variant for `POST /api/v1/reflections/compare`
+ * (src/routes/reflections.ts) only: that route is no longer called by any
+ * browser traffic (fully migrated to the date-based `study-days` endpoints
+ * — see README "Daily reflections" / "Study-day comparison") and is kept
+ * solely for `scripts/mindlogic-smoke-test*.ts`, which always authenticate
+ * with the dev bearer token and never a session cookie. This gate
+ * deliberately drops session-cookie acceptance entirely — even a valid
+ * session is refused here — so the route can never be reached by ordinary
+ * browser traffic, only by a caller holding the server-only dev token.
+ * Same production behavior as the token branch of `createAuthGate` above:
+ * refused outright when `nodeEnv === 'production'`, regardless of
+ * correctness, so a leaked static token alone can never reach a public
+ * deployment. `createAuthGate` itself is untouched by this addition.
+ */
+export function createDevTokenOnlyAuthGate(
+  options: Pick<AuthGateOptions, 'nodeEnv' | 'devAccessToken'>,
+) {
+  return async function devTokenOnlyAuthGate(
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<void> {
+    if (options.nodeEnv !== 'production' && options.devAccessToken) {
+      const header = request.headers.authorization;
+      const bearerToken = header?.startsWith('Bearer ')
+        ? header.slice('Bearer '.length)
+        : undefined;
+      if (bearerToken === options.devAccessToken) {
+        return;
+      }
+    }
+
+    reply.code(401).send({
+      error: { message: 'Unauthorized', code: 'UNAUTHORIZED', requestId: request.id },
+    });
+  };
+}
