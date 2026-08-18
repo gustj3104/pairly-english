@@ -16,12 +16,23 @@ This service is intentionally a **separate git repository** from the frontend �
 - Keep the Mindlogic API key server-side only, never shipped to the browser.
 - Expose `/api/v1/usage` so the frontend can show usage/quota state to users.
 
-**Status: no generative (POST) Mindlogic call has ever been made.** The Mindlogic client
-(`src/services/mindlogic/client.ts`) is wired up and its two read-only GET endpoints have been
-verified against the real gateway via `pnpm mindlogic:check` (see
-[Mindlogic connectivity check](#mindlogic-connectivity-check) below) — but
-`createChatCompletion` has never been called from anywhere, and no HTTP route calls any
-Mindlogic method yet.
+**Status: a small number of approved, one-shot real Mindlogic smoke tests have been run** (see
+[Procedure for a one-time real smoke test](#procedure-for-a-one-time-real-smoke-test) for the
+full history and guard files). Summary, oldest to newest:
+
+| Check                                                                                             | Model                       | Outcome                                                  |
+| ------------------------------------------------------------------------------------------------- | --------------------------- | -------------------------------------------------------- |
+| Bare-messages contract check (`provider_contract_check`)                                          | `claude-haiku-4-5-20251001` | Succeeded — `200`                                        |
+| Structured-output smoke test, round 1                                                             | `claude-haiku-4-5-20251001` | Failed — Mindlogic rejected structured output with `400` |
+| Structured-output smoke test, round 2 (retry)                                                     | `claude-haiku-4-5-20251001` | Failed — Mindlogic rejected structured output with `400` |
+| Structured-output smoke test, round 3, after switching `reflection_comparison`'s configured model | `gpt-5.4-mini`              | Succeeded — `200`, valid schema                          |
+
+As a result, `MINDLOGIC_MODEL`/`feature-config.ts` now pins `reflection_comparison` to
+`gpt-5.4-mini`; `claude-haiku-4-5-20251001` remains only for the `provider_contract_check`
+diagnostic (bare messages, no `response_format`), which it does support. Current provider usage
+(from `GET /api/v1/usage`, verified 2026-08-18): `usedCredits: 4`, `remainingCredits: 4996`,
+`limitCredits: 5000` — check that endpoint directly for the live figure rather than trusting a
+number in this file, since it moves with every real call.
 
 ## Tech stack
 
@@ -72,7 +83,7 @@ cp .env.example .env.local
 | `MINDLOGIC_BASE_URL`             | no       | `https://factchat-cloud.mindlogic.ai/v1/gateway` |                                                                                                            |
 | `MINDLOGIC_MODEL`                | no       | `claude-haiku-4-5-20251001`                      | Must be a key in `MODEL_CREDIT_RATES` (`src/services/mindlogic/credit-rates.ts`) — validated at boot       |
 | `MINDLOGIC_MONTHLY_CREDIT_LIMIT` | no       | `5000`                                           |                                                                                                            |
-| `APP_SHARED_PASSWORD`            | **yes**  | —                                                | Shared password both users log in with (see [Authentication](#authentication)). Min 8 chars. Never logged. |
+| `APP_SHARED_PASSWORD`            | **yes**  | —                                                | Shared password both users log in with (see [Authentication](#authentication)). Min 4 chars. Never logged. |
 | `SESSION_SECRET`                 | **yes**  | —                                                | HMAC key for session JWTs. Min 32 chars. Never logged.                                                     |
 | `SESSION_MAX_AGE_SECONDS`        | no       | `2592000` (30 days)                              | Session cookie / JWT lifetime                                                                              |
 | `AI_DEV_ACCESS_TOKEN`            | no       | —                                                | CLI smoke-script-only bearer token; never accepted in production (see [Authentication](#authentication))   |
@@ -463,10 +474,14 @@ generic message, the same way `src/plugins/error-handler.ts` already does for un
 ## Reflection comparison — first real AI feature
 
 `POST /api/v1/reflections/compare` is the first endpoint that actually calls Mindlogic
-(`createChatCompletion`, structured JSON output). **No real call to it has been made** — every
-test uses a mocked `fetchImpl`; see [Endpoints implemented](#endpoints-implemented) below for
-the request/response contract and [Mindlogic connectivity check](#mindlogic-connectivity-check)
-for the two GET endpoints that have been verified for real.
+(`createChatCompletion`, structured JSON output). It has now been exercised with a handful of
+approved, one-shot real calls — see the status table above and
+[Procedure for a one-time real smoke test](#procedure-for-a-one-time-real-smoke-test) for the
+full history and guard files. Everything else (routing, validation, credit accounting, error
+mapping) is still covered by the automated test suite against a mocked `fetchImpl`; see
+[Endpoints implemented](#endpoints-implemented) below for the request/response contract and
+[Mindlogic connectivity check](#mindlogic-connectivity-check) for the two GET endpoints that have
+also been verified for real.
 
 - **Request contract**: `{ article: { title, sourceUrl?, summary? }, mine: { displayName,
 reflection }, partner: { displayName, reflection } }`. Validated with Zod
@@ -654,8 +669,33 @@ only way the monthly hard cap can actually be enforced.
 
 ## Procedure for a one-time real smoke test
 
-`POST /api/v1/reflections/compare` has never made a real Mindlogic call — everything above was
-verified with a mocked `fetchImpl`. Before relying on it, run one real call deliberately:
+`POST /api/v1/reflections/compare` calls real Mindlogic when this procedure is followed; every
+other automated check uses a mocked `fetchImpl`. Each run is a separate, guarded, one-shot
+script (`scripts/mindlogic-contract-check.ts`, `scripts/mindlogic-smoke-test.ts`, `-round2.ts`,
+`-round3.ts` — each writes its own `.mindlogic-*-completed.json` guard file that blocks a second
+run of that specific script) rather than a single reusable command, so that every real call stays
+individually approved and auditable.
+
+**Real runs so far** (guard files in the repo root; UTC timestamps):
+
+| Script                                                                 | Guard file                                    | Completed (UTC)          | HTTP status |
+| ---------------------------------------------------------------------- | --------------------------------------------- | ------------------------ | ----------- |
+| `mindlogic-contract-check.ts` (bare, Haiku)                            | `.mindlogic-contract-check-completed.json`    | 2026-08-17T15:52:05.777Z | `200`       |
+| `mindlogic-smoke-test.ts` (structured, Haiku, round 1)                 | `.mindlogic-smoke-test-completed.json`        | 2026-08-17T15:13:01.110Z | `409`\*     |
+| `mindlogic-smoke-test-round2.ts` (structured, Haiku, round 2)          | `.mindlogic-smoke-test-round2-completed.json` | 2026-08-17T15:54:23.521Z | `502`\*     |
+| `mindlogic-smoke-test-round3.ts` (structured, `gpt-5.4-mini`, round 3) | `.mindlogic-smoke-test-round3-completed.json` | 2026-08-17T16:17:33.729Z | `200`       |
+
+\* Rounds 1 and 2 are this route's own mapped status (`reconciliation_pending`/upstream-error
+handling — see [Uncertain billing status: `reconciliation_pending`](#uncertain-billing-status-reconciliation_pending)
+and the `MindlogicErrorCode` outcome table under [Credit hard cap](#credit-hard-cap)), not
+Mindlogic's raw response; Mindlogic itself rejected structured output for
+`claude-haiku-4-5-20251001` with a `400`. That's why `reflection_comparison`'s configured model
+was switched to `gpt-5.4-mini` (`src/services/mindlogic/feature-config.ts`) before round 3, which
+then succeeded with a schema-valid `200`.
+
+To run a **new** real smoke test (e.g. after a provider/model change), write a new numbered
+script following the same pattern — reusing an existing guarded script will simply refuse to run
+twice:
 
 1. Confirm `.env.local` has a real `MINDLOGIC_API_KEY` (`pnpm mindlogic:check` should already
    pass — see [Mindlogic connectivity check](#mindlogic-connectivity-check)).
@@ -676,9 +716,6 @@ verified with a mocked `fetchImpl`. Before relying on it, run one real call deli
    `src/services/mindlogic/types.ts` assumes, that's exactly what this smoke test exists to
    catch — fix the types before relying on the endpoint further.
 
-This deliberately was **not** run as part of this work — the task explicitly required stopping
-before any real generative call, pending separate approval.
-
 ## Manual browser verification (frontend ↔ backend wiring only, no real Mindlogic call)
 
 Before the smoke test above (and before setting `VITE_USE_MOCK_AI=false` for real), confirm the
@@ -692,14 +729,14 @@ you're ready:
 2. In the frontend repo, `pnpm dev` (the Vite dev server proxies `/api/*` to this server — see
    that repo's README).
 3. In an actual browser tab, log in with any display name and `APP_SHARED_PASSWORD`. Confirm in
-   the Network tab: the `Set-Cookie` response header on `POST /api/auth/login` has `HttpOnly`
+   the Network tab: the `Set-Cookie` response header on `POST /api/v1/auth/login` has `HttpOnly`
    (and, once served over https, `Secure`); no request anywhere sends an `Authorization` header;
    no CORS error appears in the console.
 4. Refresh the page and confirm the session is restored (still logged in) via
-   `GET /api/auth/session`.
-5. Walk the flow to `AIComparisonPage` and confirm `POST /api/reflections/compare` succeeds.
-6. Log out and confirm `GET /api/auth/session` now reports `authenticated: false`, and that
-   `POST /api/reflections/compare` now returns `401`.
+   `GET /api/v1/auth/session`.
+5. Walk the flow to `AIComparisonPage` and confirm `POST /api/v1/reflections/compare` succeeds.
+6. Log out and confirm `GET /api/v1/auth/session` now reports `authenticated: false`, and that
+   `POST /api/v1/reflections/compare` now returns `401`.
 
 ## Next steps (not yet implemented)
 
