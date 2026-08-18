@@ -10,6 +10,7 @@ import { submitReflectionRequestSchema } from '../services/daily-reflections/sch
 import { compareReflections } from '../services/reflections/reflection-comparison-service.js';
 import type { ReflectionComparisonOutcome } from '../services/reflections/reflection-comparison-service.js';
 import { mapReflectionComparisonFailureToHttp } from '../services/reflections/http-mapping.js';
+import { DailyNewsGenerationError } from '../services/daily-news/service.js';
 
 export interface StudyDaysRoutesOptions {
   sessionSecret: string;
@@ -143,6 +144,103 @@ export async function studyDaysRoutes(
 ): Promise<void> {
   const sessionGate = createSessionGate(options.sessionSecret);
   const now = options.now ?? (() => new Date());
+
+  app.get('/study-days/:date/article', { preHandler: sessionGate }, async (request, reply) => {
+    const date = validateDateParam(request, reply, options.maxFutureDays, now);
+    if (date === undefined || requireSession(request, reply) === undefined) return;
+    try {
+      const result = await app.dailyNewsService.getOrGenerate(date, now);
+      request.log.info(
+        {
+          requestId: request.id,
+          studyDate: date,
+          cached: result.cached,
+          feature: 'daily_news',
+          model: 'sonar-pro',
+        },
+        'daily news article served',
+      );
+      reply.code(200);
+      return { ...result.article, cached: result.cached };
+    } catch (error) {
+      if (!(error instanceof DailyNewsGenerationError)) throw error;
+      const outcome = error.outcome;
+      const safeLog = {
+        requestId: request.id,
+        studyDate: date,
+        feature: 'daily_news',
+        model: 'sonar-pro',
+        outcome: outcome.status,
+      };
+      if (outcome.status === 'limit_exceeded') {
+        request.log.warn(safeLog, 'daily news rejected: monthly credit limit reached');
+        reply.code(402);
+        return {
+          error: {
+            message: 'Monthly AI credit limit reached',
+            code: 'CREDIT_LIMIT_EXCEEDED',
+            requestId: request.id,
+          },
+        };
+      }
+      if (outcome.status === 'provider_exhausted') {
+        request.log.warn(safeLog, 'daily news rejected: provider credit exhausted');
+        reply.code(402);
+        return {
+          error: {
+            message: 'AI provider credit exhausted',
+            code: 'PROVIDER_CREDIT_EXHAUSTED',
+            requestId: request.id,
+          },
+        };
+      }
+      if (outcome.status === 'reconciliation_pending') {
+        request.log.warn(
+          {
+            ...safeLog,
+            upstreamCode: outcome.code,
+            upstreamStatus: outcome.upstreamStatus,
+            ...outcome.observability,
+          },
+          'daily news transmission status unknown',
+        );
+        reply.code(409);
+        return {
+          error: {
+            message:
+              'This request could not be confirmed and is being verified — do not resubmit it.',
+            code: 'RECONCILIATION_PENDING',
+            requestId: request.id,
+          },
+        };
+      }
+      request.log.warn(
+        outcome.status === 'upstream_failed'
+          ? {
+              ...safeLog,
+              upstreamCode: outcome.code,
+              upstreamStatus: outcome.upstreamStatus,
+              ...outcome.observability,
+            }
+          : safeLog,
+        'daily news generation failed',
+      );
+      reply.code(outcome.status === 'reservation_exceeded' ? 500 : 502);
+      return {
+        error: {
+          message:
+            outcome.status === 'reservation_exceeded'
+              ? 'Internal credit accounting error'
+              : 'AI provider returned an invalid response',
+          code:
+            outcome.status === 'reservation_exceeded'
+              ? 'CREDIT_RESERVATION_EXCEEDED'
+              : 'UPSTREAM_NEWS_FAILED',
+          requestId: request.id,
+        },
+      };
+    }
+  });
 
   app.put('/study-days/:date/reflection', { preHandler: sessionGate }, async (request, reply) => {
     const date = validateDateParam(request, reply, options.maxFutureDays, now);

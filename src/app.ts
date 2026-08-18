@@ -22,6 +22,8 @@ import { DrizzleDailyReflectionRepository } from './services/daily-reflections/d
 import { ComparisonService } from './services/daily-reflections/comparison-service.js';
 import { DrizzleComparisonRepository } from './services/daily-reflections/comparison-repository.js';
 import type { SessionPayload } from './services/auth/session.js';
+import { DailyNewsService } from './services/daily-news/service.js';
+import { DrizzleDailyNewsRepository } from './services/daily-news/repository.js';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -30,6 +32,7 @@ declare module 'fastify' {
     mindlogicClient: MindlogicClient;
     dailyReflectionService: DailyReflectionService;
     comparisonService: ComparisonService;
+    dailyNewsService: DailyNewsService;
   }
   interface FastifyRequest {
     /**
@@ -51,6 +54,7 @@ export interface BuildAppOptions {
   authRoutesOptions?: AuthRoutesOptions;
   dailyReflectionService?: DailyReflectionService;
   comparisonService?: ComparisonService;
+  dailyNewsService?: DailyNewsService;
   studyDaysRoutesOptions?: StudyDaysRoutesOptions;
   /** Test-only: redirect Pino output somewhere inspectable instead of silent/stdout. */
   loggerStream?: NodeJS.WritableStream;
@@ -102,6 +106,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.decorate(
     'comparisonService',
     options.comparisonService ?? new ComparisonService(new DrizzleComparisonRepository(db)),
+  );
+  app.decorate(
+    'dailyNewsService',
+    options.dailyNewsService ??
+      new DailyNewsService(
+        new DrizzleDailyNewsRepository(db),
+        app.creditService,
+        app.mindlogicClient,
+      ),
   );
 
   app.register(healthRoutes);

@@ -75,6 +75,16 @@ export interface ChatCompletionResponse {
   model: string;
   choices: ChatCompletionChoice[];
   usage: ChatCompletionUsage;
+  /** Perplexity extension. Daily news requires this field and fails closed if absent. */
+  citations?: string[] | null;
+  /** Perplexity extension; informative metadata only, never fetched by this server. */
+  search_results?: Array<{
+    title?: string;
+    url?: string;
+    date?: string;
+    last_updated?: string;
+    [key: string]: unknown;
+  }> | null;
   [key: string]: unknown;
 }
 

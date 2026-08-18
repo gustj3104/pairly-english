@@ -132,6 +132,18 @@ describe('GET /api/v1/study-days/:date/status — auth', () => {
   });
 });
 
+describe('GET /api/v1/study-days/:date/article — auth', () => {
+  it('returns 401 without a session cookie', async () => {
+    const app = buildTestApp();
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/v1/study-days/${STUDY_DATE}/article`,
+    });
+    expect(response.statusCode).toBe(401);
+    await app.close();
+  });
+});
+
 describe('POST /api/v1/study-days/:date/compare — auth', () => {
   it('returns 401 without a session cookie', async () => {
     const app = buildTestApp();

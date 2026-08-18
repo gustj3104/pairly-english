@@ -44,6 +44,7 @@ describe('migration application', () => {
         'study_days',
         'reflections',
         'study_day_comparisons',
+        'daily_news_articles',
       ]),
     );
 

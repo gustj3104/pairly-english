@@ -57,6 +57,7 @@ export const creditStatusEnum = pgEnum('credit_status', [
 
 export const creditFeatureEnum = pgEnum('credit_feature', [
   'reflection_comparison',
+  'daily_news',
   'grammar_feedback',
   'vocabulary_extraction',
   'news_processing',
@@ -65,6 +66,20 @@ export const creditFeatureEnum = pgEnum('credit_feature', [
   // — not a user-facing feature, but still goes through the real credit ledger.
   'provider_contract_check',
 ]);
+
+/** One validated, generated learning article per Asia/Seoul study date. */
+export const dailyNewsArticles = pgTable('daily_news_articles', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  studyDate: date('study_date', { mode: 'string' }).notNull().unique(),
+  title: varchar('title', { length: 240 }).notNull(),
+  sourceName: varchar('source_name', { length: 120 }).notNull(),
+  sourceUrl: varchar('source_url', { length: 2048 }).notNull(),
+  publishedAt: timestamp('published_at', { withTimezone: true }).notNull(),
+  generatedAt: timestamp('generated_at', { withTimezone: true }).notNull(),
+  summary: varchar('summary', { length: 1200 }).notNull(),
+  content: text('content').notNull(),
+  vocabulary: jsonb('vocabulary').notNull(),
+});
 
 /**
  * One row per AI request. Deliberately excludes original content

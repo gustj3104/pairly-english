@@ -19,6 +19,13 @@ export const MODEL_CREDIT_RATES = {
     inputCreditsPerThousandTokens: 0.8,
     outputCreditsPerThousandTokens: 4.5,
   },
+  // Mindlogic publishes no verified sonar-pro credit conversion rate.
+  // These deliberately conservative ledger units are a reservation guard,
+  // not a claim about provider pricing. Reconcile against GET /credits/.
+  'sonar-pro': {
+    inputCreditsPerThousandTokens: 3,
+    outputCreditsPerThousandTokens: 15,
+  },
 } as const;
 
 export type AllowedModel = keyof typeof MODEL_CREDIT_RATES;

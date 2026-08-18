@@ -1086,6 +1086,48 @@ reason)`, or an equivalent direct `UPDATE`) if it's safe to let a human-initiate
   **not** call Mindlogic.
 - `GET /api/v1/usage` — returns a `UsageSummary` computed entirely from our own database
   ledger (`credit_periods` / `credit_usage_records`). No outbound Mindlogic call.
+- `GET /api/v1/study-days/:date/article` — session-gated daily English news. It uses the
+  server-fixed `daily_news → sonar-pro` feature configuration (the existing
+  `reflection_comparison → gpt-5.4-mini` configuration is unchanged). Dates are interpreted in
+  `Asia/Seoul`; a validated article is cached once in `daily_news_articles`, so both learners
+  receive the same article id and content for the date. A PostgreSQL transaction-scoped advisory
+  lock serializes misses and is automatically released on rollback, connection loss, or process
+  death; the unique `study_date` constraint is the final backstop.
+
+### Daily news generation and provider-contract limits
+
+Daily news stores an original English-learning synthesis, not the source article or scraped body.
+The provider prompt excludes sensational/graphic topics, prefers constructive stories published
+within 72 hours, and requests exactly eight unique vocabulary words present in the generated
+content (the learning target remains 6/8). Responses are parsed as JSON without code-fence or prose
+repair, then checked with strict Zod schemas, length/HTML restrictions, publication-date checks,
+and whole-word vocabulary matching.
+
+Source trust is based on the parsed URL hostname, never the model's `sourceName`. The MVP exact
+allowlist covers Reuters, AP, BBC, NPR, The Guardian, NASA, WHO, and UN hosts, plus official
+`.gov`, `.gov.uk`, `.edu`, and `.ac.uk` hosts. HTTPS is mandatory; credentials, ports, fragments,
+IP literals, localhost, and suffix tricks such as `reuters.com.evil.test` are rejected. The server
+does not download or crawl the URL. Perplexity's official Sonar contract documents top-level
+`citations`, `search_results`, and `usage`; saving fails closed unless the structured `sourceUrl`
+exactly matches an allowlisted citation URL. Mindlogic Gateway passthrough of those Perplexity
+extensions and JSON Schema support have not been verified by a real `sonar-pro` POST, so deployment
+must run one separately approved smoke test before enabling production traffic. There is no model
+fallback and no automatic retry.
+
+Mindlogic does not publish a verified credit-unit conversion for `sonar-pro`. The ledger therefore
+uses a deliberately conservative feature reservation rate of 3 input / 15 output credits per
+1,000 tokens and a 2,400-token output ceiling. These are internal guard units, not asserted provider
+prices. Actual token usage is settled through the existing ledger; uncertain transmission remains
+`reconciliation_pending`, and operators reconcile it against GET `/credits/`. The existing 5,000
+monthly-credit hard cap remains authoritative.
+
+The success body is the article contract plus `id` and `cached`:
+`{ id, studyDate, title, sourceName, sourceUrl, publishedAt, generatedAt, summary, content,
+vocabulary: [{ word, definition, example }], cached }`. Apply generated migration
+`src/db/migrations/0004_oval_nightcrawler.sql` with `pnpm db:migrate` during deployment, after a
+backup and before directing traffic to the new endpoint. This repository's test procedure applies
+it only to ephemeral Testcontainers PostgreSQL; it does not migrate Neon production.
+
 - `POST /api/v1/auth/login`, `GET /api/v1/auth/session`, `POST /api/v1/auth/logout` — see
   [Authentication](#authentication).
 - `POST /api/v1/reflections/compare` — **deprecated and restricted (section 10)**, superseded
