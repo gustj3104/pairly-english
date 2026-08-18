@@ -45,8 +45,10 @@ export async function fetchDictionaryEntry(
   fetchImpl: DictionaryFetch = fetch,
   now: () => Date = () => new Date(),
 ): Promise<DictionaryEntry> {
+  // Deliberately no `translations` query param: FreeDictionaryAPI's translation payload can push
+  // polysemous words (e.g. "life") over MAX_BODY_BYTES, and Korean word-level meanings come from
+  // Mindlogic (see DictionaryService.lookup), not from this provider.
   const url = new URL(`/api/v1/entries/en/${encodeURIComponent(word)}`, PROVIDER_ORIGIN);
-  url.searchParams.set('translations', 'true');
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   let response: Response;
@@ -96,20 +98,12 @@ export async function fetchDictionaryEntry(
         definition: sense.definition,
         example: sense.examples[0] ?? null,
       };
-      const koreanTranslations: string[] = [];
-      const seenTranslations = new Set<string>();
-      for (const translation of sense.translations) {
-        if (!['ko', 'kor'].includes(translation.language.code.toLowerCase())) continue;
-        const normalized = translation.word.trim().normalize('NFKC');
-        if (!normalized || seenTranslations.has(normalized)) continue;
-        seenTranslations.add(normalized);
-        koreanTranslations.push(normalized);
-        if (koreanTranslations.length === 5) break;
-      }
       meanings.push({
         senseId: createSenseId(word, core),
         ...core,
-        koreanTranslations,
+        // Kept for lookup-response compatibility; FreeDictionaryAPI translations are never
+        // requested, and AI-derived (Mindlogic) results are never copied down to this level.
+        koreanTranslations: [],
       });
       if (meanings.length === 3) break;
     }

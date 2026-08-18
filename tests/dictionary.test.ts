@@ -2,7 +2,7 @@ import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { SESSION_COOKIE_NAME, signSession } from '../src/services/auth/session.js';
-import { fetchDictionaryEntry } from '../src/services/dictionary/provider.js';
+import { createSenseId, fetchDictionaryEntry } from '../src/services/dictionary/provider.js';
 import { DICTIONARY_SOURCE } from '../src/services/dictionary/types.js';
 import type {
   DictionaryRepository,
@@ -28,12 +28,6 @@ function providerBody(overrides: Record<string, unknown> = {}) {
           {
             definition: 'To give public notice.',
             examples: ['They announce the result.'],
-            translations: [
-              { language: { code: 'ko', name: 'Korean' }, word: '  발표하다  ' },
-              { language: { code: 'kor', name: 'Korean' }, word: '발표하다' },
-              { language: { code: 'ja', name: 'Japanese' }, word: '発表する' },
-              { language: { code: 'kor', name: 'Korean' }, word: '알리다' },
-            ],
           },
           { definition: 'To give public notice.', examples: ['duplicate'] },
           { definition: 'To make known.', examples: [] },
@@ -60,11 +54,14 @@ const jsonResponse = (body: unknown, status = 200, headers?: Record<string, stri
   });
 
 describe('FreeDictionaryAPI provider mapping', () => {
-  it('uses the fixed HTTPS endpoint, normalizes at most three unique meanings and stable sense IDs', async () => {
+  it('requests the fixed HTTPS endpoint with no translations query param, normalizes at most three unique meanings and stable sense IDs', async () => {
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      expect(String(input)).toBe(
-        'https://freedictionaryapi.com/api/v1/entries/en/announce?translations=true',
+      const requested = new URL(String(input));
+      expect(requested.origin + requested.pathname).toBe(
+        'https://freedictionaryapi.com/api/v1/entries/en/announce',
       );
+      expect(requested.searchParams.has('translations')).toBe(false);
+      expect(Array.from(requested.searchParams.keys())).toHaveLength(0);
       expect(init?.redirect).toBe('manual');
       return jsonResponse(providerBody());
     });
@@ -77,60 +74,39 @@ describe('FreeDictionaryAPI provider mapping', () => {
     );
     expect(first.pronunciation).toBe('/əˈnaʊns/');
     expect(first.audioUrl).toBeNull();
-    expect(first.meanings[0]!.koreanTranslations).toEqual(['발표하다', '알리다']);
-    expect(first.meanings[1]!.koreanTranslations).toEqual([]);
-    // Pinned from the pre-translation implementation: translations must never change sense IDs.
+    // Never requested from FreeDictionaryAPI; word-level Korean meanings come from Mindlogic
+    // (DictionaryService.lookup), so every meaning-level array is empty for API compatibility.
+    expect(first.meanings.every((meaning) => meaning.koreanTranslations.length === 0)).toBe(true);
+    // Pinned across the translations-removal change: senseId was already independent of
+    // translations before this fix and must remain so.
     expect(first.meanings[0]!.senseId).toBe(
       '90361fd1260b0648b2d6c8c4f61057045722232420a9168aeb626c07fd715a83',
     );
     expect(first.expiresAt.getTime() - first.fetchedAt.getTime()).toBe(30 * 86400_000);
   });
 
-  it('extracts ko and kor in order, normalizes/deduplicates, excludes other languages, and caps at five', async () => {
-    const translations = [
-      { language: { code: 'ko', name: 'Korean' }, word: '  하나  ' },
-      { language: { code: 'kor', name: 'Korean' }, word: '하나' },
-      { language: { code: 'fr', name: 'French' }, word: 'un' },
-      ...['둘', '셋', '넷', '다섯', '여섯'].map((word) => ({
-        language: { code: 'ko', name: 'Korean' },
-        word,
-      })),
+  it('ignores a translations field on the raw response, however shaped, without failing or affecting koreanTranslations or senseId', async () => {
+    const wellFormed = [
+      { language: { code: 'ko', name: 'Korean' }, word: '하나' },
+      { language: { code: 'kor', name: 'Korean' }, word: '알리다' },
     ];
-    const body = providerBody({
-      entries: [
-        {
-          partOfSpeech: 'noun',
-          pronunciations: [],
-          senses: [{ definition: 'A number.', examples: [], translations }],
-        },
-      ],
-    });
-    const result = await fetchDictionaryEntry('one', async () => jsonResponse(body));
-    expect(result.meanings[0]!.koreanTranslations).toEqual(['하나', '둘', '셋', '넷', '다섯']);
-  });
-
-  it('accepts a sense with no translations as a successful empty array', async () => {
-    const result = await fetchDictionaryEntry('announce', async () => jsonResponse(providerBody()));
-    expect(result.meanings[1]!.koreanTranslations).toEqual([]);
-  });
-
-  it.each([
-    { language: { code: 'korean', name: 'Korean' }, word: '뜻' },
-    { language: { code: 'ko', name: 'Korean' }, word: '<b>뜻</b>' },
-    { language: { code: 'ko', name: 'Korean' }, word: 'x'.repeat(121) },
-  ])('rejects malformed translation data', async (translation) => {
-    const body = providerBody({
-      entries: [
-        {
-          partOfSpeech: 'noun',
-          pronunciations: [],
-          senses: [{ definition: 'Meaning.', translations: [translation] }],
-        },
-      ],
-    });
-    await expect(
-      fetchDictionaryEntry('meaning', async () => jsonResponse(body)),
-    ).rejects.toMatchObject({ code: 'DICTIONARY_INVALID_RESPONSE', statusCode: 502 });
+    const malformed = [{ language: { code: 'korean', name: 'x' }, word: '<b>뜻</b>'.repeat(50) }];
+    for (const translations of [wellFormed, malformed]) {
+      const body = providerBody({
+        entries: [
+          {
+            partOfSpeech: 'noun',
+            pronunciations: [],
+            senses: [{ definition: 'A number.', examples: [], translations }],
+          },
+        ],
+      });
+      const result = await fetchDictionaryEntry('one', async () => jsonResponse(body));
+      expect(result.meanings[0]!.koreanTranslations).toEqual([]);
+      expect(result.meanings[0]!.senseId).toBe(
+        createSenseId('one', { partOfSpeech: 'noun', definition: 'A number.', example: null }),
+      );
+    }
   });
 
   it.each([
@@ -513,6 +489,96 @@ describe('dictionary provider failure isolation (life-502 regression)', () => {
     expect(response.json()).toMatchObject({ koreanTranslations: ['발표하다'] });
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(translate).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('looks up a large polysemous word (life-shaped fixture) end to end: English result, one Mindlogic call, then a cache hit with no extra calls', async () => {
+    const lifeBody = providerBody({
+      word: 'life',
+      entries: [
+        {
+          language: { code: 'en', name: 'English' },
+          partOfSpeech: 'noun',
+          pronunciations: [{ type: 'phonemic', text: '/laɪf/', tags: [] }],
+          senses: [
+            {
+              definition: 'The condition distinguishing organisms from inorganic matter.',
+              examples: ['Life on Earth began billions of years ago.'],
+            },
+            { definition: 'The existence of an individual human being.', examples: [] },
+            { definition: 'A particular aspect of existence.', examples: [] },
+            { definition: 'The period from birth to death.', examples: [] },
+            { definition: 'Liveliness or vitality.', examples: [] },
+          ],
+        },
+        {
+          language: { code: 'en', name: 'English' },
+          partOfSpeech: 'verb',
+          pronunciations: [],
+          senses: [{ definition: 'To imprison for a life sentence (slang).', examples: [] }],
+        },
+        {
+          language: { code: 'en', name: 'English' },
+          partOfSpeech: 'interjection',
+          pronunciations: [],
+          senses: [{ definition: 'Used to express resigned acceptance.', examples: [] }],
+        },
+      ],
+    });
+    const repo = new MemoryRepository();
+    const fetchSpy = vi.fn(async () => jsonResponse(lifeBody));
+    const translate = vi.fn(async () => ['생명', '인생']);
+    let stored: string[] | null = null;
+    const translationRepository: DictionaryTranslationRepository = {
+      getOrCreateTranslation: async (_word, create) => {
+        if (stored) return stored;
+        stored = await create(repo.entry!);
+        return stored;
+      },
+    };
+    const service = new DictionaryService(repo, fetchSpy, () => NOW, translationRepository, {
+      translate,
+    } as unknown as DictionaryTranslator);
+    const app = buildApp({
+      dictionaryService: service,
+      studyDaysRoutesOptions: { sessionSecret: SECRET, maxFutureDays: 1 },
+    });
+    const token = signSession({ name: 'Alice' }, SECRET, 3600);
+
+    const first = await app.inject({
+      method: 'GET',
+      url: '/api/v1/dictionary/lookup?word=life',
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` },
+    });
+    expect(first.statusCode).toBe(200);
+    const firstBody = first.json() as {
+      normalizedWord: string;
+      koreanTranslations: string[];
+      koreanTranslationStatus: string;
+      meanings: Array<{ koreanTranslations: string[] }>;
+      cached: boolean;
+    };
+    expect(firstBody.normalizedWord).toBe('life');
+    expect(firstBody.meanings).toHaveLength(3);
+    expect(firstBody.meanings.every((meaning) => meaning.koreanTranslations.length === 0)).toBe(
+      true,
+    );
+    expect(firstBody.koreanTranslations).toEqual(['생명', '인생']);
+    expect(firstBody.koreanTranslationStatus).toBe('available');
+    expect(firstBody.cached).toBe(false);
+
+    const second = await app.inject({
+      method: 'GET',
+      url: '/api/v1/dictionary/lookup?word=life',
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` },
+    });
+    expect(second.statusCode).toBe(200);
+    const secondBody = second.json() as { cached: boolean; koreanTranslations: string[] };
+    expect(secondBody.cached).toBe(true);
+    expect(secondBody.koreanTranslations).toEqual(['생명', '인생']);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(translate).toHaveBeenCalledTimes(1);
     await app.close();
   });
 });

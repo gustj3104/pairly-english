@@ -1276,13 +1276,14 @@ owner, provider, or external URL.
 - `DELETE /api/v1/vocabulary/:normalizedWord` is idempotent and returns `204`.
 
 The provider is [FreeDictionaryAPI.com](https://freedictionaryapi.com/), using
-`GET /api/v1/entries/en/{word}?translations=true` without an API key. Each meaning includes a
-`koreanTranslations` array containing at most five normalized, unique translation words whose
-Wiktionary language code is `ko` or `kor`. This is word-level vocabulary only: the English
-definition and example remain unchanged and are not translated into Korean sentences. Coverage
-depends entirely on Wiktionary; a meaning with no Korean translation returns an empty array.
-No AI, Mindlogic, or paid translation API is used. Its published limit is 1,000 requests per
-hour per IP. Data comes from Wiktionary under
+`GET /api/v1/entries/en/{word}` without an API key. The `translations` query param is
+deliberately omitted: FreeDictionaryAPI's translation payload (every language it has data for,
+not just Korean) can push a polysemous word's response well past the provider body cap, and
+Korean word-level meanings are produced separately by Mindlogic (see below), not by this
+provider. Each meaning's `koreanTranslations` array is therefore always empty; it is kept only
+for lookup-response shape compatibility. No AI, Mindlogic, or paid translation API is used by
+this provider call itself. Its published limit is 1,000 requests per hour per IP. Data comes
+from Wiktionary under
 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/): clients must visibly show
 “Definitions from Wiktionary via FreeDictionaryAPI.com”, the license, and the per-entry
 Wiktionary source link returned by these APIs. Wiktionary is community-maintained and may be

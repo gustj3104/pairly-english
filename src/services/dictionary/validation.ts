@@ -26,25 +26,12 @@ const boundedSafeString = (max: number) =>
     .max(max)
     .refine((value) => !containsUnsafeText(value));
 
+// `translations` is deliberately absent: it is never requested from FreeDictionaryAPI (see
+// provider.ts), so any such field the provider still sends is safely stripped by Zod's default
+// (non-strict) object parsing rather than validated here.
 const senseSchema = z.object({
   definition: boundedSafeString(2000),
   examples: z.array(boundedSafeString(1000)).max(50).optional().default([]),
-  translations: z
-    .array(
-      z.object({
-        language: z.object({
-          code: z.string().regex(/^[A-Za-z]{2,3}$/),
-          name: boundedSafeString(80),
-        }),
-        word: z
-          .string()
-          .max(120)
-          .refine((value) => !containsUnsafeText(value)),
-      }),
-    )
-    .max(500)
-    .optional()
-    .default([]),
 });
 
 export const providerResponseSchema = z.object({
