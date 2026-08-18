@@ -97,11 +97,14 @@ export function postJson<TResponse>(
   body: unknown,
   options: RequestOptions = {},
 ): Promise<TResponse> {
-  return request<TResponse>(
-    path,
-    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
-    options,
-  )
+  // A `Content-Type: application/json` header with no body makes Fastify's
+  // JSON parser reject the request outright (FST_ERR_CTP_EMPTY_JSON_BODY) —
+  // so a bodyless POST (e.g. logout) must send neither the header nor a body.
+  const init: RequestInit =
+    body === undefined
+      ? { method: 'POST' }
+      : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+  return request<TResponse>(path, init, options)
 }
 
 export function getJson<TResponse>(path: string, options: RequestOptions = {}): Promise<TResponse> {
