@@ -17,15 +17,15 @@ one shared password (set server-side as `APP_SHARED_PASSWORD` — see the backen
 name is a display value only, never an authorization check — two people can use the same name.
 
 - `LandingPage` (`src/pages/LandingPage.tsx`) owns the whole flow: on mount it calls
-  `GET /api/auth/session` to restore an existing session (so a page refresh doesn't force a
+  `GET /api/v1/auth/session` to restore an existing session (so a page refresh doesn't force a
   re-login); if that comes back unauthenticated but a name was already saved locally, it shows
   a "session expired" notice instead of the plain first-visit hero.
-- Login (`POST /api/auth/login`) sets an HttpOnly session cookie server-side — this app never
+- Login (`POST /api/v1/auth/login`) sets an HttpOnly session cookie server-side — this app never
   sees or stores the password anywhere past the one request that submits it (not in
   `localStorage`, not held in state longer than the request needs).
-- `TopNav` has the sign-out control, calling `POST /api/auth/logout` and then clearing all
+- `TopNav` has the sign-out control, calling `POST /api/v1/auth/logout` and then clearing all
   local learning state (`useLearning().reset()`) before returning to the landing page.
-- `POST /api/reflections/compare` requires a valid session; a `401` there is treated as
+- `POST /api/v1/reflections/compare` requires a valid session; a `401` there is treated as
   "session expired" and sends the user back to `LandingPage` to log in again
   (`AIComparisonPage`'s `session_expired` status).
 - There is **no mock mode for auth** — `src/services/api/authService.ts` always calls the real
