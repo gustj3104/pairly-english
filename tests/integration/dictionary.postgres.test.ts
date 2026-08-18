@@ -22,11 +22,13 @@ const entry = (): DictionaryEntry => ({
       partOfSpeech: 'verb',
       definition: 'To give public notice.',
       example: 'They announce the result.',
+      koreanTranslations: [],
     },
   ],
   sourceUrl: 'https://en.wiktionary.org/wiki/announce',
   fetchedAt: now,
   expiresAt: new Date(now.getTime() + 30 * 86400_000),
+  cacheSchemaVersion: 2,
 });
 
 beforeAll(async () => {
@@ -76,6 +78,51 @@ describe('dictionary PostgreSQL cache', () => {
     expect(calls).toBe(0);
     expect(result).toMatchObject({ cached: true, stale: false });
   });
+
+  it('forces one refresh for 20 concurrent legacy-cache reads', async () => {
+    await testDb.pool.query(
+      `insert into dictionary_entries
+        (query_word, normalized_word, meanings, source_url, fetched_at, expires_at, updated_at)
+       values ('announce', 'announce', $1::jsonb, 'https://en.wiktionary.org/wiki/announce', $2, $3, $2)`,
+      [
+        JSON.stringify([
+          {
+            senseId: 'a'.repeat(64),
+            partOfSpeech: 'verb',
+            definition: 'To give public notice.',
+            example: null,
+          },
+        ]),
+        now,
+        new Date(now.getTime() + 30 * 86400_000),
+      ],
+    );
+    let calls = 0;
+    const results = await Promise.all(
+      Array.from({ length: 20 }, () =>
+        repository.getOrRefresh('announce', now, async () => {
+          calls += 1;
+          await new Promise((resolve) => setTimeout(resolve, 15));
+          return entry();
+        }),
+      ),
+    );
+    expect(calls).toBe(1);
+    expect(
+      results.every((result) => result.entry.meanings[0]!.koreanTranslations.length === 0),
+    ).toBe(true);
+  }, 30_000);
+
+  it('treats a current-version empty translation array as a valid cache hit', async () => {
+    await repository.getOrRefresh('announce', now, async () => entry());
+    let calls = 0;
+    const result = await repository.getOrRefresh('announce', now, async () => {
+      calls += 1;
+      return entry();
+    });
+    expect(calls).toBe(0);
+    expect(result.entry.meanings[0]!.koreanTranslations).toEqual([]);
+  });
 });
 
 describe('saved vocabulary PostgreSQL constraints', () => {
@@ -90,6 +137,7 @@ describe('saved vocabulary PostgreSQL constraints', () => {
       partOfSpeech: 'verb',
       definition: 'To give public notice.',
       example: null,
+      koreanTranslations: ['발표하다'],
       sourceUrl: 'https://en.wiktionary.org/wiki/announce',
       articleId: null,
       contextSentence: null,
@@ -99,6 +147,7 @@ describe('saved vocabulary PostgreSQL constraints', () => {
     const again = await repository.saveVocabulary({ ...base, participantKey: 'alice' });
     await repository.saveVocabulary({ ...base, participantKey: 'bob' });
     expect(again.item.id).toBe(first.item.id);
+    expect(again.item.koreanTranslations).toEqual(['발표하다']);
     expect(await repository.listVocabulary('alice')).toHaveLength(1);
     expect(await repository.listVocabulary('bob')).toHaveLength(1);
     expect(await repository.deleteVocabulary('alice', 'announce')).toBe(true);
@@ -118,6 +167,20 @@ describe('saved vocabulary PostgreSQL constraints', () => {
       testDb.pool.query(`insert into dictionary_entries
         (query_word, normalized_word, meanings, source_url, fetched_at, expires_at, updated_at)
         values (' ', ' ', '[]'::jsonb, 'https://en.wiktionary.org/wiki/x', now(), now() + interval '30 days', now())`),
+    ).rejects.toMatchObject({ code: '23514' });
+  });
+
+  it('rejects a non-array saved Korean translation snapshot', async () => {
+    await repository.getOrRefresh('announce', now, async () => entry());
+    await expect(
+      testDb.pool.query(
+        `insert into saved_vocabulary
+          (participant_key, word, normalized_word, sense_id, part_of_speech, definition,
+           korean_translations, source_url, saved_at)
+         values ('alice', 'announce', 'announce', $1, 'verb', 'definition',
+           '{}'::jsonb, 'https://en.wiktionary.org/wiki/announce', now())`,
+        ['a'.repeat(64)],
+      ),
     ).rejects.toMatchObject({ code: '23514' });
   });
 });

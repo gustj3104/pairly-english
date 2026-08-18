@@ -43,6 +43,13 @@
       "when": 1787055859476,
       "tag": "0005_greedy_iceman",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787058945130,
+      "tag": "0006_cuddly_randall",
+      "breakpoints": true
     }
   ]
 }

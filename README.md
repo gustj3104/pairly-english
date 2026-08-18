@@ -1276,7 +1276,12 @@ owner, provider, or external URL.
 - `DELETE /api/v1/vocabulary/:normalizedWord` is idempotent and returns `204`.
 
 The provider is [FreeDictionaryAPI.com](https://freedictionaryapi.com/), using
-`GET /api/v1/entries/en/{word}` without an API key. Its published limit is 1,000 requests per
+`GET /api/v1/entries/en/{word}?translations=true` without an API key. Each meaning includes a
+`koreanTranslations` array containing at most five normalized, unique translation words whose
+Wiktionary language code is `ko` or `kor`. This is word-level vocabulary only: the English
+definition and example remain unchanged and are not translated into Korean sentences. Coverage
+depends entirely on Wiktionary; a meaning with no Korean translation returns an empty array.
+No AI, Mindlogic, or paid translation API is used. Its published limit is 1,000 requests per
 hour per IP. Data comes from Wiktionary under
 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/): clients must visibly show
 “Definitions from Wiktionary via FreeDictionaryAPI.com”, the license, and the per-entry
@@ -1294,6 +1299,13 @@ logged. The current provider exposes text pronunciations but no audio field, so 
 The provider boundary is `src/services/dictionary/provider.ts`, which is the replacement point
 if a future provider is selected. A provider outage returns a bounded upstream error (or stale
 cache when available); it never invokes Mindlogic or consumes the credit ledger.
+
+Dictionary cache rows carry an explicit schema version. Rows written before translation support
+are version 1 and are refreshed once under the same advisory lock regardless of their remaining
+TTL. Version 2 rows remain valid even when every `koreanTranslations` array is empty, so genuine
+Wiktionary coverage gaps do not cause repeated provider calls. Saved vocabulary keeps its own
+canonical translation snapshot; later cache refreshes cannot silently change an already-saved
+meaning. The existing Wiktionary/FreeDictionaryAPI.com CC BY-SA 4.0 attribution still applies.
 
 When article context is saved, the article UUID must exist in `daily_news_articles`; normalized
 whitespace context must be present in its content, and the selected word must occur at an English

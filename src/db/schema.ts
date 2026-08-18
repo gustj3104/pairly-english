@@ -87,6 +87,7 @@ export interface DictionaryMeaningJson {
   partOfSpeech: string;
   definition: string;
   example: string | null;
+  koreanTranslations: string[];
 }
 
 /** Bounded, normalized Wiktionary data; provider response bodies are never persisted. */
@@ -100,6 +101,7 @@ export const dictionaryEntries = pgTable(
     pronunciation: varchar('pronunciation', { length: 240 }),
     audioUrl: varchar('audio_url', { length: 2048 }),
     sourceUrl: varchar('source_url', { length: 2048 }).notNull(),
+    cacheSchemaVersion: integer('cache_schema_version').notNull().default(1),
     fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull(),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -114,6 +116,7 @@ export const dictionaryEntries = pgTable(
     ),
     check('dictionary_entries_meanings_non_empty', sql`jsonb_array_length(${table.meanings}) > 0`),
     check('dictionary_entries_expiry_after_fetch', sql`${table.expiresAt} > ${table.fetchedAt}`),
+    check('dictionary_entries_cache_schema_version_positive', sql`${table.cacheSchemaVersion} > 0`),
   ],
 );
 
@@ -132,6 +135,7 @@ export const savedVocabulary = pgTable(
     partOfSpeech: varchar('part_of_speech', { length: 80 }).notNull(),
     definition: text('definition').notNull(),
     example: text('example'),
+    koreanTranslations: jsonb('korean_translations').$type<string[]>().notNull().default([]),
     sourceUrl: varchar('source_url', { length: 2048 }).notNull(),
     articleId: uuid('article_id').references(() => dailyNewsArticles.id, { onDelete: 'set null' }),
     contextSentence: varchar('context_sentence', { length: 1000 }),
@@ -148,6 +152,10 @@ export const savedVocabulary = pgTable(
     check(
       'saved_vocabulary_part_of_speech_non_blank',
       sql`length(trim(${table.partOfSpeech})) > 0`,
+    ),
+    check(
+      'saved_vocabulary_korean_translations_array',
+      sql`jsonb_typeof(${table.koreanTranslations}) = 'array'`,
     ),
   ],
 );

@@ -22,7 +22,16 @@ function providerBody(overrides: Record<string, unknown> = {}) {
         partOfSpeech: 'verb',
         pronunciations: [{ type: 'phonemic', text: '/əˈnaʊns/', tags: [] }],
         senses: [
-          { definition: 'To give public notice.', examples: ['They announce the result.'] },
+          {
+            definition: 'To give public notice.',
+            examples: ['They announce the result.'],
+            translations: [
+              { language: { code: 'ko', name: 'Korean' }, word: '  발표하다  ' },
+              { language: { code: 'kor', name: 'Korean' }, word: '발표하다' },
+              { language: { code: 'ja', name: 'Japanese' }, word: '発表する' },
+              { language: { code: 'kor', name: 'Korean' }, word: '알리다' },
+            ],
+          },
           { definition: 'To give public notice.', examples: ['duplicate'] },
           { definition: 'To make known.', examples: [] },
           { definition: 'To proclaim.', examples: [] },
@@ -50,7 +59,9 @@ const jsonResponse = (body: unknown, status = 200, headers?: Record<string, stri
 describe('FreeDictionaryAPI provider mapping', () => {
   it('uses the fixed HTTPS endpoint, normalizes at most three unique meanings and stable sense IDs', async () => {
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      expect(String(input)).toBe('https://freedictionaryapi.com/api/v1/entries/en/announce');
+      expect(String(input)).toBe(
+        'https://freedictionaryapi.com/api/v1/entries/en/announce?translations=true',
+      );
       expect(init?.redirect).toBe('manual');
       return jsonResponse(providerBody());
     });
@@ -63,7 +74,60 @@ describe('FreeDictionaryAPI provider mapping', () => {
     );
     expect(first.pronunciation).toBe('/əˈnaʊns/');
     expect(first.audioUrl).toBeNull();
+    expect(first.meanings[0]!.koreanTranslations).toEqual(['발표하다', '알리다']);
+    expect(first.meanings[1]!.koreanTranslations).toEqual([]);
+    // Pinned from the pre-translation implementation: translations must never change sense IDs.
+    expect(first.meanings[0]!.senseId).toBe(
+      '90361fd1260b0648b2d6c8c4f61057045722232420a9168aeb626c07fd715a83',
+    );
     expect(first.expiresAt.getTime() - first.fetchedAt.getTime()).toBe(30 * 86400_000);
+  });
+
+  it('extracts ko and kor in order, normalizes/deduplicates, excludes other languages, and caps at five', async () => {
+    const translations = [
+      { language: { code: 'ko', name: 'Korean' }, word: '  하나  ' },
+      { language: { code: 'kor', name: 'Korean' }, word: '하나' },
+      { language: { code: 'fr', name: 'French' }, word: 'un' },
+      ...['둘', '셋', '넷', '다섯', '여섯'].map((word) => ({
+        language: { code: 'ko', name: 'Korean' },
+        word,
+      })),
+    ];
+    const body = providerBody({
+      entries: [
+        {
+          partOfSpeech: 'noun',
+          pronunciations: [],
+          senses: [{ definition: 'A number.', examples: [], translations }],
+        },
+      ],
+    });
+    const result = await fetchDictionaryEntry('one', async () => jsonResponse(body));
+    expect(result.meanings[0]!.koreanTranslations).toEqual(['하나', '둘', '셋', '넷', '다섯']);
+  });
+
+  it('accepts a sense with no translations as a successful empty array', async () => {
+    const result = await fetchDictionaryEntry('announce', async () => jsonResponse(providerBody()));
+    expect(result.meanings[1]!.koreanTranslations).toEqual([]);
+  });
+
+  it.each([
+    { language: { code: 'korean', name: 'Korean' }, word: '뜻' },
+    { language: { code: 'ko', name: 'Korean' }, word: '<b>뜻</b>' },
+    { language: { code: 'ko', name: 'Korean' }, word: 'x'.repeat(121) },
+  ])('rejects malformed translation data', async (translation) => {
+    const body = providerBody({
+      entries: [
+        {
+          partOfSpeech: 'noun',
+          pronunciations: [],
+          senses: [{ definition: 'Meaning.', translations: [translation] }],
+        },
+      ],
+    });
+    await expect(
+      fetchDictionaryEntry('meaning', async () => jsonResponse(body)),
+    ).rejects.toMatchObject({ code: 'DICTIONARY_INVALID_RESPONSE', statusCode: 502 });
   });
 
   it.each([
@@ -128,11 +192,40 @@ class MemoryRepository implements DictionaryRepository {
   async findArticle() {
     return null;
   }
-  async findSaved() {
-    return null;
+  async findSaved(participantKey: string, normalizedWord: string) {
+    return (
+      this.saved.find(
+        (row) =>
+          row.item.participantKey === participantKey && row.item.normalizedWord === normalizedWord,
+      ) ?? null
+    );
   }
-  async saveVocabulary(): Promise<SavedVocabularyRow> {
-    throw new Error('unused');
+  async saveVocabulary(
+    input: Parameters<DictionaryRepository['saveVocabulary']>[0],
+  ): Promise<SavedVocabularyRow> {
+    const existing = await this.findSaved(input.participantKey, input.normalizedWord);
+    const row = {
+      item: {
+        id: existing?.item.id ?? '11111111-1111-1111-1111-111111111111',
+        participantKey: input.participantKey,
+        word: input.word,
+        normalizedWord: input.normalizedWord,
+        senseId: input.senseId,
+        pronunciation: input.pronunciation ?? null,
+        audioUrl: input.audioUrl ?? null,
+        partOfSpeech: input.partOfSpeech,
+        definition: input.definition,
+        example: input.example ?? null,
+        koreanTranslations: input.koreanTranslations ?? [],
+        sourceUrl: input.sourceUrl,
+        articleId: input.articleId ?? null,
+        contextSentence: input.contextSentence ?? null,
+        savedAt: input.savedAt,
+      },
+      articleTitle: null,
+    } satisfies SavedVocabularyRow;
+    this.saved = [row];
+    return row;
   }
   async listVocabulary() {
     return this.saved;
@@ -194,4 +287,63 @@ describe('dictionary HTTP authentication and validation', () => {
       await app.close();
     },
   );
+});
+
+describe('saved vocabulary Korean translation contract', () => {
+  const dictionaryEntry = (): DictionaryEntry => ({
+    query: 'announce',
+    normalizedWord: 'announce',
+    pronunciation: null,
+    audioUrl: null,
+    meanings: [
+      {
+        senseId: 'a'.repeat(64),
+        partOfSpeech: 'verb',
+        definition: 'To give public notice.',
+        example: null,
+        koreanTranslations: ['발표하다'],
+      },
+      {
+        senseId: 'b'.repeat(64),
+        partOfSpeech: 'verb',
+        definition: 'To make known.',
+        example: null,
+        koreanTranslations: ['알리다'],
+      },
+    ],
+    sourceUrl: 'https://en.wiktionary.org/wiki/announce',
+    fetchedAt: NOW,
+    expiresAt: new Date(NOW.getTime() + 30 * 86400_000),
+    cacheSchemaVersion: 2,
+  });
+
+  it('snapshots canonical translations and updates them with a different sense', async () => {
+    const repository = new MemoryRepository();
+    repository.entry = dictionaryEntry();
+    const service = new DictionaryService(repository, fetch, () => NOW);
+    const first = await service.save('alice', 'announce', { senseId: 'a'.repeat(64) });
+    expect(first.koreanTranslations).toEqual(['발표하다']);
+    const second = await service.save('alice', 'announce', { senseId: 'b'.repeat(64) });
+    expect(second.koreanTranslations).toEqual(['알리다']);
+    expect((await service.list('alice'))[0]!.koreanTranslations).toEqual(['알리다']);
+  });
+
+  it('rejects client-supplied Korean translations at the strict HTTP request schema', async () => {
+    const repository = new MemoryRepository();
+    repository.entry = dictionaryEntry();
+    const app = buildApp({
+      dictionaryService: new DictionaryService(repository),
+      studyDaysRoutesOptions: { sessionSecret: SECRET, maxFutureDays: 1 },
+    });
+    const token = signSession({ name: 'Alice' }, SECRET, 3600);
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/v1/vocabulary/announce',
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` },
+      payload: { senseId: 'a'.repeat(64), koreanTranslations: ['조작'] },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(repository.saved).toHaveLength(0);
+    await app.close();
+  });
 });

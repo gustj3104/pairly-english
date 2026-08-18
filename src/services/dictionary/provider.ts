@@ -5,10 +5,14 @@ import { providerResponseSchema, validateWiktionaryUrl } from './validation.js';
 const PROVIDER_ORIGIN = 'https://freedictionaryapi.com';
 const MAX_BODY_BYTES = 1024 * 1024;
 const TIMEOUT_MS = 5000;
+export const CURRENT_DICTIONARY_CACHE_SCHEMA_VERSION = 2;
 
 export type DictionaryFetch = typeof fetch;
 
-export function createSenseId(word: string, meaning: Omit<DictionaryMeaning, 'senseId'>): string {
+export function createSenseId(
+  word: string,
+  meaning: Pick<DictionaryMeaning, 'partOfSpeech' | 'definition' | 'example'>,
+): string {
   return createHash('sha256')
     .update(JSON.stringify([word, meaning.partOfSpeech, meaning.definition, meaning.example]))
     .digest('hex');
@@ -41,6 +45,7 @@ export async function fetchDictionaryEntry(
   now: () => Date = () => new Date(),
 ): Promise<DictionaryEntry> {
   const url = new URL(`/api/v1/entries/en/${encodeURIComponent(word)}`, PROVIDER_ORIGIN);
+  url.searchParams.set('translations', 'true');
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   let response: Response;
@@ -90,7 +95,21 @@ export async function fetchDictionaryEntry(
         definition: sense.definition,
         example: sense.examples[0] ?? null,
       };
-      meanings.push({ senseId: createSenseId(word, core), ...core });
+      const koreanTranslations: string[] = [];
+      const seenTranslations = new Set<string>();
+      for (const translation of sense.translations) {
+        if (!['ko', 'kor'].includes(translation.language.code.toLowerCase())) continue;
+        const normalized = translation.word.trim().normalize('NFKC');
+        if (!normalized || seenTranslations.has(normalized)) continue;
+        seenTranslations.add(normalized);
+        koreanTranslations.push(normalized);
+        if (koreanTranslations.length === 5) break;
+      }
+      meanings.push({
+        senseId: createSenseId(word, core),
+        ...core,
+        koreanTranslations,
+      });
       if (meanings.length === 3) break;
     }
     if (meanings.length === 3) break;
@@ -106,5 +125,6 @@ export async function fetchDictionaryEntry(
     sourceUrl: parsed.data.source.url,
     fetchedAt,
     expiresAt: new Date(fetchedAt.getTime() + 30 * 24 * 60 * 60 * 1000),
+    cacheSchemaVersion: CURRENT_DICTIONARY_CACHE_SCHEMA_VERSION,
   };
 }

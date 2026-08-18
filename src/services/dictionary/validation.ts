@@ -29,6 +29,22 @@ const boundedSafeString = (max: number) =>
 const senseSchema = z.object({
   definition: boundedSafeString(2000),
   examples: z.array(boundedSafeString(1000)).max(50).optional().default([]),
+  translations: z
+    .array(
+      z.object({
+        language: z.object({
+          code: z.string().regex(/^[A-Za-z]{2,3}$/),
+          name: boundedSafeString(80),
+        }),
+        word: z
+          .string()
+          .max(120)
+          .refine((value) => !containsUnsafeText(value)),
+      }),
+    )
+    .max(500)
+    .optional()
+    .default([]),
 });
 
 export const providerResponseSchema = z.object({

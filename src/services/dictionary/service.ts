@@ -22,6 +22,7 @@ export interface SavedVocabularyItem {
   partOfSpeech: string;
   definition: string;
   example: string | null;
+  koreanTranslations: string[];
   articleId: string | null;
   articleTitle: string | null;
   contextSentence: string | null;
@@ -39,6 +40,7 @@ function mapSaved(row: SavedVocabularyRow): SavedVocabularyItem {
     partOfSpeech: row.item.partOfSpeech,
     definition: row.item.definition,
     example: row.item.example,
+    koreanTranslations: row.item.koreanTranslations,
     articleId: row.item.articleId,
     articleTitle: row.articleTitle,
     contextSentence: row.item.contextSentence,
@@ -127,6 +129,7 @@ export class DictionaryService {
       partOfSpeech: sense.partOfSpeech,
       definition: sense.definition,
       example: sense.example,
+      koreanTranslations: sense.koreanTranslations,
       sourceUrl: entry.sourceUrl,
       articleId,
       contextSentence,

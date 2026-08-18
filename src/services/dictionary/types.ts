@@ -10,6 +10,7 @@ export interface DictionaryMeaning {
   partOfSpeech: string;
   definition: string;
   example: string | null;
+  koreanTranslations: string[];
 }
 
 export interface DictionaryEntry {
@@ -21,6 +22,7 @@ export interface DictionaryEntry {
   sourceUrl: string;
   fetchedAt: Date;
   expiresAt: Date;
+  cacheSchemaVersion: number;
 }
 
 export interface DictionaryLookupResponse {

@@ -3,6 +3,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type * as schema from '../../db/schema.js';
 import { dailyNewsArticles, dictionaryEntries, savedVocabulary } from '../../db/schema.js';
 import { DictionaryError, type DictionaryEntry } from './types.js';
+import { CURRENT_DICTIONARY_CACHE_SCHEMA_VERSION } from './provider.js';
 
 type Db = NodePgDatabase<typeof schema>;
 
@@ -16,6 +17,7 @@ function mapEntry(row: typeof dictionaryEntries.$inferSelect): DictionaryEntry {
     sourceUrl: row.sourceUrl,
     fetchedAt: row.fetchedAt,
     expiresAt: row.expiresAt,
+    cacheSchemaVersion: row.cacheSchemaVersion,
   };
 }
 
@@ -51,7 +53,9 @@ export class DrizzleDictionaryRepository implements DictionaryRepository {
     const row = await this.db.query.dictionaryEntries.findFirst({
       where: eq(dictionaryEntries.normalizedWord, word),
     });
-    return row ? mapEntry(row) : null;
+    return row?.cacheSchemaVersion === CURRENT_DICTIONARY_CACHE_SCHEMA_VERSION
+      ? mapEntry(row)
+      : null;
   }
 
   async getOrRefresh(
@@ -64,7 +68,11 @@ export class DrizzleDictionaryRepository implements DictionaryRepository {
       const existing = await tx.query.dictionaryEntries.findFirst({
         where: eq(dictionaryEntries.normalizedWord, word),
       });
-      if (existing && existing.expiresAt > now) {
+      if (
+        existing &&
+        existing.cacheSchemaVersion === CURRENT_DICTIONARY_CACHE_SCHEMA_VERSION &&
+        existing.expiresAt > now
+      ) {
         return { entry: mapEntry(existing), cached: true, stale: false };
       }
       try {
@@ -78,6 +86,7 @@ export class DrizzleDictionaryRepository implements DictionaryRepository {
             pronunciation: fresh.pronunciation,
             audioUrl: fresh.audioUrl,
             sourceUrl: fresh.sourceUrl,
+            cacheSchemaVersion: fresh.cacheSchemaVersion,
             fetchedAt: fresh.fetchedAt,
             expiresAt: fresh.expiresAt,
             updatedAt: fresh.fetchedAt,
@@ -90,6 +99,7 @@ export class DrizzleDictionaryRepository implements DictionaryRepository {
               pronunciation: fresh.pronunciation,
               audioUrl: fresh.audioUrl,
               sourceUrl: fresh.sourceUrl,
+              cacheSchemaVersion: fresh.cacheSchemaVersion,
               fetchedAt: fresh.fetchedAt,
               expiresAt: fresh.expiresAt,
               updatedAt: fresh.fetchedAt,
@@ -101,6 +111,7 @@ export class DrizzleDictionaryRepository implements DictionaryRepository {
       } catch (error) {
         if (
           existing &&
+          existing.cacheSchemaVersion === CURRENT_DICTIONARY_CACHE_SCHEMA_VERSION &&
           error instanceof DictionaryError &&
           ['DICTIONARY_RATE_LIMITED', 'DICTIONARY_TIMEOUT', 'DICTIONARY_UPSTREAM_ERROR'].includes(
             error.code,
@@ -135,6 +146,7 @@ export class DrizzleDictionaryRepository implements DictionaryRepository {
           partOfSpeech: input.partOfSpeech,
           definition: input.definition,
           example: input.example,
+          koreanTranslations: input.koreanTranslations,
           sourceUrl: input.sourceUrl,
           articleId: input.articleId,
           contextSentence: input.contextSentence,
