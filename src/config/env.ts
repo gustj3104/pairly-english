@@ -14,7 +14,13 @@ const envSchema = z
     PORT: z.coerce.number().int().positive().default(3001),
     HOST: z.string().min(1).default('127.0.0.1'),
     DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
-    FRONTEND_ORIGIN: z.string().min(1).default('http://localhost:5173'),
+    FRONTEND_ORIGIN: z
+      .string()
+      .trim()
+      .min(1)
+      .url()
+      .transform((value) => value.replace(/\/+$/, ''))
+      .default('http://localhost:5173'),
     MINDLOGIC_API_KEY: z.string().min(1, 'MINDLOGIC_API_KEY is required'),
     MINDLOGIC_BASE_URL: z.string().url().default('https://factchat-cloud.mindlogic.ai/v1/gateway'),
     MINDLOGIC_MODEL: z.string().default('claude-haiku-4-5-20251001'),

@@ -77,6 +77,15 @@ describe('parseEnv', () => {
     expect(() => parseEnv({ ...validBase, FRONTEND_ORIGIN: '*' })).toThrow(/FRONTEND_ORIGIN/);
   });
 
+  it('trims and removes trailing slashes from FRONTEND_ORIGIN', () => {
+    const result = parseEnv({
+      ...validBase,
+      FRONTEND_ORIGIN: '  https://yoons-english.vercel.app/  ',
+    });
+
+    expect(result.FRONTEND_ORIGIN).toBe('https://yoons-english.vercel.app');
+  });
+
   it('rejects a MINDLOGIC_MODEL that is not in the allow list', () => {
     expect(() => parseEnv({ ...validBase, MINDLOGIC_MODEL: 'gpt-4o' })).toThrow(/MINDLOGIC_MODEL/);
   });
