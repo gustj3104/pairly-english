@@ -43,7 +43,7 @@ const envSchema = z
      * Required — never defaulted, so the app can't boot with an
      * accidentally-empty password. Never logged (see redactedEnvSummary).
      */
-    APP_SHARED_PASSWORD: z.string().min(8, 'APP_SHARED_PASSWORD must be at least 8 characters'),
+    APP_SHARED_PASSWORD: z.string().min(4, 'APP_SHARED_PASSWORD must be at least 4 characters'),
     /**
      * HMAC signing key for session JWTs (src/services/auth/session.ts).
      * 32+ chars so it's a reasonable HS256 key floor. Required — never

@@ -27,7 +27,7 @@ describe('parseEnv', () => {
   });
 
   it('throws when APP_SHARED_PASSWORD is too short', () => {
-    expect(() => parseEnv({ ...validBase, APP_SHARED_PASSWORD: 'short' })).toThrow(
+    expect(() => parseEnv({ ...validBase, APP_SHARED_PASSWORD: 'abc' })).toThrow(
       /APP_SHARED_PASSWORD/,
     );
   });
