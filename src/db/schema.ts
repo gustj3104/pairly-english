@@ -3,6 +3,7 @@ import {
   check,
   date,
   integer,
+  index,
   jsonb,
   pgEnum,
   pgTable,
@@ -80,6 +81,76 @@ export const dailyNewsArticles = pgTable('daily_news_articles', {
   content: text('content').notNull(),
   vocabulary: jsonb('vocabulary').notNull(),
 });
+
+export interface DictionaryMeaningJson {
+  senseId: string;
+  partOfSpeech: string;
+  definition: string;
+  example: string | null;
+}
+
+/** Bounded, normalized Wiktionary data; provider response bodies are never persisted. */
+export const dictionaryEntries = pgTable(
+  'dictionary_entries',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    queryWord: varchar('query_word', { length: 60 }).notNull(),
+    normalizedWord: varchar('normalized_word', { length: 60 }).notNull().unique(),
+    meanings: jsonb('meanings').$type<DictionaryMeaningJson[]>().notNull(),
+    pronunciation: varchar('pronunciation', { length: 240 }),
+    audioUrl: varchar('audio_url', { length: 2048 }),
+    sourceUrl: varchar('source_url', { length: 2048 }).notNull(),
+    fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    index('dictionary_entries_expires_at_idx').on(table.expiresAt),
+    check('dictionary_entries_query_word_non_blank', sql`length(trim(${table.queryWord})) > 0`),
+    check(
+      'dictionary_entries_normalized_word_non_blank',
+      sql`length(trim(${table.normalizedWord})) > 0`,
+    ),
+    check('dictionary_entries_meanings_non_empty', sql`jsonb_array_length(${table.meanings}) > 0`),
+    check('dictionary_entries_expiry_after_fetch', sql`${table.expiresAt} > ${table.fetchedAt}`),
+  ],
+);
+
+export const savedVocabulary = pgTable(
+  'saved_vocabulary',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    participantKey: text('participant_key').notNull(),
+    word: varchar('word', { length: 60 }).notNull(),
+    normalizedWord: varchar('normalized_word', { length: 60 })
+      .notNull()
+      .references(() => dictionaryEntries.normalizedWord, { onDelete: 'restrict' }),
+    senseId: varchar('sense_id', { length: 64 }).notNull(),
+    pronunciation: varchar('pronunciation', { length: 240 }),
+    audioUrl: varchar('audio_url', { length: 2048 }),
+    partOfSpeech: varchar('part_of_speech', { length: 80 }).notNull(),
+    definition: text('definition').notNull(),
+    example: text('example'),
+    sourceUrl: varchar('source_url', { length: 2048 }).notNull(),
+    articleId: uuid('article_id').references(() => dailyNewsArticles.id, { onDelete: 'set null' }),
+    contextSentence: varchar('context_sentence', { length: 1000 }),
+    savedAt: timestamp('saved_at', { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    unique('saved_vocabulary_participant_word_unique').on(
+      table.participantKey,
+      table.normalizedWord,
+    ),
+    index('saved_vocabulary_participant_saved_at_idx').on(table.participantKey, table.savedAt),
+    check('saved_vocabulary_participant_non_blank', sql`length(trim(${table.participantKey})) > 0`),
+    check('saved_vocabulary_definition_non_blank', sql`length(trim(${table.definition})) > 0`),
+    check(
+      'saved_vocabulary_part_of_speech_non_blank',
+      sql`length(trim(${table.partOfSpeech})) > 0`,
+    ),
+  ],
+);
 
 /**
  * One row per AI request. Deliberately excludes original content

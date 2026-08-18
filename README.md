@@ -1260,6 +1260,45 @@ you're ready:
 6. Log out and confirm `GET /api/v1/auth/session` now reports `authenticated: false`, and that
    `POST /api/v1/reflections/compare` now returns `401`.
 
+## Dictionary and My Vocabulary
+
+All routes require the normal `pairly_session` cookie. The participant owner is derived only
+from the verified session name (`trim` → NFKC → lowercase); request bodies cannot select an
+owner, provider, or external URL.
+
+- `GET /api/v1/dictionary/lookup?word=announce` returns up to three unique Wiktionary senses,
+  a deterministic SHA-256 `senseId`, optional text pronunciation, and attribution. Lookup is
+  limited to 60 requests/hour/IP, has a five-second provider timeout, does not follow redirects,
+  and accepts only English words with optional internal apostrophes or hyphens.
+- `GET /api/v1/vocabulary` lists the caller's saved items newest first.
+- `PUT /api/v1/vocabulary/:normalizedWord` accepts `senseId` and optional paired `articleId` /
+  `contextSentence`. Definitions are copied from the canonical server cache, never the client.
+- `DELETE /api/v1/vocabulary/:normalizedWord` is idempotent and returns `204`.
+
+The provider is [FreeDictionaryAPI.com](https://freedictionaryapi.com/), using
+`GET /api/v1/entries/en/{word}` without an API key. Its published limit is 1,000 requests per
+hour per IP. Data comes from Wiktionary under
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/): clients must visibly show
+“Definitions from Wiktionary via FreeDictionaryAPI.com”, the license, and the per-entry
+Wiktionary source link returned by these APIs. Wiktionary is community-maintained and may be
+incomplete or inaccurate; FreeDictionaryAPI.com provides limited support and no guaranteed
+SLA. No production/commercial-use prohibition is stated in the published API documentation,
+but attribution and share-alike obligations still apply.
+
+Normalized entries are cached in PostgreSQL for 30 days. A transaction-scoped advisory lock
+coalesces concurrent misses for the same word. Expired data is refreshed; a stale entry may be
+served only when refresh encounters rate limiting, timeout, or a temporary upstream failure.
+Empty/invalid responses are never cached. Provider response bodies are neither persisted nor
+logged. The current provider exposes text pronunciations but no audio field, so `audioUrl` is
+`null`. This MVP does exact lookups only and deliberately avoids guessed stemming/lemmatization.
+The provider boundary is `src/services/dictionary/provider.ts`, which is the replacement point
+if a future provider is selected. A provider outage returns a bounded upstream error (or stale
+cache when available); it never invokes Mindlogic or consumes the credit ledger.
+
+When article context is saved, the article UUID must exist in `daily_news_articles`; normalized
+whitespace context must be present in its content, and the selected word must occur at an English
+word boundary. The saved row references the article rather than duplicating article content.
+
 ## Next steps (not yet implemented)
 
 - **A real smoke test of `POST /api/v1/reflections/compare`** — see

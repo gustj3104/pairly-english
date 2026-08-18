@@ -24,6 +24,9 @@ import { DrizzleComparisonRepository } from './services/daily-reflections/compar
 import type { SessionPayload } from './services/auth/session.js';
 import { DailyNewsService } from './services/daily-news/service.js';
 import { DrizzleDailyNewsRepository } from './services/daily-news/repository.js';
+import { dictionaryRoutes } from './routes/dictionary.js';
+import { DictionaryService } from './services/dictionary/service.js';
+import { DrizzleDictionaryRepository } from './services/dictionary/repository.js';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -33,6 +36,7 @@ declare module 'fastify' {
     dailyReflectionService: DailyReflectionService;
     comparisonService: ComparisonService;
     dailyNewsService: DailyNewsService;
+    dictionaryService: DictionaryService;
   }
   interface FastifyRequest {
     /**
@@ -55,6 +59,7 @@ export interface BuildAppOptions {
   dailyReflectionService?: DailyReflectionService;
   comparisonService?: ComparisonService;
   dailyNewsService?: DailyNewsService;
+  dictionaryService?: DictionaryService;
   studyDaysRoutesOptions?: StudyDaysRoutesOptions;
   /** Test-only: redirect Pino output somewhere inspectable instead of silent/stdout. */
   loggerStream?: NodeJS.WritableStream;
@@ -116,6 +121,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         app.mindlogicClient,
       ),
   );
+  app.decorate(
+    'dictionaryService',
+    options.dictionaryService ?? new DictionaryService(new DrizzleDictionaryRepository(db)),
+  );
 
   app.register(healthRoutes);
   app.register(usageRoutes, { prefix: '/api/v1' });
@@ -138,6 +147,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       sessionSecret: env.SESSION_SECRET,
       maxFutureDays: env.STUDY_DAY_MAX_FUTURE_DAYS,
     }),
+  });
+  app.register(dictionaryRoutes, {
+    prefix: '/api/v1',
+    sessionSecret: options.studyDaysRoutesOptions?.sessionSecret ?? env.SESSION_SECRET,
   });
 
   return app;
