@@ -27,6 +27,7 @@ import { DrizzleDailyNewsRepository } from './services/daily-news/repository.js'
 import { dictionaryRoutes } from './routes/dictionary.js';
 import { DictionaryService } from './services/dictionary/service.js';
 import { DrizzleDictionaryRepository } from './services/dictionary/repository.js';
+import { DictionaryTranslator } from './services/dictionary/translation.js';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -121,9 +122,20 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         app.mindlogicClient,
       ),
   );
+  const dictionaryRepository = new DrizzleDictionaryRepository(db);
   app.decorate(
     'dictionaryService',
-    options.dictionaryService ?? new DictionaryService(new DrizzleDictionaryRepository(db)),
+    options.dictionaryService ??
+      new DictionaryService(
+        dictionaryRepository,
+        fetch,
+        () => new Date(),
+        dictionaryRepository,
+        new DictionaryTranslator({
+          creditService: app.creditService,
+          mindlogicClient: app.mindlogicClient,
+        }),
+      ),
   );
 
   app.register(healthRoutes);

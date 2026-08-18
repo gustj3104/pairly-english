@@ -19,6 +19,7 @@ export interface DictionaryEntry {
   pronunciation: string | null;
   audioUrl: string | null;
   meanings: DictionaryMeaning[];
+  koreanTranslations: string[];
   sourceUrl: string;
   fetchedAt: Date;
   expiresAt: Date;
@@ -28,6 +29,8 @@ export interface DictionaryEntry {
 export interface DictionaryLookupResponse {
   query: string;
   normalizedWord: string;
+  koreanTranslations: string[];
+  koreanTranslationStatus: 'available' | 'unavailable';
   pronunciation: string | null;
   audioUrl: string | null;
   meanings: DictionaryMeaning[];

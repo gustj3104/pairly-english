@@ -16,6 +16,7 @@ const entry = (): DictionaryEntry => ({
   normalizedWord: 'announce',
   pronunciation: '/əˈnaʊns/',
   audioUrl: null,
+  koreanTranslations: [],
   meanings: [
     {
       senseId: 'a'.repeat(64),
@@ -122,6 +123,52 @@ describe('dictionary PostgreSQL cache', () => {
     });
     expect(calls).toBe(0);
     expect(result.entry.meanings[0]!.koreanTranslations).toEqual([]);
+  });
+
+  it('collapses 20 concurrent translation misses and permanently caches version 3', async () => {
+    await repository.getOrRefresh('announce', now, async () => entry());
+    let calls = 0;
+    const results = await Promise.all(
+      Array.from({ length: 20 }, () =>
+        repository.getOrCreateTranslation('announce', async () => {
+          calls += 1;
+          await new Promise((resolve) => setTimeout(resolve, 15));
+          return ['발표하다', '알리다'];
+        }),
+      ),
+    );
+    expect(calls).toBe(1);
+    expect(results.every((value) => value.join(',') === '발표하다,알리다')).toBe(true);
+    expect(await repository.getOrCreateTranslation('announce', async () => ['호출 금지'])).toEqual([
+      '발표하다',
+      '알리다',
+    ]);
+    const cached = await repository.findEntry('announce');
+    expect(cached).toMatchObject({ cacheSchemaVersion: 3 });
+  }, 30_000);
+
+  it('does not promote a failed or empty translation to version 3', async () => {
+    await repository.getOrRefresh('announce', now, async () => entry());
+    expect(await repository.getOrCreateTranslation('announce', async () => [])).toEqual([]);
+    expect((await repository.findEntry('announce'))?.cacheSchemaVersion).toBe(2);
+    await expect(
+      repository.getOrCreateTranslation('announce', async () => {
+        throw new Error('mock failure');
+      }),
+    ).rejects.toThrow('mock failure');
+    expect((await repository.findEntry('announce'))?.cacheSchemaVersion).toBe(2);
+  });
+
+  it('preserves a version 3 translation across an expired English refresh', async () => {
+    await repository.getOrRefresh('announce', now, async () => entry());
+    await repository.getOrCreateTranslation('announce', async () => ['발표하다']);
+    const later = new Date(now.getTime() + 31 * 86400_000);
+    const refreshed = entry();
+    refreshed.fetchedAt = later;
+    refreshed.expiresAt = new Date(later.getTime() + 30 * 86400_000);
+    const result = await repository.getOrRefresh('announce', later, async () => refreshed);
+    expect(result.entry.koreanTranslations).toEqual(['발표하다']);
+    expect(result.entry.cacheSchemaVersion).toBe(3);
   });
 });
 

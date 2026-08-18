@@ -295,6 +295,7 @@ describe('saved vocabulary Korean translation contract', () => {
     normalizedWord: 'announce',
     pronunciation: null,
     audioUrl: null,
+    koreanTranslations: ['발표하다', '알리다'],
     meanings: [
       {
         senseId: 'a'.repeat(64),
@@ -317,15 +318,15 @@ describe('saved vocabulary Korean translation contract', () => {
     cacheSchemaVersion: 2,
   });
 
-  it('snapshots canonical translations and updates them with a different sense', async () => {
+  it('snapshots canonical word-level translations independently of the selected sense', async () => {
     const repository = new MemoryRepository();
     repository.entry = dictionaryEntry();
     const service = new DictionaryService(repository, fetch, () => NOW);
     const first = await service.save('alice', 'announce', { senseId: 'a'.repeat(64) });
-    expect(first.koreanTranslations).toEqual(['발표하다']);
+    expect(first.koreanTranslations).toEqual(['발표하다', '알리다']);
     const second = await service.save('alice', 'announce', { senseId: 'b'.repeat(64) });
-    expect(second.koreanTranslations).toEqual(['알리다']);
-    expect((await service.list('alice'))[0]!.koreanTranslations).toEqual(['알리다']);
+    expect(second.koreanTranslations).toEqual(['발표하다', '알리다']);
+    expect((await service.list('alice'))[0]!.koreanTranslations).toEqual(['발표하다', '알리다']);
   });
 
   it('rejects client-supplied Korean translations at the strict HTTP request schema', async () => {

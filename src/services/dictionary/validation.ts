@@ -93,3 +93,36 @@ export const contextSentenceSchema = z
   .min(1)
   .max(1000)
   .refine((value) => !containsUnsafeText(value));
+
+const lookupMeaningSchema = z
+  .object({
+    senseId: z.string().regex(/^[a-f0-9]{64}$/),
+    partOfSpeech: z.string(),
+    definition: z.string(),
+    example: z.string().nullable(),
+    koreanTranslations: z.array(z.string()),
+  })
+  .strict();
+
+export const dictionaryLookupResponseSchema = z
+  .object({
+    query: z.string(),
+    normalizedWord: z.string(),
+    koreanTranslations: z.array(z.string()),
+    koreanTranslationStatus: z.enum(['available', 'unavailable']),
+    pronunciation: z.string().nullable(),
+    audioUrl: z.string().nullable(),
+    meanings: z.array(lookupMeaningSchema),
+    source: z
+      .object({
+        provider: z.literal('FreeDictionaryAPI.com'),
+        name: z.literal('Wiktionary'),
+        license: z.literal('CC BY-SA 4.0'),
+        licenseUrl: z.literal('https://creativecommons.org/licenses/by-sa/4.0/'),
+        url: z.string().url(),
+      })
+      .strict(),
+    cached: z.boolean(),
+    stale: z.boolean(),
+  })
+  .strict();

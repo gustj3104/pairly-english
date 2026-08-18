@@ -28,6 +28,10 @@ export const FEATURE_MODEL_CONFIG: Partial<Record<CreditFeature, FeatureModelCon
     model: 'sonar-pro',
     maxOutputTokens: 2400,
   },
+  dictionary_translation: {
+    model: 'gpt-5.4-mini',
+    maxOutputTokens: 96,
+  },
   // Minimal bare-messages diagnostic call — see scripts/mindlogic-contract-check.ts.
   provider_contract_check: {
     model: 'claude-haiku-4-5-20251001',

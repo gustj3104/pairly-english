@@ -6,6 +6,7 @@ const PROVIDER_ORIGIN = 'https://freedictionaryapi.com';
 const MAX_BODY_BYTES = 1024 * 1024;
 const TIMEOUT_MS = 5000;
 export const CURRENT_DICTIONARY_CACHE_SCHEMA_VERSION = 2;
+export const TRANSLATED_DICTIONARY_CACHE_SCHEMA_VERSION = 3;
 
 export type DictionaryFetch = typeof fetch;
 
@@ -122,6 +123,7 @@ export async function fetchDictionaryEntry(
     pronunciation: parsed.data.entries.flatMap((entry) => entry.pronunciations)[0]?.text ?? null,
     audioUrl: null,
     meanings,
+    koreanTranslations: [],
     sourceUrl: parsed.data.source.url,
     fetchedAt,
     expiresAt: new Date(fetchedAt.getTime() + 30 * 24 * 60 * 60 * 1000),

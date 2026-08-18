@@ -1,0 +1,2 @@
+ALTER TYPE "public"."credit_feature" ADD VALUE 'dictionary_translation' BEFORE 'grammar_feedback';--> statement-breakpoint
+ALTER TABLE "dictionary_entries" ADD COLUMN "korean_translations" jsonb DEFAULT '[]'::jsonb NOT NULL;

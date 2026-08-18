@@ -1,8 +1,13 @@
 import { DICTIONARY_SOURCE, DictionaryError, type DictionaryLookupResponse } from './types.js';
 import type { DictionaryFetch } from './provider.js';
 import { fetchDictionaryEntry } from './provider.js';
-import type { DictionaryRepository, SavedVocabularyRow } from './repository.js';
-import { contextSentenceSchema } from './validation.js';
+import type {
+  DictionaryRepository,
+  DictionaryTranslationRepository,
+  SavedVocabularyRow,
+} from './repository.js';
+import type { DictionaryTranslator } from './translation.js';
+import { contextSentenceSchema, dictionaryLookupResponseSchema } from './validation.js';
 
 export class VocabularyError extends Error {
   constructor(
@@ -63,22 +68,37 @@ export class DictionaryService {
     private readonly repository: DictionaryRepository,
     private readonly fetchImpl: DictionaryFetch = fetch,
     private readonly now: () => Date = () => new Date(),
+    private readonly translationRepository?: DictionaryTranslationRepository,
+    private readonly translator?: DictionaryTranslator,
   ) {}
 
   async lookup(word: string): Promise<DictionaryLookupResponse> {
     const result = await this.repository.getOrRefresh(word, this.now(), () =>
       fetchDictionaryEntry(word, this.fetchImpl, this.now),
     );
-    return {
+    let koreanTranslations = result.entry.koreanTranslations;
+    if (this.translationRepository && this.translator) {
+      try {
+        koreanTranslations = await this.translationRepository.getOrCreateTranslation(
+          result.entry.normalizedWord,
+          (entry) => this.translator!.translate(entry),
+        );
+      } catch {
+        koreanTranslations = [];
+      }
+    }
+    return dictionaryLookupResponseSchema.parse({
       query: result.entry.query,
       normalizedWord: result.entry.normalizedWord,
+      koreanTranslations,
+      koreanTranslationStatus: koreanTranslations.length > 0 ? 'available' : 'unavailable',
       pronunciation: result.entry.pronunciation,
       audioUrl: result.entry.audioUrl,
       meanings: result.entry.meanings,
       source: { ...DICTIONARY_SOURCE, url: result.entry.sourceUrl },
       cached: result.cached,
       stale: result.stale,
-    };
+    });
   }
 
   async save(
@@ -129,7 +149,7 @@ export class DictionaryService {
       partOfSpeech: sense.partOfSpeech,
       definition: sense.definition,
       example: sense.example,
-      koreanTranslations: sense.koreanTranslations,
+      koreanTranslations: entry.koreanTranslations,
       sourceUrl: entry.sourceUrl,
       articleId,
       contextSentence,

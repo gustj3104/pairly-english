@@ -59,6 +59,7 @@ export const creditStatusEnum = pgEnum('credit_status', [
 export const creditFeatureEnum = pgEnum('credit_feature', [
   'reflection_comparison',
   'daily_news',
+  'dictionary_translation',
   'grammar_feedback',
   'vocabulary_extraction',
   'news_processing',
@@ -98,6 +99,7 @@ export const dictionaryEntries = pgTable(
     queryWord: varchar('query_word', { length: 60 }).notNull(),
     normalizedWord: varchar('normalized_word', { length: 60 }).notNull().unique(),
     meanings: jsonb('meanings').$type<DictionaryMeaningJson[]>().notNull(),
+    koreanTranslations: jsonb('korean_translations').$type<string[]>().notNull().default([]),
     pronunciation: varchar('pronunciation', { length: 240 }),
     audioUrl: varchar('audio_url', { length: 2048 }),
     sourceUrl: varchar('source_url', { length: 2048 }).notNull(),

@@ -4,6 +4,7 @@ import type * as schema from '../../db/schema.js';
 import { dailyNewsArticles, dictionaryEntries, savedVocabulary } from '../../db/schema.js';
 import { DictionaryError, type DictionaryEntry } from './types.js';
 import { CURRENT_DICTIONARY_CACHE_SCHEMA_VERSION } from './provider.js';
+import { TRANSLATED_DICTIONARY_CACHE_SCHEMA_VERSION } from './provider.js';
 
 type Db = NodePgDatabase<typeof schema>;
 
@@ -14,6 +15,7 @@ function mapEntry(row: typeof dictionaryEntries.$inferSelect): DictionaryEntry {
     pronunciation: row.pronunciation,
     audioUrl: row.audioUrl,
     meanings: row.meanings,
+    koreanTranslations: row.koreanTranslations,
     sourceUrl: row.sourceUrl,
     fetchedAt: row.fetchedAt,
     expiresAt: row.expiresAt,
@@ -46,14 +48,23 @@ export interface DictionaryRepository {
   deleteVocabulary(participantKey: string, normalizedWord: string): Promise<boolean>;
 }
 
-export class DrizzleDictionaryRepository implements DictionaryRepository {
+export interface DictionaryTranslationRepository {
+  getOrCreateTranslation(
+    word: string,
+    create: (entry: DictionaryEntry) => Promise<string[]>,
+  ): Promise<string[]>;
+}
+
+export class DrizzleDictionaryRepository
+  implements DictionaryRepository, DictionaryTranslationRepository
+{
   constructor(private readonly db: Db) {}
 
   async findEntry(word: string): Promise<DictionaryEntry | null> {
     const row = await this.db.query.dictionaryEntries.findFirst({
       where: eq(dictionaryEntries.normalizedWord, word),
     });
-    return row?.cacheSchemaVersion === CURRENT_DICTIONARY_CACHE_SCHEMA_VERSION
+    return row && row.cacheSchemaVersion >= CURRENT_DICTIONARY_CACHE_SCHEMA_VERSION
       ? mapEntry(row)
       : null;
   }
@@ -70,7 +81,7 @@ export class DrizzleDictionaryRepository implements DictionaryRepository {
       });
       if (
         existing &&
-        existing.cacheSchemaVersion === CURRENT_DICTIONARY_CACHE_SCHEMA_VERSION &&
+        existing.cacheSchemaVersion >= CURRENT_DICTIONARY_CACHE_SCHEMA_VERSION &&
         existing.expiresAt > now
       ) {
         return { entry: mapEntry(existing), cached: true, stale: false };
@@ -83,6 +94,7 @@ export class DrizzleDictionaryRepository implements DictionaryRepository {
             queryWord: fresh.query,
             normalizedWord: fresh.normalizedWord,
             meanings: fresh.meanings,
+            koreanTranslations: fresh.koreanTranslations,
             pronunciation: fresh.pronunciation,
             audioUrl: fresh.audioUrl,
             sourceUrl: fresh.sourceUrl,
@@ -99,7 +111,12 @@ export class DrizzleDictionaryRepository implements DictionaryRepository {
               pronunciation: fresh.pronunciation,
               audioUrl: fresh.audioUrl,
               sourceUrl: fresh.sourceUrl,
-              cacheSchemaVersion: fresh.cacheSchemaVersion,
+              // English refresh must preserve a completed word-level translation.
+              koreanTranslations: existing?.koreanTranslations ?? fresh.koreanTranslations,
+              cacheSchemaVersion:
+                existing?.cacheSchemaVersion === TRANSLATED_DICTIONARY_CACHE_SCHEMA_VERSION
+                  ? TRANSLATED_DICTIONARY_CACHE_SCHEMA_VERSION
+                  : fresh.cacheSchemaVersion,
               fetchedAt: fresh.fetchedAt,
               expiresAt: fresh.expiresAt,
               updatedAt: fresh.fetchedAt,
@@ -111,7 +128,7 @@ export class DrizzleDictionaryRepository implements DictionaryRepository {
       } catch (error) {
         if (
           existing &&
-          existing.cacheSchemaVersion === CURRENT_DICTIONARY_CACHE_SCHEMA_VERSION &&
+          existing.cacheSchemaVersion >= CURRENT_DICTIONARY_CACHE_SCHEMA_VERSION &&
           error instanceof DictionaryError &&
           ['DICTIONARY_RATE_LIMITED', 'DICTIONARY_TIMEOUT', 'DICTIONARY_UPSTREAM_ERROR'].includes(
             error.code,
@@ -121,6 +138,35 @@ export class DrizzleDictionaryRepository implements DictionaryRepository {
         }
         throw error;
       }
+    });
+  }
+
+  async getOrCreateTranslation(
+    word: string,
+    create: (entry: DictionaryEntry) => Promise<string[]>,
+  ): Promise<string[]> {
+    return this.db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${`dictionary-translation:${word}`}))`,
+      );
+      const row = await tx.query.dictionaryEntries.findFirst({
+        where: eq(dictionaryEntries.normalizedWord, word),
+      });
+      if (!row) return [];
+      if (row.cacheSchemaVersion >= TRANSLATED_DICTIONARY_CACHE_SCHEMA_VERSION) {
+        return row.koreanTranslations;
+      }
+      const translations = await create(mapEntry(row));
+      if (translations.length === 0) return [];
+      await tx
+        .update(dictionaryEntries)
+        .set({
+          koreanTranslations: translations,
+          cacheSchemaVersion: TRANSLATED_DICTIONARY_CACHE_SCHEMA_VERSION,
+          updatedAt: new Date(),
+        })
+        .where(eq(dictionaryEntries.normalizedWord, word));
+      return translations;
     });
   }
 

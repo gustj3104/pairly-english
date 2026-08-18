@@ -12,6 +12,7 @@ export type CreditStatus =
 export type CreditFeature =
   | 'reflection_comparison'
   | 'daily_news'
+  | 'dictionary_translation'
   | 'grammar_feedback'
   | 'vocabulary_extraction'
   | 'news_processing'
