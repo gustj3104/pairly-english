@@ -1,0 +1,4 @@
+ALTER TABLE "dictionary_entries" ADD COLUMN "attribution" jsonb DEFAULT '{"provider":"FreeDictionaryAPI.com","name":"Wiktionary","license":"CC BY-SA 4.0","licenseUrl":"https://creativecommons.org/licenses/by-sa/4.0/"}'::jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "saved_vocabulary" ADD COLUMN "attribution" jsonb DEFAULT '{"provider":"FreeDictionaryAPI.com","name":"Wiktionary","license":"CC BY-SA 4.0","licenseUrl":"https://creativecommons.org/licenses/by-sa/4.0/"}'::jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "dictionary_entries" ADD CONSTRAINT "dictionary_entries_attribution_is_object" CHECK (jsonb_typeof("dictionary_entries"."attribution") = 'object');--> statement-breakpoint
+ALTER TABLE "saved_vocabulary" ADD CONSTRAINT "saved_vocabulary_attribution_is_object" CHECK (jsonb_typeof("saved_vocabulary"."attribution") = 'object');

@@ -62,6 +62,7 @@ export async function dictionaryRoutes(
           {
             feature: 'dictionary_lookup',
             failureStage: 'english_provider',
+            provider: caught.provider,
             internalErrorCode: caught.code,
             httpStatus: caught.statusCode,
           },

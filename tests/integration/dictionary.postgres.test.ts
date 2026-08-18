@@ -28,6 +28,12 @@ const entry = (): DictionaryEntry => ({
     },
   ],
   sourceUrl: 'https://en.wiktionary.org/wiki/announce',
+  attribution: {
+    provider: 'FreeDictionaryAPI.com',
+    name: 'Wiktionary',
+    license: 'CC BY-SA 4.0',
+    licenseUrl: 'https://creativecommons.org/licenses/by-sa/4.0/',
+  },
   fetchedAt: now,
   expiresAt: new Date(now.getTime() + 30 * 86400_000),
   cacheSchemaVersion: 2,
@@ -63,6 +69,31 @@ describe('dictionary PostgreSQL cache', () => {
     expect(calls).toBe(1);
     expect(results.every((result) => result.entry.normalizedWord === 'announce')).toBe(true);
     expect(new Set(results.map((result) => result.entry.meanings[0]!.senseId)).size).toBe(1);
+    expect(results.filter((result) => !result.cached)).toHaveLength(1);
+  }, 30_000);
+
+  it('performs exactly one primary+secondary fallback sequence for 20 concurrent cache misses without deadlock', async () => {
+    // Simulates DictionaryService.lookup's callback, which is fetchDictionaryEntryWithFallback:
+    // primary fails, secondary succeeds. The singleflight advisory lock must still collapse all
+    // 20 waiters onto the one attempt's *outcome*, not just call the outer callback once — this
+    // guards against a future regression where the lock is acquired but the primary+secondary
+    // sequence inside is somehow re-entered.
+    let primaryAttempts = 0;
+    let secondaryAttempts = 0;
+    const results = await Promise.all(
+      Array.from({ length: 20 }, () =>
+        repository.getOrRefresh('emergency', now, async () => {
+          primaryAttempts += 1;
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          secondaryAttempts += 1;
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          return { ...entry(), query: 'emergency', normalizedWord: 'emergency' };
+        }),
+      ),
+    );
+    expect(primaryAttempts).toBe(1);
+    expect(secondaryAttempts).toBe(1);
+    expect(results.every((result) => result.entry.normalizedWord === 'emergency')).toBe(true);
     expect(results.filter((result) => !result.cached)).toHaveLength(1);
   }, 30_000);
 

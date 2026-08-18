@@ -1,6 +1,11 @@
-import { DICTIONARY_SOURCE, DictionaryError, type DictionaryLookupResponse } from './types.js';
+import {
+  DictionaryError,
+  type DictionaryAttribution,
+  type DictionaryLookupResponse,
+  type DictionaryServiceLogger,
+} from './types.js';
 import type { DictionaryFetch } from './provider.js';
-import { fetchDictionaryEntry } from './provider.js';
+import { fetchDictionaryEntryWithFallback } from './fallback.js';
 import type {
   DictionaryRepository,
   DictionaryTranslationRepository,
@@ -31,7 +36,7 @@ export interface SavedVocabularyItem {
   articleId: string | null;
   articleTitle: string | null;
   contextSentence: string | null;
-  source: typeof DICTIONARY_SOURCE & { url: string };
+  source: DictionaryAttribution & { url: string };
   savedAt: string;
 }
 
@@ -49,7 +54,7 @@ function mapSaved(row: SavedVocabularyRow): SavedVocabularyItem {
     articleId: row.item.articleId,
     articleTitle: row.articleTitle,
     contextSentence: row.item.contextSentence,
-    source: { ...DICTIONARY_SOURCE, url: row.item.sourceUrl },
+    source: { ...row.item.attribution, url: row.item.sourceUrl },
     savedAt: row.item.savedAt.toISOString(),
   };
 }
@@ -63,10 +68,7 @@ function containsWord(sentence: string, word: string): boolean {
   return new RegExp(`(^|[^A-Za-z])${escaped}([^A-Za-z]|$)`, 'i').test(sentence);
 }
 
-/** Minimal, Pino-shaped logging surface — never required, never given anything but safe fields. */
-export interface DictionaryServiceLogger {
-  warn(fields: Record<string, unknown>, message: string): void;
-}
+export type { DictionaryServiceLogger };
 
 export class DictionaryService {
   constructor(
@@ -80,7 +82,7 @@ export class DictionaryService {
 
   async lookup(word: string): Promise<DictionaryLookupResponse> {
     const result = await this.repository.getOrRefresh(word, this.now(), () =>
-      fetchDictionaryEntry(word, this.fetchImpl, this.now),
+      fetchDictionaryEntryWithFallback(word, this.fetchImpl, this.now, this.logger),
     );
     let koreanTranslations = result.entry.koreanTranslations;
     if (this.translationRepository && this.translator) {
@@ -114,7 +116,7 @@ export class DictionaryService {
       pronunciation: result.entry.pronunciation,
       audioUrl: result.entry.audioUrl,
       meanings: result.entry.meanings,
-      source: { ...DICTIONARY_SOURCE, url: result.entry.sourceUrl },
+      source: { ...result.entry.attribution, url: result.entry.sourceUrl },
       cached: result.cached,
       stale: result.stale,
     });
@@ -170,6 +172,7 @@ export class DictionaryService {
       example: sense.example,
       koreanTranslations: entry.koreanTranslations,
       sourceUrl: entry.sourceUrl,
+      attribution: entry.attribution,
       articleId,
       contextSentence,
       savedAt: this.now(),

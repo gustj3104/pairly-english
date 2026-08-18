@@ -197,6 +197,13 @@ class MemoryRepository implements DictionaryRepository {
         example: input.example ?? null,
         koreanTranslations: input.koreanTranslations ?? [],
         sourceUrl: input.sourceUrl,
+        // Mirrors the DB column's own DEFAULT (see schema.ts) for callers that omit it.
+        attribution: input.attribution ?? {
+          provider: 'FreeDictionaryAPI.com',
+          name: 'Wiktionary',
+          license: 'CC BY-SA 4.0',
+          licenseUrl: 'https://creativecommons.org/licenses/by-sa/4.0/',
+        },
         articleId: input.articleId ?? null,
         contextSentence: input.contextSentence ?? null,
         savedAt: input.savedAt,
@@ -292,6 +299,12 @@ describe('saved vocabulary Korean translation contract', () => {
       },
     ],
     sourceUrl: 'https://en.wiktionary.org/wiki/announce',
+    attribution: {
+      provider: 'FreeDictionaryAPI.com',
+      name: 'Wiktionary',
+      license: 'CC BY-SA 4.0',
+      licenseUrl: 'https://creativecommons.org/licenses/by-sa/4.0/',
+    },
     fetchedAt: NOW,
     expiresAt: new Date(NOW.getTime() + 30 * 86400_000),
     cacheSchemaVersion: 2,
@@ -463,6 +476,12 @@ describe('dictionary provider failure isolation (life-502 regression)', () => {
         },
       ],
       sourceUrl: 'https://en.wiktionary.org/wiki/announce',
+      attribution: {
+        provider: 'FreeDictionaryAPI.com',
+        name: 'Wiktionary',
+        license: 'CC BY-SA 4.0',
+        licenseUrl: 'https://creativecommons.org/licenses/by-sa/4.0/',
+      },
       fetchedAt: NOW,
       expiresAt: new Date(NOW.getTime() + 30 * 86400_000),
       cacheSchemaVersion: 3,
@@ -579,6 +598,164 @@ describe('dictionary provider failure isolation (life-502 regression)', () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(translate).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+
+  function emergencySecondaryBody() {
+    return [
+      {
+        word: 'emergency',
+        phonetic: '/ɪˈmɜːdʒənsi/',
+        phonetics: [],
+        meanings: [
+          {
+            partOfSpeech: 'noun',
+            definitions: [
+              {
+                definition: 'A sudden serious event requiring immediate action.',
+                example: 'Call for help in an emergency.',
+              },
+            ],
+          },
+          {
+            partOfSpeech: 'noun',
+            definitions: [{ definition: 'A state of exceptional danger or difficulty.' }],
+          },
+          {
+            partOfSpeech: 'adjective',
+            definitions: [{ definition: 'Used or done in an emergency.' }],
+          },
+        ],
+        license: { name: 'CC BY-SA 3.0', url: 'https://creativecommons.org/licenses/by-sa/3.0' },
+        sourceUrls: ['https://en.wiktionary.org/wiki/emergency'],
+      },
+    ];
+  }
+  function routedFetchSpy(secondaryBody: unknown = emergencySecondaryBody()) {
+    return vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes('freedictionaryapi.com'))
+        return new Response('gateway timeout', { status: 504 });
+      if (url.includes('api.dictionaryapi.dev')) return jsonResponse(secondaryBody);
+      throw new Error(`unexpected URL: ${url}`);
+    });
+  }
+
+  it('falls back to the secondary provider for an emergency-shaped fixture: correct real attribution, Mindlogic called once, second lookup a cache hit with zero extra provider/credit calls', async () => {
+    const fetchSpy = routedFetchSpy();
+    const repo = new MemoryRepository();
+    const translate = vi.fn(async () => ['비상']);
+    let stored: string[] | null = null;
+    const translationRepository: DictionaryTranslationRepository = {
+      getOrCreateTranslation: async (_word, create) => {
+        if (stored) return stored;
+        stored = await create(repo.entry!);
+        return stored;
+      },
+    };
+    const service = new DictionaryService(repo, fetchSpy, () => NOW, translationRepository, {
+      translate,
+    } as unknown as DictionaryTranslator);
+    const app = buildApp({
+      dictionaryService: service,
+      studyDaysRoutesOptions: { sessionSecret: SECRET, maxFutureDays: 1 },
+    });
+    const token = signSession({ name: 'Alice' }, SECRET, 3600);
+
+    const first = await app.inject({
+      method: 'GET',
+      url: '/api/v1/dictionary/lookup?word=emergency',
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` },
+    });
+    expect(first.statusCode).toBe(200);
+    const firstBody = first.json() as {
+      normalizedWord: string;
+      koreanTranslations: string[];
+      meanings: unknown[];
+      source: { provider: string; name: string; license: string; licenseUrl: string; url: string };
+      cached: boolean;
+    };
+    expect(firstBody.normalizedWord).toBe('emergency');
+    expect(firstBody.meanings.length).toBeGreaterThan(0);
+    expect(firstBody.koreanTranslations).toEqual(['비상']);
+    // Real dictionaryapi.dev attribution — never the primary's FreeDictionaryAPI/CC BY-SA 4.0.
+    expect(firstBody.source).toMatchObject({
+      provider: 'DictionaryAPI.dev',
+      name: 'Wiktionary',
+      license: 'CC BY-SA 3.0',
+      licenseUrl: 'https://creativecommons.org/licenses/by-sa/3.0',
+    });
+    expect(firstBody.cached).toBe(false);
+
+    const second = await app.inject({
+      method: 'GET',
+      url: '/api/v1/dictionary/lookup?word=emergency',
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` },
+    });
+    expect(second.statusCode).toBe(200);
+    const secondBody = second.json() as { cached: boolean; koreanTranslations: string[] };
+    expect(secondBody.cached).toBe(true);
+    expect(secondBody.koreanTranslations).toEqual(['비상']);
+
+    // First lookup: 1 primary (failed) + 1 secondary call. Second lookup: cache hit, no more.
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(translate).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+
+  it('reuses the DB-backed cache across a fresh DictionaryService instance (simulated server restart) after a secondary-provider success', async () => {
+    const repo = new MemoryRepository();
+    const fetchSpy = routedFetchSpy();
+    const first = new DictionaryService(repo, fetchSpy, () => NOW);
+    const app1 = buildApp({
+      dictionaryService: first,
+      studyDaysRoutesOptions: { sessionSecret: SECRET, maxFutureDays: 1 },
+    });
+    const token = signSession({ name: 'Alice' }, SECRET, 3600);
+    await app1.inject({
+      method: 'GET',
+      url: '/api/v1/dictionary/lookup?word=emergency',
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` },
+    });
+    await app1.close();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    // A brand-new DictionaryService (and fetch spy) — only the shared repository carries state,
+    // exactly like a new server process reusing the same PostgreSQL cache.
+    const freshFetchSpy = vi.fn();
+    const second = new DictionaryService(repo, freshFetchSpy, () => NOW);
+    const app2 = buildApp({
+      dictionaryService: second,
+      studyDaysRoutesOptions: { sessionSecret: SECRET, maxFutureDays: 1 },
+    });
+    const response = await app2.inject({
+      method: 'GET',
+      url: '/api/v1/dictionary/lookup?word=emergency',
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ cached: true });
+    expect(freshFetchSpy).not.toHaveBeenCalled();
+    await app2.close();
+  });
+
+  it('returns the public provider error when both providers fail for the same word', async () => {
+    const fetchSpy = vi.fn(async () => new Response('boom', { status: 502 }));
+    const repo = new MemoryRepository();
+    const service = new DictionaryService(repo, fetchSpy, () => NOW);
+    const app = buildApp({
+      dictionaryService: service,
+      studyDaysRoutesOptions: { sessionSecret: SECRET, maxFutureDays: 1 },
+    });
+    const token = signSession({ name: 'Alice' }, SECRET, 3600);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/dictionary/lookup?word=emergency',
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` },
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({ error: { code: 'DICTIONARY_PROVIDER_ERROR' } });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
     await app.close();
   });
 });

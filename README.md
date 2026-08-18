@@ -1275,7 +1275,7 @@ owner, provider, or external URL.
   `contextSentence`. Definitions are copied from the canonical server cache, never the client.
 - `DELETE /api/v1/vocabulary/:normalizedWord` is idempotent and returns `204`.
 
-The provider is [FreeDictionaryAPI.com](https://freedictionaryapi.com/), using
+The primary provider is [FreeDictionaryAPI.com](https://freedictionaryapi.com/), using
 `GET /api/v1/entries/en/{word}` without an API key. The `translations` query param is
 deliberately omitted: FreeDictionaryAPI's translation payload (every language it has data for,
 not just Korean) can push a polysemous word's response well past the provider body cap, and
@@ -1283,30 +1283,70 @@ Korean word-level meanings are produced separately by Mindlogic (see below), not
 provider. Each meaning's `koreanTranslations` array is therefore always empty; it is kept only
 for lookup-response shape compatibility. No AI, Mindlogic, or paid translation API is used by
 this provider call itself. Its published limit is 1,000 requests per hour per IP. Data comes
-from Wiktionary under
-[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/): clients must visibly show
-“Definitions from Wiktionary via FreeDictionaryAPI.com”, the license, and the per-entry
-Wiktionary source link returned by these APIs. Wiktionary is community-maintained and may be
-incomplete or inaccurate; FreeDictionaryAPI.com provides limited support and no guaranteed
-SLA. No production/commercial-use prohibition is stated in the published API documentation,
-but attribution and share-alike obligations still apply.
+from Wiktionary under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
+Wiktionary is community-maintained and may be incomplete or inaccurate; FreeDictionaryAPI.com
+provides limited support and no guaranteed SLA. No production/commercial-use prohibition is
+stated in the published API documentation, but attribution and share-alike obligations still
+apply.
 
-Normalized entries are cached in PostgreSQL for 30 days. A transaction-scoped advisory lock
-coalesces concurrent misses for the same word. Expired data is refreshed; a stale entry may be
-served only when refresh encounters rate limiting, timeout, or a temporary upstream failure.
-Empty/invalid responses are never cached. Provider response bodies are neither persisted nor
-logged. The current provider exposes text pronunciations but no audio field, so `audioUrl` is
-`null`. This MVP does exact lookups only and deliberately avoids guessed stemming/lemmatization.
-The provider boundary is `src/services/dictionary/provider.ts`, which is the replacement point
-if a future provider is selected. A provider outage returns a bounded upstream error (or stale
-cache when available); it never invokes Mindlogic or consumes the credit ledger.
+### Dictionary provider fallback
+
+If the primary provider fails, `src/services/dictionary/fallback.ts` tries a secondary provider,
+[dictionaryapi.dev](https://dictionaryapi.dev/) (`GET /api/v2/entries/en/{word}`, mapped in
+`src/services/dictionary/secondary-provider.ts`), once — never both concurrently, never more than
+one retry per provider, and never more than ~10s of total external wait (5s timeout per
+provider). This was added after a production `emergency` lookup 504'd entirely at the primary
+provider stage with no fallback available.
+
+Fallback-eligible primary failures: rate limited (429), any 5xx, timeout, malformed/oversized
+JSON, or a response that fails strict schema validation. **Not** fallback-eligible: an
+unambiguous primary word-not-found (`200 OK` with an empty `entries` array — the one case
+FreeDictionaryAPI's contract lets us tell apart from a real failure). FreeDictionaryAPI's
+published OpenAPI spec documents only a `200` response for this endpoint — no dedicated 404 for
+"word not found" — so any other non-2xx status (including an undocumented 404) is treated as an
+ambiguous upstream failure and _is_ fallback-eligible, deliberately favoring fewer false "not
+found" results over saving one extra call. dictionaryapi.dev, by contrast, follows the
+well-known REST convention of a dedicated 404 for an unknown word, so a secondary-provider 404 is
+treated as an authoritative `WORD_NOT_FOUND`.
+
+If both providers fail, the caller sees the same public `DICTIONARY_PROVIDER_ERROR` contract as
+before (never a per-provider raw code). Safe fields only are logged: feature, which provider
+role failed (`primary`/`secondary`), failure stage, error category, HTTP status, latency,
+whether fallback was attempted/succeeded, and cache-hit state — never the request URL, response
+body, or any secret.
+
+**Attribution is dynamic, not a fixed string.** dictionaryapi.dev's real license
+(confirmed `CC BY-SA 3.0` for a live `emergency` lookup) differs from the primary provider's
+(`CC BY-SA 4.0`), so every dictionary row stores its own `attribution` (provider name, source
+name, license name, license URL) alongside `sourceUrl`, taken from whichever provider actually
+produced it — never hardcoded, never copied from the other provider. The lookup and saved-
+vocabulary response `source` field carries these validated values; the frontend renders
+"Definitions from `{source.name}` via `{source.provider}`" / "Licensed under `{source.license}`"
+from them rather than a hardcoded string.
+
+Normalized entries are cached in PostgreSQL for 30 days regardless of which provider produced
+them. A transaction-scoped advisory lock coalesces concurrent misses for the same word — the
+lock wraps the whole primary→fallback attempt, so 20 concurrent misses still trigger only one
+provider sequence. Expired data is refreshed; a stale entry may be served only when refresh
+encounters rate limiting, timeout, or a temporary upstream failure from _both_ providers. Empty/
+invalid responses are never cached. Provider response bodies are neither persisted nor logged.
+Only the primary provider currently exposes no audio field; dictionaryapi.dev's is used
+(HTTPS-only) when present, so `audioUrl` can now be non-null. This MVP does exact lookups only
+and deliberately avoids guessed stemming/lemmatization. The provider boundary is
+`src/services/dictionary/provider.ts` (primary) and `secondary-provider.ts` (fallback), with
+`fallback.ts` as the single call site `DictionaryService` uses. A provider outage returns a
+bounded upstream error (or stale cache when available); it never invokes Mindlogic or consumes
+the credit ledger.
 
 Dictionary cache rows carry an explicit schema version. Rows written before translation support
 are version 1 and are refreshed once under the same advisory lock regardless of their remaining
 TTL. Version 2 rows remain valid even when every `koreanTranslations` array is empty, so genuine
 Wiktionary coverage gaps do not cause repeated provider calls. Saved vocabulary keeps its own
-canonical translation snapshot; later cache refreshes cannot silently change an already-saved
-meaning. The existing Wiktionary/FreeDictionaryAPI.com CC BY-SA 4.0 attribution still applies.
+canonical translation _and_ attribution snapshot; later cache refreshes (possibly via the other
+provider) cannot silently change an already-saved meaning's text or attribution. Adding the
+fallback provider did not bump the cache schema version — `attribution` is a plain additive
+column with a legacy-provider default (see migration `0008_lazy_madame_web`), and `senseId`
+hashing was already, and remains, independent of provider/attribution data.
 
 When article context is saved, the article UUID must exist in `daily_news_articles`; normalized
 whitespace context must be present in its content, and the selected word must occur at an English

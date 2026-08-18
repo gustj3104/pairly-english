@@ -91,6 +91,21 @@ export interface DictionaryMeaningJson {
   koreanTranslations: string[];
 }
 
+/**
+ * Which English dictionary provider produced a row, and under what license — required to
+ * attribute secondary-provider (dictionaryapi.dev) results correctly, since its real license
+ * (CC BY-SA 3.0) differs from the primary provider's (FreeDictionaryAPI.com, CC BY-SA 4.0). See
+ * DictionaryAttribution in src/services/dictionary/types.ts.
+ */
+export interface DictionaryAttributionJson {
+  provider: string;
+  name: string;
+  license: string;
+  licenseUrl: string;
+}
+
+const LEGACY_FREEDICTIONARYAPI_ATTRIBUTION_DEFAULT = sql`'{"provider":"FreeDictionaryAPI.com","name":"Wiktionary","license":"CC BY-SA 4.0","licenseUrl":"https://creativecommons.org/licenses/by-sa/4.0/"}'::jsonb`;
+
 /** Bounded, normalized Wiktionary data; provider response bodies are never persisted. */
 export const dictionaryEntries = pgTable(
   'dictionary_entries',
@@ -103,6 +118,13 @@ export const dictionaryEntries = pgTable(
     pronunciation: varchar('pronunciation', { length: 240 }),
     audioUrl: varchar('audio_url', { length: 2048 }),
     sourceUrl: varchar('source_url', { length: 2048 }).notNull(),
+    // Every row written before this column existed came from FreeDictionaryAPI (the secondary
+    // provider didn't exist yet), so the DB-level default backfills existing rows accurately.
+    // The application always sets this explicitly on every insert/update going forward.
+    attribution: jsonb('attribution')
+      .$type<DictionaryAttributionJson>()
+      .notNull()
+      .default(LEGACY_FREEDICTIONARYAPI_ATTRIBUTION_DEFAULT),
     cacheSchemaVersion: integer('cache_schema_version').notNull().default(1),
     fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull(),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
@@ -119,6 +141,10 @@ export const dictionaryEntries = pgTable(
     check('dictionary_entries_meanings_non_empty', sql`jsonb_array_length(${table.meanings}) > 0`),
     check('dictionary_entries_expiry_after_fetch', sql`${table.expiresAt} > ${table.fetchedAt}`),
     check('dictionary_entries_cache_schema_version_positive', sql`${table.cacheSchemaVersion} > 0`),
+    check(
+      'dictionary_entries_attribution_is_object',
+      sql`jsonb_typeof(${table.attribution}) = 'object'`,
+    ),
   ],
 );
 
@@ -139,6 +165,13 @@ export const savedVocabulary = pgTable(
     example: text('example'),
     koreanTranslations: jsonb('korean_translations').$type<string[]>().notNull().default([]),
     sourceUrl: varchar('source_url', { length: 2048 }).notNull(),
+    // Snapshotted at save time, same rationale as koreanTranslations above: a later cache
+    // refresh of this word (possibly via the other provider) must never silently change the
+    // attribution already shown for a word the user already saved.
+    attribution: jsonb('attribution')
+      .$type<DictionaryAttributionJson>()
+      .notNull()
+      .default(LEGACY_FREEDICTIONARYAPI_ATTRIBUTION_DEFAULT),
     articleId: uuid('article_id').references(() => dailyNewsArticles.id, { onDelete: 'set null' }),
     contextSentence: varchar('context_sentence', { length: 1000 }),
     savedAt: timestamp('saved_at', { withTimezone: true }).notNull(),
@@ -158,6 +191,10 @@ export const savedVocabulary = pgTable(
     check(
       'saved_vocabulary_korean_translations_array',
       sql`jsonb_typeof(${table.koreanTranslations}) = 'array'`,
+    ),
+    check(
+      'saved_vocabulary_attribution_is_object',
+      sql`jsonb_typeof(${table.attribution}) = 'object'`,
     ),
   ],
 );

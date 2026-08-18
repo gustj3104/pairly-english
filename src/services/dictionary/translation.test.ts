@@ -25,6 +25,12 @@ const entry = (): DictionaryEntry => ({
     },
   ],
   sourceUrl: 'https://en.wiktionary.org/wiki/summer',
+  attribution: {
+    provider: 'FreeDictionaryAPI.com',
+    name: 'Wiktionary',
+    license: 'CC BY-SA 4.0',
+    licenseUrl: 'https://creativecommons.org/licenses/by-sa/4.0/',
+  },
   fetchedAt: new Date(),
   expiresAt: new Date(Date.now() + 1000),
   cacheSchemaVersion: 2,

@@ -1,14 +1,22 @@
 import { createHash } from 'node:crypto';
-import { DictionaryError, type DictionaryEntry, type DictionaryMeaning } from './types.js';
+import {
+  DICTIONARY_SOURCE,
+  DictionaryError,
+  type DictionaryEntry,
+  type DictionaryMeaning,
+} from './types.js';
 import { providerResponseSchema, validateWiktionaryUrl } from './validation.js';
+import {
+  fetchProviderResponse,
+  readBoundedProviderBody,
+  type ProviderFetch,
+} from './provider-http.js';
 
 const PROVIDER_ORIGIN = 'https://freedictionaryapi.com';
-const MAX_BODY_BYTES = 1024 * 1024;
-const TIMEOUT_MS = 5000;
 export const CURRENT_DICTIONARY_CACHE_SCHEMA_VERSION = 2;
 export const TRANSLATED_DICTIONARY_CACHE_SCHEMA_VERSION = 3;
 
-export type DictionaryFetch = typeof fetch;
+export type DictionaryFetch = ProviderFetch;
 
 export function createSenseId(
   word: string,
@@ -19,27 +27,8 @@ export function createSenseId(
     .digest('hex');
 }
 
-async function readBoundedBody(response: Response): Promise<string> {
-  const declared = Number(response.headers.get('content-length') ?? '0');
-  if (declared > MAX_BODY_BYTES) throw new DictionaryError('DICTIONARY_INVALID_RESPONSE', 502);
-  const reader = response.body?.getReader();
-  if (!reader) return '';
-  const decoder = new TextDecoder();
-  let size = 0;
-  let body = '';
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > MAX_BODY_BYTES) {
-      await reader.cancel();
-      throw new DictionaryError('DICTIONARY_INVALID_RESPONSE', 502);
-    }
-    body += decoder.decode(value, { stream: true });
-  }
-  return body + decoder.decode();
-}
-
+/** Primary English dictionary provider. See secondary-provider.ts for the fallback and
+ * fallback.ts for the orchestration between the two. */
 export async function fetchDictionaryEntry(
   word: string,
   fetchImpl: DictionaryFetch = fetch,
@@ -49,42 +38,35 @@ export async function fetchDictionaryEntry(
   // polysemous words (e.g. "life") over MAX_BODY_BYTES, and Korean word-level meanings come from
   // Mindlogic (see DictionaryService.lookup), not from this provider.
   const url = new URL(`/api/v1/entries/en/${encodeURIComponent(word)}`, PROVIDER_ORIGIN);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  let response: Response;
-  try {
-    response = await fetchImpl(url, {
-      method: 'GET',
-      headers: { accept: 'application/json' },
-      redirect: 'manual',
-      signal: controller.signal,
-    });
-  } catch {
-    if (controller.signal.aborted) throw new DictionaryError('DICTIONARY_TIMEOUT', 504);
-    throw new DictionaryError('DICTIONARY_UPSTREAM_ERROR', 503);
-  } finally {
-    clearTimeout(timer);
-  }
+  const response = await fetchProviderResponse(url, fetchImpl, 'primary');
   if (response.status === 429) {
     throw new DictionaryError(
       'DICTIONARY_RATE_LIMITED',
       503,
       response.headers.get('retry-after') ?? undefined,
+      'primary',
     );
   }
-  if (!response.ok) throw new DictionaryError('DICTIONARY_UPSTREAM_ERROR', 503);
+  if (!response.ok)
+    throw new DictionaryError('DICTIONARY_UPSTREAM_ERROR', 503, undefined, 'primary');
   let raw: unknown;
   try {
-    raw = JSON.parse(await readBoundedBody(response));
+    raw = JSON.parse(await readBoundedProviderBody(response, 'primary'));
   } catch (error) {
     if (error instanceof DictionaryError) throw error;
-    throw new DictionaryError('DICTIONARY_INVALID_RESPONSE', 502);
+    throw new DictionaryError('DICTIONARY_INVALID_RESPONSE', 502, undefined, 'primary');
   }
   const parsed = providerResponseSchema.safeParse(raw);
   if (!parsed.success || !validateWiktionaryUrl(parsed.data.source.url)) {
-    throw new DictionaryError('DICTIONARY_INVALID_RESPONSE', 502);
+    throw new DictionaryError('DICTIONARY_INVALID_RESPONSE', 502, undefined, 'primary');
   }
-  if (parsed.data.entries.length === 0) throw new DictionaryError('WORD_NOT_FOUND', 404);
+  // FreeDictionaryAPI's OpenAPI spec documents only a 200 response for this endpoint — no 404 for
+  // "word not found" is documented. {200 OK, entries: []} is therefore our only unambiguous
+  // not-found signal; any non-2xx status (including an undocumented 404) is bucketed as
+  // DICTIONARY_UPSTREAM_ERROR above, which is deliberately fallback-eligible (see fallback.ts and
+  // README) so an ambiguous provider failure never gets misreported as a false "not found".
+  if (parsed.data.entries.length === 0)
+    throw new DictionaryError('WORD_NOT_FOUND', 404, undefined, 'primary');
 
   const seen = new Set<string>();
   const meanings: DictionaryMeaning[] = [];
@@ -109,7 +91,8 @@ export async function fetchDictionaryEntry(
     }
     if (meanings.length === 3) break;
   }
-  if (meanings.length === 0) throw new DictionaryError('DICTIONARY_INVALID_RESPONSE', 502);
+  if (meanings.length === 0)
+    throw new DictionaryError('DICTIONARY_INVALID_RESPONSE', 502, undefined, 'primary');
   const fetchedAt = now();
   return {
     query: word,
@@ -119,6 +102,7 @@ export async function fetchDictionaryEntry(
     meanings,
     koreanTranslations: [],
     sourceUrl: parsed.data.source.url,
+    attribution: { ...DICTIONARY_SOURCE },
     fetchedAt,
     expiresAt: new Date(fetchedAt.getTime() + 30 * 24 * 60 * 60 * 1000),
     cacheSchemaVersion: CURRENT_DICTIONARY_CACHE_SCHEMA_VERSION,

@@ -17,6 +17,7 @@ function mapEntry(row: typeof dictionaryEntries.$inferSelect): DictionaryEntry {
     meanings: row.meanings,
     koreanTranslations: row.koreanTranslations,
     sourceUrl: row.sourceUrl,
+    attribution: row.attribution,
     fetchedAt: row.fetchedAt,
     expiresAt: row.expiresAt,
     cacheSchemaVersion: row.cacheSchemaVersion,
@@ -98,6 +99,7 @@ export class DrizzleDictionaryRepository
             pronunciation: fresh.pronunciation,
             audioUrl: fresh.audioUrl,
             sourceUrl: fresh.sourceUrl,
+            attribution: fresh.attribution,
             cacheSchemaVersion: fresh.cacheSchemaVersion,
             fetchedAt: fresh.fetchedAt,
             expiresAt: fresh.expiresAt,
@@ -111,6 +113,10 @@ export class DrizzleDictionaryRepository
               pronunciation: fresh.pronunciation,
               audioUrl: fresh.audioUrl,
               sourceUrl: fresh.sourceUrl,
+              // Attribution always reflects whichever provider produced *this* refresh — unlike
+              // koreanTranslations below, it must not be pinned to whatever produced the row
+              // before, since a later refresh can legitimately come from the other provider.
+              attribution: fresh.attribution,
               // English refresh must preserve a completed word-level translation.
               koreanTranslations: existing?.koreanTranslations ?? fresh.koreanTranslations,
               cacheSchemaVersion:
@@ -201,6 +207,7 @@ export class DrizzleDictionaryRepository
           example: input.example,
           koreanTranslations: input.koreanTranslations,
           sourceUrl: input.sourceUrl,
+          attribution: input.attribution,
           articleId: input.articleId,
           contextSentence: input.contextSentence,
           savedAt: input.savedAt,
