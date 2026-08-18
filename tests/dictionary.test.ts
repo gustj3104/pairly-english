@@ -1,3 +1,4 @@
+import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { SESSION_COOKIE_NAME, signSession } from '../src/services/auth/session.js';
@@ -5,10 +6,12 @@ import { fetchDictionaryEntry } from '../src/services/dictionary/provider.js';
 import { DICTIONARY_SOURCE } from '../src/services/dictionary/types.js';
 import type {
   DictionaryRepository,
+  DictionaryTranslationRepository,
   SavedVocabularyRow,
 } from '../src/services/dictionary/repository.js';
 import type { DictionaryEntry } from '../src/services/dictionary/types.js';
 import { DictionaryService } from '../src/services/dictionary/service.js';
+import type { DictionaryTranslator } from '../src/services/dictionary/translation.js';
 
 const SECRET = 'dictionary-test-session-secret-at-least-32-chars';
 const NOW = new Date('2026-08-18T00:00:00.000Z');
@@ -345,6 +348,171 @@ describe('saved vocabulary Korean translation contract', () => {
     });
     expect(response.statusCode).toBe(400);
     expect(repository.saved).toHaveLength(0);
+    await app.close();
+  });
+});
+
+function captureLogLines() {
+  const stream = new PassThrough();
+  const lines: Record<string, unknown>[] = [];
+  let buffer = '';
+  stream.on('data', (chunk: Buffer) => {
+    buffer += chunk.toString('utf8');
+    let index: number;
+    while ((index = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, index);
+      buffer = buffer.slice(index + 1);
+      if (line.trim()) lines.push(JSON.parse(line));
+    }
+  });
+  return { stream, lines };
+}
+
+describe('dictionary provider failure isolation (life-502 regression)', () => {
+  it('maps every FreeDictionaryAPI failure code to one public DICTIONARY_PROVIDER_ERROR and logs only safe fields', async () => {
+    const { stream, lines } = captureLogLines();
+    const repo = new MemoryRepository();
+    // Invalid JSON body -> DICTIONARY_INVALID_RESPONSE (502) inside fetchDictionaryEntry —
+    // the exact internal code the production DB evidence for "life" narrows down to.
+    const service = new DictionaryService(
+      repo,
+      async () => new Response('not json', { status: 200 }),
+      () => NOW,
+    );
+    const app = buildApp({
+      dictionaryService: service,
+      studyDaysRoutesOptions: { sessionSecret: SECRET, maxFutureDays: 1 },
+      loggerStream: stream,
+    });
+    const token = signSession({ name: 'Alice' }, SECRET, 3600);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/dictionary/lookup?word=life',
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` },
+    });
+    expect(response.statusCode).toBe(502);
+    expect(response.json()).toMatchObject({ error: { code: 'DICTIONARY_PROVIDER_ERROR' } });
+    await app.close();
+
+    const failureLog = lines.find((line) => line.failureStage === 'english_provider');
+    expect(failureLog).toMatchObject({
+      feature: 'dictionary_lookup',
+      internalErrorCode: 'DICTIONARY_INVALID_RESPONSE',
+      httpStatus: 502,
+    });
+    // No provider origin, no secrets, anywhere in what got logged.
+    const serialized = JSON.stringify(lines);
+    expect(serialized).not.toContain('freedictionaryapi.com');
+    expect(serialized).not.toContain('MINDLOGIC');
+    expect(serialized).not.toContain('not json');
+  });
+
+  it('keeps WORD_NOT_FOUND as its own public code, not the provider-failure bucket', async () => {
+    const repo = new MemoryRepository();
+    const service = new DictionaryService(
+      repo,
+      async () => jsonResponse(providerBody({ entries: [] })),
+      () => NOW,
+    );
+    const app = buildApp({
+      dictionaryService: service,
+      studyDaysRoutesOptions: { sessionSecret: SECRET, maxFutureDays: 1 },
+    });
+    const token = signSession({ name: 'Alice' }, SECRET, 3600);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/dictionary/lookup?word=zzznotaword',
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` },
+    });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ error: { code: 'WORD_NOT_FOUND' } });
+    await app.close();
+  });
+
+  it('returns 200 with the English result and koreanTranslationStatus unavailable when translation storage fails after a successful English lookup', async () => {
+    const repo = new MemoryRepository();
+    const translationRepository: DictionaryTranslationRepository = {
+      getOrCreateTranslation: async () => {
+        throw new Error('translation storage failure');
+      },
+    };
+    const service = new DictionaryService(
+      repo,
+      async () => jsonResponse(providerBody()),
+      () => NOW,
+      translationRepository,
+      { translate: async () => ['발표하다'] } as unknown as DictionaryTranslator,
+    );
+    const app = buildApp({
+      dictionaryService: service,
+      studyDaysRoutesOptions: { sessionSecret: SECRET, maxFutureDays: 1 },
+    });
+    const token = signSession({ name: 'Alice' }, SECRET, 3600);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/dictionary/lookup?word=announce',
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as {
+      koreanTranslations: string[];
+      koreanTranslationStatus: string;
+      meanings: unknown[];
+      pronunciation: string | null;
+      source: unknown;
+    };
+    expect(body.koreanTranslations).toEqual([]);
+    expect(body.koreanTranslationStatus).toBe('unavailable');
+    expect(body.meanings.length).toBeGreaterThan(0);
+    expect(body.pronunciation).toBeTruthy();
+    expect(body.source).toMatchObject(DICTIONARY_SOURCE);
+    await app.close();
+  });
+
+  it('never calls the provider or reserves credit on a cache hit', async () => {
+    const repo = new MemoryRepository();
+    repo.entry = {
+      query: 'announce',
+      normalizedWord: 'announce',
+      pronunciation: null,
+      audioUrl: null,
+      koreanTranslations: ['발표하다'],
+      meanings: [
+        {
+          senseId: 'a'.repeat(64),
+          partOfSpeech: 'verb',
+          definition: 'To give public notice.',
+          example: null,
+          koreanTranslations: [],
+        },
+      ],
+      sourceUrl: 'https://en.wiktionary.org/wiki/announce',
+      fetchedAt: NOW,
+      expiresAt: new Date(NOW.getTime() + 30 * 86400_000),
+      cacheSchemaVersion: 3,
+    };
+    const fetchSpy = vi.fn(async () => jsonResponse(providerBody()));
+    // Mirrors DrizzleDictionaryRepository.getOrCreateTranslation's version-3 short-circuit:
+    // returns the cached snapshot directly, never invoking the `create` callback it's given.
+    const translate = vi.fn(async () => ['조작됨']);
+    const getOrCreateTranslation = vi.fn(async () => repo.entry!.koreanTranslations);
+    const service = new DictionaryService(repo, fetchSpy, () => NOW, { getOrCreateTranslation }, {
+      translate,
+    } as unknown as DictionaryTranslator);
+    const app = buildApp({
+      dictionaryService: service,
+      studyDaysRoutesOptions: { sessionSecret: SECRET, maxFutureDays: 1 },
+    });
+    const token = signSession({ name: 'Alice' }, SECRET, 3600);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/dictionary/lookup?word=announce',
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ koreanTranslations: ['발표하다'] });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(translate).not.toHaveBeenCalled();
     await app.close();
   });
 });

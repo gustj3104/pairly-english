@@ -63,6 +63,11 @@ function containsWord(sentence: string, word: string): boolean {
   return new RegExp(`(^|[^A-Za-z])${escaped}([^A-Za-z]|$)`, 'i').test(sentence);
 }
 
+/** Minimal, Pino-shaped logging surface — never required, never given anything but safe fields. */
+export interface DictionaryServiceLogger {
+  warn(fields: Record<string, unknown>, message: string): void;
+}
+
 export class DictionaryService {
   constructor(
     private readonly repository: DictionaryRepository,
@@ -70,6 +75,7 @@ export class DictionaryService {
     private readonly now: () => Date = () => new Date(),
     private readonly translationRepository?: DictionaryTranslationRepository,
     private readonly translator?: DictionaryTranslator,
+    private readonly logger?: DictionaryServiceLogger,
   ) {}
 
   async lookup(word: string): Promise<DictionaryLookupResponse> {
@@ -83,7 +89,20 @@ export class DictionaryService {
           result.entry.normalizedWord,
           (entry) => this.translator!.translate(entry),
         );
-      } catch {
+      } catch (error) {
+        // Never lets a Mindlogic/translation-storage failure fail the whole lookup — the
+        // English result (already committed by getOrRefresh, in its own transaction) is
+        // always returned. Nothing here is promoted to cache version 3, so the next
+        // explicit lookup retries translation instead of permanently caching a miss.
+        this.logger?.warn(
+          {
+            feature: 'dictionary_translation',
+            failureStage: 'korean_translation',
+            internalErrorCode: error instanceof Error ? error.name : 'unknown',
+            cacheHit: result.cached,
+          },
+          'Korean translation failed; serving English dictionary result only',
+        );
         koreanTranslations = [];
       }
     }

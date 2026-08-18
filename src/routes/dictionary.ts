@@ -18,6 +18,20 @@ function error(reply: FastifyReply, request: FastifyRequest, status: number, cod
   return { error: { message: code, code, requestId: request.id } };
 }
 
+/**
+ * Every DictionaryError code that means "the FreeDictionaryAPI provider itself failed"
+ * (rate limited, timed out, unreachable, or returned something we couldn't validate) —
+ * collapsed to one stable public code so the client never has to special-case internal
+ * detail, and never given the raw provider URL or response body. WORD_NOT_FOUND is a real
+ * answer ("no such word"), not a provider failure, so it keeps its own distinct code/status.
+ */
+const DICTIONARY_PROVIDER_FAILURE_CODES = new Set([
+  'DICTIONARY_RATE_LIMITED',
+  'DICTIONARY_TIMEOUT',
+  'DICTIONARY_UPSTREAM_ERROR',
+  'DICTIONARY_INVALID_RESPONSE',
+]);
+
 function participant(request: FastifyRequest): string {
   return normalizeParticipantKey(request.session!.name);
 }
@@ -42,7 +56,21 @@ export async function dictionaryRoutes(
       } catch (caught) {
         if (!(caught instanceof DictionaryError)) throw caught;
         if (caught.retryAfter) reply.header('retry-after', caught.retryAfter);
-        return error(reply, request, caught.statusCode, caught.code);
+        // Safe fields only: no provider URL, no response body, no query word. The internal
+        // DictionaryError code is enough to tell failure stages apart in logs without it.
+        request.log.warn(
+          {
+            feature: 'dictionary_lookup',
+            failureStage: 'english_provider',
+            internalErrorCode: caught.code,
+            httpStatus: caught.statusCode,
+          },
+          'dictionary lookup failed',
+        );
+        const publicCode = DICTIONARY_PROVIDER_FAILURE_CODES.has(caught.code)
+          ? 'DICTIONARY_PROVIDER_ERROR'
+          : caught.code;
+        return error(reply, request, caught.statusCode, publicCode);
       }
     },
   );

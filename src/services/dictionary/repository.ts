@@ -130,9 +130,16 @@ export class DrizzleDictionaryRepository
           existing &&
           existing.cacheSchemaVersion >= CURRENT_DICTIONARY_CACHE_SCHEMA_VERSION &&
           error instanceof DictionaryError &&
-          ['DICTIONARY_RATE_LIMITED', 'DICTIONARY_TIMEOUT', 'DICTIONARY_UPSTREAM_ERROR'].includes(
-            error.code,
-          )
+          // Every FreeDictionaryAPI-side failure mode (rate limit, timeout, transport error,
+          // or a malformed/oversized response) prefers a valid stale cache over hard-failing.
+          // WORD_NOT_FOUND is deliberately excluded: that's a real "this word doesn't exist"
+          // answer from the provider, not a failure.
+          [
+            'DICTIONARY_RATE_LIMITED',
+            'DICTIONARY_TIMEOUT',
+            'DICTIONARY_UPSTREAM_ERROR',
+            'DICTIONARY_INVALID_RESPONSE',
+          ].includes(error.code)
         ) {
           return { entry: mapEntry(existing), cached: true, stale: true };
         }

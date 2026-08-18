@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { DrizzleDictionaryRepository } from '../../src/services/dictionary/repository.js';
+import { DictionaryError } from '../../src/services/dictionary/types.js';
 import type { DictionaryEntry } from '../../src/services/dictionary/types.js';
 import {
   startTestDatabase,
@@ -169,6 +170,49 @@ describe('dictionary PostgreSQL cache', () => {
     const result = await repository.getOrRefresh('announce', later, async () => refreshed);
     expect(result.entry.koreanTranslations).toEqual(['발표하다']);
     expect(result.entry.cacheSchemaVersion).toBe(3);
+  });
+
+  // Reproduces the production "life" 502: a word with no prior cache whose FreeDictionaryAPI
+  // fetch fails. No row should ever be persisted, and the advisory-lock transaction must not
+  // deadlock or partially commit under concurrent load.
+  it('persists no row for 20 concurrent cache misses when the provider fails and there is no prior cache', async () => {
+    let calls = 0;
+    const results = await Promise.allSettled(
+      Array.from({ length: 20 }, () =>
+        repository.getOrRefresh('life', now, async () => {
+          calls += 1;
+          await new Promise((resolve) => setTimeout(resolve, 15));
+          throw new DictionaryError('DICTIONARY_UPSTREAM_ERROR', 503);
+        }),
+      ),
+    );
+    expect(results.every((result) => result.status === 'rejected')).toBe(true);
+    expect(calls).toBe(20); // no existing cache to short-circuit on, so every attempt tries
+    expect(await repository.findEntry('life')).toBeNull();
+    const rows = await testDb.pool.query(
+      'select count(*)::int as n from dictionary_entries where normalized_word = $1',
+      ['life'],
+    );
+    expect(rows.rows[0].n).toBe(0);
+  }, 30_000);
+
+  it('serves a valid stale cache instead of failing when a refresh gets an invalid provider response', async () => {
+    await repository.getOrRefresh('announce', now, async () => entry());
+    const later = new Date(now.getTime() + 31 * 86400_000); // past expiresAt, refresh is due
+    const result = await repository.getOrRefresh('announce', later, async () => {
+      throw new DictionaryError('DICTIONARY_INVALID_RESPONSE', 502);
+    });
+    expect(result).toMatchObject({ cached: true, stale: true });
+    expect(result.entry.meanings[0]!.definition).toBe('To give public notice.');
+  });
+
+  it('still fails when there is no cache to fall back to, even for an invalid provider response', async () => {
+    await expect(
+      repository.getOrRefresh('life', now, async () => {
+        throw new DictionaryError('DICTIONARY_INVALID_RESPONSE', 502);
+      }),
+    ).rejects.toMatchObject({ code: 'DICTIONARY_INVALID_RESPONSE', statusCode: 502 });
+    expect(await repository.findEntry('life')).toBeNull();
   });
 });
 

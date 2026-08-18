@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CreditService } from '../credits/credit-service.js';
 import type { MindlogicClient } from '../mindlogic/client.js';
+import { EMPTY_ERROR_OBSERVABILITY, MindlogicApiError } from '../mindlogic/types.js';
 import {
   buildDictionaryTranslationMessages,
   dictionaryTranslationSchema,
@@ -114,5 +115,110 @@ describe('DictionaryTranslator credit lifecycle', () => {
     });
     expect(await translator.translate(entry())).toEqual([]);
     expect(createChatCompletion).not.toHaveBeenCalled();
+  });
+
+  function reservedTranslator(mindlogicClient: Partial<MindlogicClient>) {
+    const reserveCredits = vi.fn().mockResolvedValue({ ok: true, record: { creditsReserved: 2 } });
+    const commitCredits = vi.fn().mockResolvedValue(undefined);
+    const releaseCredits = vi.fn().mockResolvedValue(undefined);
+    const markReconciliationPending = vi.fn().mockResolvedValue(undefined);
+    const translator = new DictionaryTranslator({
+      creditService: {
+        reserveCredits,
+        commitCredits,
+        releaseCredits,
+        markReconciliationPending,
+      } as unknown as CreditService,
+      mindlogicClient: mindlogicClient as MindlogicClient,
+      generateRequestId: () => '00000000-0000-4000-8000-000000000002',
+    });
+    return { translator, reserveCredits, commitCredits, releaseCredits, markReconciliationPending };
+  }
+
+  // These four cover section 4's "Mindlogic 한국어 번역 실패" policy at the translator layer —
+  // none of them may ever throw out of translate(); the caller always gets [] back so the
+  // already-fetched English result can still be returned with HTTP 200.
+  it('releases the reservation and returns [] on a Mindlogic 429', async () => {
+    const { translator, releaseCredits, markReconciliationPending } = reservedTranslator({
+      createChatCompletion: vi
+        .fn()
+        .mockRejectedValue(
+          new MindlogicApiError('rate_limited', 429, 'rate limited', EMPTY_ERROR_OBSERVABILITY),
+        ),
+    });
+    await expect(translator.translate(entry())).resolves.toEqual([]);
+    expect(releaseCredits).toHaveBeenCalledWith(
+      '00000000-0000-4000-8000-000000000002',
+      'rate_limited',
+    );
+    expect(markReconciliationPending).not.toHaveBeenCalled();
+  });
+
+  it('releases the reservation and returns [] on a Mindlogic 5xx', async () => {
+    const { translator, releaseCredits } = reservedTranslator({
+      createChatCompletion: vi
+        .fn()
+        .mockRejectedValue(
+          new MindlogicApiError('provider_error', 500, 'server error', EMPTY_ERROR_OBSERVABILITY),
+        ),
+    });
+    await expect(translator.translate(entry())).resolves.toEqual([]);
+    expect(releaseCredits).toHaveBeenCalledWith(
+      '00000000-0000-4000-8000-000000000002',
+      'provider_error',
+    );
+  });
+
+  it('marks reconciliation pending (never releases) on a Mindlogic timeout — billing status is unknown', async () => {
+    const { translator, releaseCredits, markReconciliationPending } = reservedTranslator({
+      createChatCompletion: vi
+        .fn()
+        .mockRejectedValue(
+          new MindlogicApiError('timeout', 0, 'client timeout', EMPTY_ERROR_OBSERVABILITY),
+        ),
+    });
+    await expect(translator.translate(entry())).resolves.toEqual([]);
+    expect(markReconciliationPending).toHaveBeenCalledWith(
+      '00000000-0000-4000-8000-000000000002',
+      'timeout',
+    );
+    expect(releaseCredits).not.toHaveBeenCalled();
+  });
+
+  it('commits the reservation but returns [] on malformed structured output', async () => {
+    const { translator, commitCredits } = reservedTranslator({
+      createChatCompletion: vi.fn().mockResolvedValue({
+        id: 'mock',
+        model: 'gpt-5.4-mini',
+        choices: [{ message: { role: 'assistant' as const, content: 'not json at all' } }],
+        usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 },
+      }),
+    });
+    await expect(translator.translate(entry())).resolves.toEqual([]);
+    // A response was received and billable — it's committed, not released.
+    expect(commitCredits).toHaveBeenCalledWith(
+      '00000000-0000-4000-8000-000000000002',
+      expect.any(Number),
+    );
+  });
+
+  it('commits the reservation but returns [] when the structured output has no Hangul (schema rejects it)', async () => {
+    const { translator, commitCredits } = reservedTranslator({
+      createChatCompletion: vi.fn().mockResolvedValue({
+        id: 'mock',
+        model: 'gpt-5.4-mini',
+        choices: [
+          {
+            message: {
+              role: 'assistant' as const,
+              content: JSON.stringify({ koreanTranslations: ['summer'] }),
+            },
+          },
+        ],
+        usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 },
+      }),
+    });
+    await expect(translator.translate(entry())).resolves.toEqual([]);
+    expect(commitCredits).toHaveBeenCalled();
   });
 });

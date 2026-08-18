@@ -135,6 +135,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
           creditService: app.creditService,
           mindlogicClient: app.mindlogicClient,
         }),
+        app.log,
       ),
   );
 
