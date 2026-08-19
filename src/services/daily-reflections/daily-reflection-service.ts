@@ -18,6 +18,19 @@ export interface StudyDayStatus {
   readyToCompare: boolean;
 }
 
+export interface StudyDayReflectionProgress {
+  displayName: string | null;
+  submitted: boolean;
+  content: string | null;
+}
+
+export interface StudyDayProgress {
+  studyDate: string;
+  mine: StudyDayReflectionProgress;
+  partner: StudyDayReflectionProgress;
+  readyToCompare: boolean;
+}
+
 export type ComparisonInputsResult =
   | {
       ok: true;
@@ -52,6 +65,35 @@ export class DailyReflectionService {
       // Partner's content/reflection is deliberately never exposed here —
       // only submitted/displayName. See src/routes/study-days.ts.
       partner: { submitted: partnerRow !== null, displayName: partnerRow?.displayName ?? null },
+      readyToCompare: distinctParticipants >= 2,
+    };
+  }
+
+  /**
+   * Unlike getStatus, this includes each side's reflection `content` —
+   * used only by the session-gated /study-days/:date/progress route, which
+   * the two paired participants use to review each other's actual
+   * submitted reflection (by product decision, visible regardless of
+   * whether the caller has submitted their own yet).
+   */
+  async getProgress(studyDate: string, callerParticipantKey: string): Promise<StudyDayProgress> {
+    const rows = await this.repository.getReflectionsForDate(studyDate);
+    const mineRow = rows.find((row) => row.participantKey === callerParticipantKey) ?? null;
+    const partnerRow = rows.find((row) => row.participantKey !== callerParticipantKey) ?? null;
+    const distinctParticipants = new Set(rows.map((row) => row.participantKey)).size;
+
+    return {
+      studyDate,
+      mine: {
+        displayName: mineRow?.displayName ?? null,
+        submitted: mineRow !== null,
+        content: mineRow?.content ?? null,
+      },
+      partner: {
+        displayName: partnerRow?.displayName ?? null,
+        submitted: partnerRow !== null,
+        content: partnerRow?.content ?? null,
+      },
       readyToCompare: distinctParticipants >= 2,
     };
   }

@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { env } from '../config/env.js';
 import { createSessionGate } from '../plugins/session-gate.js';
+import { getPartnerParticipantKey } from '../services/auth/allowed-participants.js';
 import { validateStudyDate } from '../services/daily-reflections/date.js';
 import {
   hashForLogging,
@@ -352,6 +353,52 @@ export async function studyDaysRoutes(
 
     reply.code(200);
     return status;
+  });
+
+  // Combined "mine vs partner" progress used by the Dashboard's My/Friend's
+  // Progress panels — identity for both sides comes only from the verified
+  // session plus the fixed two-participant pairing (never a client-supplied
+  // username), so a caller can never fetch a third party's data.
+  app.get('/study-days/:date/progress', { preHandler: sessionGate }, async (request, reply) => {
+    const date = validateDateParam(request, reply, options.maxFutureDays, now);
+    if (date === undefined) return;
+
+    const session = requireSession(request, reply);
+    if (session === undefined) return;
+
+    const participantKey = normalizeParticipantKey(session.name);
+    const partnerKey = getPartnerParticipantKey(participantKey);
+
+    const [progress, mineVocabulary, partnerVocabulary] = await Promise.all([
+      app.dailyReflectionService.getProgress(date, participantKey),
+      app.dictionaryService.list(participantKey),
+      app.dictionaryService.list(partnerKey),
+    ]);
+
+    request.log.info(
+      {
+        requestId: request.id,
+        studyDate: date,
+        participantKeyHash: hashForLogging(participantKey),
+      },
+      'study-day progress checked',
+    );
+
+    reply.code(200);
+    return {
+      studyDate: progress.studyDate,
+      mine: {
+        displayName: progress.mine.displayName,
+        reflection: { submitted: progress.mine.submitted, content: progress.mine.content },
+        vocabulary: mineVocabulary,
+      },
+      partner: {
+        displayName: progress.partner.displayName,
+        reflection: { submitted: progress.partner.submitted, content: progress.partner.content },
+        vocabulary: partnerVocabulary,
+      },
+      readyToCompare: progress.readyToCompare,
+    };
   });
 
   app.post('/study-days/:date/compare', { preHandler: sessionGate }, async (request, reply) => {
