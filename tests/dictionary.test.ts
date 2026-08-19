@@ -239,7 +239,7 @@ describe('dictionary HTTP authentication and validation', () => {
       url: '/api/v1/dictionary/lookup?word=announce',
     });
     expect(unauthorized.statusCode).toBe(401);
-    const token = signSession({ name: ' Alice ' }, SECRET, 3600);
+    const token = signSession({ name: ' hyunji ' }, SECRET, 3600);
     const response = await app.inject({
       method: 'GET',
       url: '/api/v1/dictionary/lookup?word=%EF%BC%A1nnounce',
@@ -263,7 +263,7 @@ describe('dictionary HTTP authentication and validation', () => {
         dictionaryService: new DictionaryService(new MemoryRepository()),
         studyDaysRoutesOptions: { sessionSecret: SECRET, maxFutureDays: 1 },
       });
-      const token = signSession({ name: 'Alice' }, SECRET, 3600);
+      const token = signSession({ name: 'hyunji' }, SECRET, 3600);
       const response = await app.inject({
         method: 'GET',
         url: `/api/v1/dictionary/lookup?word=${encodeURIComponent(word)}`,
@@ -328,7 +328,7 @@ describe('saved vocabulary Korean translation contract', () => {
       dictionaryService: new DictionaryService(repository),
       studyDaysRoutesOptions: { sessionSecret: SECRET, maxFutureDays: 1 },
     });
-    const token = signSession({ name: 'Alice' }, SECRET, 3600);
+    const token = signSession({ name: 'hyunji' }, SECRET, 3600);
     const response = await app.inject({
       method: 'PUT',
       url: '/api/v1/vocabulary/announce',
@@ -373,7 +373,7 @@ describe('dictionary provider failure isolation (life-502 regression)', () => {
       studyDaysRoutesOptions: { sessionSecret: SECRET, maxFutureDays: 1 },
       loggerStream: stream,
     });
-    const token = signSession({ name: 'Alice' }, SECRET, 3600);
+    const token = signSession({ name: 'hyunji' }, SECRET, 3600);
     const response = await app.inject({
       method: 'GET',
       url: '/api/v1/dictionary/lookup?word=life',
@@ -407,7 +407,7 @@ describe('dictionary provider failure isolation (life-502 regression)', () => {
       dictionaryService: service,
       studyDaysRoutesOptions: { sessionSecret: SECRET, maxFutureDays: 1 },
     });
-    const token = signSession({ name: 'Alice' }, SECRET, 3600);
+    const token = signSession({ name: 'hyunji' }, SECRET, 3600);
     const response = await app.inject({
       method: 'GET',
       url: '/api/v1/dictionary/lookup?word=zzznotaword',
@@ -436,7 +436,7 @@ describe('dictionary provider failure isolation (life-502 regression)', () => {
       dictionaryService: service,
       studyDaysRoutesOptions: { sessionSecret: SECRET, maxFutureDays: 1 },
     });
-    const token = signSession({ name: 'Alice' }, SECRET, 3600);
+    const token = signSession({ name: 'hyunji' }, SECRET, 3600);
     const response = await app.inject({
       method: 'GET',
       url: '/api/v1/dictionary/lookup?word=announce',
@@ -498,7 +498,7 @@ describe('dictionary provider failure isolation (life-502 regression)', () => {
       dictionaryService: service,
       studyDaysRoutesOptions: { sessionSecret: SECRET, maxFutureDays: 1 },
     });
-    const token = signSession({ name: 'Alice' }, SECRET, 3600);
+    const token = signSession({ name: 'hyunji' }, SECRET, 3600);
     const response = await app.inject({
       method: 'GET',
       url: '/api/v1/dictionary/lookup?word=announce',
@@ -562,7 +562,7 @@ describe('dictionary provider failure isolation (life-502 regression)', () => {
       dictionaryService: service,
       studyDaysRoutesOptions: { sessionSecret: SECRET, maxFutureDays: 1 },
     });
-    const token = signSession({ name: 'Alice' }, SECRET, 3600);
+    const token = signSession({ name: 'hyunji' }, SECRET, 3600);
 
     const first = await app.inject({
       method: 'GET',
@@ -660,7 +660,7 @@ describe('dictionary provider failure isolation (life-502 regression)', () => {
       dictionaryService: service,
       studyDaysRoutesOptions: { sessionSecret: SECRET, maxFutureDays: 1 },
     });
-    const token = signSession({ name: 'Alice' }, SECRET, 3600);
+    const token = signSession({ name: 'hyunji' }, SECRET, 3600);
 
     const first = await app.inject({
       method: 'GET',
@@ -711,7 +711,7 @@ describe('dictionary provider failure isolation (life-502 regression)', () => {
       dictionaryService: first,
       studyDaysRoutesOptions: { sessionSecret: SECRET, maxFutureDays: 1 },
     });
-    const token = signSession({ name: 'Alice' }, SECRET, 3600);
+    const token = signSession({ name: 'hyunji' }, SECRET, 3600);
     await app1.inject({
       method: 'GET',
       url: '/api/v1/dictionary/lookup?word=emergency',
@@ -747,7 +747,7 @@ describe('dictionary provider failure isolation (life-502 regression)', () => {
       dictionaryService: service,
       studyDaysRoutesOptions: { sessionSecret: SECRET, maxFutureDays: 1 },
     });
-    const token = signSession({ name: 'Alice' }, SECRET, 3600);
+    const token = signSession({ name: 'hyunji' }, SECRET, 3600);
     const response = await app.inject({
       method: 'GET',
       url: '/api/v1/dictionary/lookup?word=emergency',

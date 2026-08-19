@@ -78,10 +78,20 @@ export const dailyNewsModelResponseSchema = z
 
 export type DailyNewsModelResponse = z.infer<typeof dailyNewsModelResponseSchema>;
 
-export interface DailyNewsArticle extends GeneratedDailyNews {
+/**
+ * The public/served contract: unlike `GeneratedDailyNews` (the
+ * generation-time contract, which still requires a real validated https
+ * source URL from the model — see generator.ts), `sourceUrl` here is
+ * `string | null`. A stored row's URL is re-validated on every read
+ * (`repository.ts`'s `mapRow`) so a legacy/invalid value never fails the
+ * rest of the article response — it serves as `null` instead of a guessed
+ * or unvalidated fallback.
+ */
+export interface DailyNewsArticle extends Omit<GeneratedDailyNews, 'sourceUrl'> {
   id: string;
   studyDate: string;
   generatedAt: string;
+  sourceUrl: string | null;
 }
 
 export const DAILY_NEWS_JSON_SCHEMA = {

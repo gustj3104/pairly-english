@@ -182,11 +182,11 @@ async function submit(app: ReturnType<typeof buildApp>, name: string, reflection
 }
 
 async function submitBoth(app: ReturnType<typeof buildApp>) {
-  expect((await submit(app, 'Alex')).statusCode).toBe(200);
-  expect((await submit(app, 'Sam', " Sam's own distinct take.")).statusCode).toBe(200);
+  expect((await submit(app, 'hyunji')).statusCode).toBe(200);
+  expect((await submit(app, 'hyeonseo', " Sam's own distinct take.")).statusCode).toBe(200);
 }
 
-function post(app: ReturnType<typeof buildApp>, path: string, name = 'Alex') {
+function post(app: ReturnType<typeof buildApp>, path: string, name = 'hyunji') {
   return app.inject({
     method: 'POST',
     url: `/api/v1/study-days/${STUDY_DATE}${path}`,
@@ -194,7 +194,7 @@ function post(app: ReturnType<typeof buildApp>, path: string, name = 'Alex') {
   });
 }
 
-function get(app: ReturnType<typeof buildApp>, path: string, name = 'Alex') {
+function get(app: ReturnType<typeof buildApp>, path: string, name = 'hyunji') {
   return app.inject({
     method: 'GET',
     url: `/api/v1/study-days/${STUDY_DATE}${path}`,
@@ -213,7 +213,9 @@ describe('real concurrency: ~20 concurrent POST /compare for the same date', () 
     await submitBoth(app);
 
     const responses = await Promise.all(
-      Array.from({ length: 20 }, () => post(app, '/compare', Math.random() < 0.5 ? 'Alex' : 'Sam')),
+      Array.from({ length: 20 }, () =>
+        post(app, '/compare', Math.random() < 0.5 ? 'hyunji' : 'hyeonseo'),
+      ),
     );
 
     expect(callCount).toBe(1);
@@ -265,7 +267,7 @@ describe('caching', () => {
     expect(row?.status).toBe('completed');
     expect(row?.result).not.toBeNull();
 
-    const second = await post(app, '/compare', 'Sam');
+    const second = await post(app, '/compare', 'hyeonseo');
     expect(second.statusCode).toBe(200);
     expect(second.json().cached).toBe(true);
     expect(second.json().result).toEqual(first.json().result);
@@ -451,8 +453,8 @@ describe('logging never contains reflection text, article summary, or the AI res
     await app.close();
     await new Promise((resolve) => setImmediate(resolve));
 
-    expect(logOutput).not.toContain('Alex');
-    expect(logOutput).not.toContain('Sam');
+    expect(logOutput).not.toContain('hyunji');
+    expect(logOutput).not.toContain('hyeonseo');
     expect(logOutput).not.toContain(VALID_REFLECTION);
     expect(logOutput).not.toContain('A summary that must never appear in any log line');
     expect(logOutput).not.toContain('commonGround');

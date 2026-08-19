@@ -134,33 +134,24 @@ function buildTestApp(
 }
 
 describe('daily reflections — real PostgreSQL end to end', () => {
-  it('two real distinct submitters can both succeed and a genuine 3rd is rejected', async () => {
+  it('the two real production participants can both succeed via the real HTTP+DB path', async () => {
     const app = buildTestApp();
 
-    const alex = await app.inject({
+    const hyunji = await app.inject({
       method: 'PUT',
       url: `/api/v1/study-days/${STUDY_DATE}/reflection`,
-      headers: { cookie: sessionCookie('Alex') },
+      headers: { cookie: sessionCookie('hyunji') },
       payload: validBody(),
     });
-    expect(alex.statusCode).toBe(200);
+    expect(hyunji.statusCode).toBe(200);
 
-    const sam = await app.inject({
+    const hyeonseo = await app.inject({
       method: 'PUT',
       url: `/api/v1/study-days/${STUDY_DATE}/reflection`,
-      headers: { cookie: sessionCookie('Sam') },
-      payload: validBody({ reflection: `${VALID_REFLECTION} Sam's own distinct take.` }),
+      headers: { cookie: sessionCookie('hyeonseo') },
+      payload: validBody({ reflection: `${VALID_REFLECTION} hyeonseo's own distinct take.` }),
     });
-    expect(sam.statusCode).toBe(200);
-
-    const jordan = await app.inject({
-      method: 'PUT',
-      url: `/api/v1/study-days/${STUDY_DATE}/reflection`,
-      headers: { cookie: sessionCookie('Jordan') },
-      payload: validBody({ reflection: `${VALID_REFLECTION} Jordan is a genuine 3rd.` }),
-    });
-    expect(jordan.statusCode).toBe(409);
-    expect(jordan.json().error.code).toBe('PARTICIPANT_LIMIT_REACHED');
+    expect(hyeonseo.statusCode).toBe(200);
 
     const rows = await testDb.db
       .select()
@@ -171,33 +162,78 @@ describe('daily reflections — real PostgreSQL end to end', () => {
     await app.close();
   });
 
+  // A genuine 3rd HTTP-authenticated participant is no longer reachable in
+  // production (the session-gate allow-list only admits hyunji/hyeonseo —
+  // see src/plugins/session-gate.ts), so this exercises the real
+  // Postgres-backed repository's participant-limit enforcement directly,
+  // independent of who can authenticate. The 20-concurrent-caller version
+  // below covers the FOR UPDATE locking under real contention.
+  it('the real Postgres repository still rejects a genuine 3rd participant with participant_limit_reached', async () => {
+    const repository = new DrizzleDailyReflectionRepository(testDb.db);
+    const article = {
+      id: 'article-1',
+      title: 'The Quiet Revolution',
+      sourceUrl: null,
+      summary: null,
+    };
+    const submission = (participantKey: string, displayName: string, content: string) => ({
+      studyDate: STUDY_DATE,
+      article,
+      participantKey,
+      displayName,
+      content,
+      submittedAt: new Date(),
+    });
+
+    const first = await repository.submitReflection(
+      submission('hyunji', 'hyunji', VALID_REFLECTION),
+    );
+    expect(first).toMatchObject({ ok: true });
+
+    const second = await repository.submitReflection(
+      submission('hyeonseo', 'hyeonseo', `${VALID_REFLECTION} hyeonseo's own distinct take.`),
+    );
+    expect(second).toMatchObject({ ok: true });
+
+    const third = await repository.submitReflection(
+      submission('a-genuine-third-participant', 'Third', `${VALID_REFLECTION} a genuine 3rd.`),
+    );
+    expect(third).toEqual({ ok: false, reason: 'participant_limit_reached' });
+
+    const rows = await testDb.db
+      .select()
+      .from(reflections)
+      .where(eq(reflections.studyDate, STUDY_DATE));
+    expect(rows).toHaveLength(2);
+  });
+
   it('status and compare reflect real database state, and compare calls the mocked Mindlogic client', async () => {
     const app = buildTestApp();
 
     await app.inject({
       method: 'PUT',
       url: `/api/v1/study-days/${STUDY_DATE}/reflection`,
-      headers: { cookie: sessionCookie('Alex') },
+      headers: { cookie: sessionCookie('hyunji') },
       payload: validBody(),
     });
     await app.inject({
       method: 'PUT',
       url: `/api/v1/study-days/${STUDY_DATE}/reflection`,
-      headers: { cookie: sessionCookie('Sam') },
-      payload: validBody({ reflection: `${VALID_REFLECTION} Sam's own distinct take.` }),
+      headers: { cookie: sessionCookie('hyeonseo') },
+      payload: validBody({ reflection: `${VALID_REFLECTION} hyeonseo's own distinct take.` }),
     });
 
     const status = await app.inject({
       method: 'GET',
       url: `/api/v1/study-days/${STUDY_DATE}/status`,
-      headers: { cookie: sessionCookie('Alex') },
+      headers: { cookie: sessionCookie('hyunji') },
     });
     expect(status.json().readyToCompare).toBe(true);
 
     const compare = await app.inject({
       method: 'POST',
       url: `/api/v1/study-days/${STUDY_DATE}/compare`,
-      headers: { cookie: sessionCookie('Alex') },
+      headers: { cookie: sessionCookie('hyunji') },
     });
     expect(compare.statusCode).toBe(200);
     expect(compare.json().status).toBe('completed');
@@ -213,14 +249,14 @@ describe('daily reflections — real PostgreSQL end to end', () => {
     const tooFar = await app.inject({
       method: 'GET',
       url: '/api/v1/study-days/2026-08-20/status',
-      headers: { cookie: sessionCookie('Alex') },
+      headers: { cookie: sessionCookie('hyunji') },
     });
     expect(tooFar.statusCode).toBe(400);
 
     const boundary = await app.inject({
       method: 'GET',
       url: '/api/v1/study-days/2026-08-19/status',
-      headers: { cookie: sessionCookie('Alex') },
+      headers: { cookie: sessionCookie('hyunji') },
     });
     expect(boundary.statusCode).toBe(200);
 
@@ -229,33 +265,43 @@ describe('daily reflections — real PostgreSQL end to end', () => {
 });
 
 describe('daily reflections — real concurrency race over the participant limit', () => {
-  it('~20 concurrent PUT submissions for the same date collapse into exactly 2 reflections rows, no more', async () => {
-    const app = buildTestApp();
-    const names = Array.from({ length: 20 }, (_, i) => `Participant-${i}`);
+  // Exercises the repository directly (not through HTTP/session-gate): a
+  // real 20-distinct-caller race is no longer reachable via the production
+  // auth path (only hyunji/hyeonseo can authenticate at all), but the
+  // Postgres-backed FOR UPDATE locking in DrizzleDailyReflectionRepository
+  // must still hold under real contention regardless of who's calling it.
+  it('~20 concurrent submitReflection calls for the same date collapse into exactly 2 reflections rows, no more', async () => {
+    const repository = new DrizzleDailyReflectionRepository(testDb.db);
+    const article = {
+      id: 'article-1',
+      title: 'The Quiet Revolution',
+      sourceUrl: null,
+      summary: null,
+    };
+    const participantKeys = Array.from({ length: 20 }, (_, i) => `participant-${i}`);
 
     // Fired concurrently — not sequentially awaited — so all 20 genuinely
     // race for the same study_days row inside Postgres. This is the test
     // that actually proves the FOR UPDATE locking works under real
     // contention, not just in the single-threaded in-memory fake used by
-    // tests/study-days.test.ts.
-    const responses = await Promise.all(
-      names.map((name) =>
-        app.inject({
-          method: 'PUT',
-          url: `/api/v1/study-days/${STUDY_DATE}/reflection`,
-          headers: { cookie: sessionCookie(name) },
-          payload: validBody({ reflection: `${VALID_REFLECTION} From ${name}.` }),
+    // tests/study-days.test.ts / tests/daily-reflection-repository.test.ts.
+    const results = await Promise.all(
+      participantKeys.map((participantKey) =>
+        repository.submitReflection({
+          studyDate: STUDY_DATE,
+          article,
+          participantKey,
+          displayName: participantKey,
+          content: `${VALID_REFLECTION} From ${participantKey}.`,
+          submittedAt: new Date(),
         }),
       ),
     );
 
-    const statusCodes = responses.map((r) => r.statusCode);
-    expect(statusCodes.filter((code) => code === 200)).toHaveLength(2);
-    expect(statusCodes.filter((code) => code === 409)).toHaveLength(18);
-    for (const response of responses) {
-      if (response.statusCode === 409) {
-        expect(response.json().error.code).toBe('PARTICIPANT_LIMIT_REACHED');
-      }
+    expect(results.filter((r) => r.ok)).toHaveLength(2);
+    expect(results.filter((r) => !r.ok)).toHaveLength(18);
+    for (const result of results) {
+      if (!result.ok) expect(result.reason).toBe('participant_limit_reached');
     }
 
     const rows = await testDb.db
@@ -266,7 +312,5 @@ describe('daily reflections — real concurrency race over the participant limit
 
     const distinctParticipants = new Set(rows.map((row) => row.participantKey));
     expect(distinctParticipants.size).toBe(2);
-
-    await app.close();
   });
 });

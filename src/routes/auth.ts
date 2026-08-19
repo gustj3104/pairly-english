@@ -7,6 +7,8 @@ import {
   signSession,
   verifySession,
 } from '../services/auth/session.js';
+import { isAllowedParticipantKey } from '../services/auth/allowed-participants.js';
+import { normalizeParticipantKey } from '../services/daily-reflections/participant-key.js';
 
 /** Deliberately generous — this only protects against brute-forcing the one shared password. */
 export const LOGIN_RATE_LIMIT = { max: 5, timeWindow: '1 minute' };
@@ -32,11 +34,12 @@ export async function authRoutes(app: FastifyInstance, options: AuthRoutesOption
 
     const { name, password } = parsed.data;
 
-    // Same response shape/status whether the password is simply wrong or
-    // the name happened to fail some other check — there is no per-user
-    // record to distinguish "wrong name" from "wrong password" against,
-    // so there is nothing more specific to leak in the first place.
-    if (!timingSafeEqualPassword(password, sharedPassword)) {
+    // Same response shape/status whether the password is simply wrong, the
+    // name failed some other check, or the name isn't on the allow-list —
+    // there is no per-user record to distinguish these against, so there is
+    // nothing more specific to leak (in particular, never which names are
+    // allowed).
+    const invalidCredentials = () => {
       reply.code(401);
       return {
         error: {
@@ -45,15 +48,27 @@ export async function authRoutes(app: FastifyInstance, options: AuthRoutesOption
           requestId: request.id,
         },
       };
+    };
+
+    if (!timingSafeEqualPassword(password, sharedPassword)) {
+      return invalidCredentials();
     }
 
-    const token = signSession({ name }, sessionSecret, sessionMaxAgeSeconds);
+    // verify (password, above) -> normalize -> allow-list check -> only the
+    // canonical key is ever signed/returned from here on, never the raw
+    // display name.
+    const key = normalizeParticipantKey(name);
+    if (!isAllowedParticipantKey(key)) {
+      return invalidCredentials();
+    }
+
+    const token = signSession({ name: key }, sessionSecret, sessionMaxAgeSeconds);
     reply.setCookie(
       SESSION_COOKIE_NAME,
       token,
       sessionCookieOptions(nodeEnv, sessionMaxAgeSeconds),
     );
-    return { name };
+    return { name: key };
   });
 
   app.get('/auth/session', async (request) => {
@@ -63,7 +78,13 @@ export async function authRoutes(app: FastifyInstance, options: AuthRoutesOption
     const payload = verifySession(token, sessionSecret);
     if (!payload) return { authenticated: false as const };
 
-    return { authenticated: true as const, name: payload.name };
+    // Fail-closed for any session — including one issued before this
+    // allow-list existed, or signed with non-canonical casing/whitespace —
+    // whose normalized name isn't one of the two allowed participants.
+    const key = normalizeParticipantKey(payload.name);
+    if (!isAllowedParticipantKey(key)) return { authenticated: false as const };
+
+    return { authenticated: true as const, name: key };
   });
 
   app.post('/auth/logout', async (_request, reply) => {

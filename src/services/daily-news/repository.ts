@@ -4,20 +4,25 @@ import type * as schema from '../../db/schema.js';
 import { dailyNewsArticles } from '../../db/schema.js';
 import { generatedDailyNewsSchema } from './schema.js';
 import type { DailyNewsArticle, GeneratedDailyNews } from './schema.js';
+import { validateSourceUrl } from './source-url.js';
 
 type Db = NodePgDatabase<typeof schema>;
 export interface DailyNewsToStore extends GeneratedDailyNews {
   generatedAt: Date;
 }
 
-function mapRow(row: typeof dailyNewsArticles.$inferSelect): DailyNewsArticle {
+export function mapRow(row: typeof dailyNewsArticles.$inferSelect): DailyNewsArticle {
   const vocabulary = generatedDailyNewsSchema.shape.vocabulary.parse(row.vocabulary);
+  // Re-validated on every read (not trusted from storage as-is): a
+  // legacy/invalid stored URL serves as `null` rather than failing the rest
+  // of the article response, and never a guessed/repaired fallback.
+  const sourceUrl = validateSourceUrl(row.sourceUrl)?.href ?? null;
   return {
     id: row.id,
     studyDate: row.studyDate,
     title: row.title,
     sourceName: row.sourceName,
-    sourceUrl: row.sourceUrl,
+    sourceUrl,
     publishedAt: row.publishedAt.toISOString(),
     generatedAt: row.generatedAt.toISOString(),
     summary: row.summary,

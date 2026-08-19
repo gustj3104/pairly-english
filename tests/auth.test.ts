@@ -35,16 +35,16 @@ function parseSetCookie(setCookieHeader: string) {
 }
 
 describe('POST /api/v1/auth/login', () => {
-  it('returns 200 with the normalized name and sets an HttpOnly session cookie on the correct password', async () => {
+  it('returns 200 with the canonical normalized key and sets an HttpOnly session cookie on the correct password', async () => {
     const app = buildTestApp();
     const response = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/login',
-      payload: { name: '  Alex  ', password: SHARED_PASSWORD },
+      payload: { name: '  Hyunji  ', password: SHARED_PASSWORD },
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ name: 'Alex' });
+    expect(response.json()).toEqual({ name: 'hyunji' });
 
     const setCookie = response.headers['set-cookie'];
     expect(setCookie).toBeDefined();
@@ -72,7 +72,7 @@ describe('POST /api/v1/auth/login', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/login',
-      payload: { name: 'Alex', password: SHARED_PASSWORD },
+      payload: { name: 'Hyunji', password: SHARED_PASSWORD },
     });
 
     const setCookie = response.headers['set-cookie'];
@@ -164,12 +164,12 @@ describe('POST /api/v1/auth/login', () => {
     await app.inject({
       method: 'POST',
       url: '/api/v1/auth/login',
-      payload: { name: 'Alex', password: SHARED_PASSWORD },
+      payload: { name: 'Hyunji', password: SHARED_PASSWORD },
     });
     await app.inject({
       method: 'POST',
       url: '/api/v1/auth/login',
-      payload: { name: 'Alex', password: 'wrong-guess' },
+      payload: { name: 'Hyunji', password: 'wrong-guess' },
     });
 
     await app.close();
@@ -178,6 +178,57 @@ describe('POST /api/v1/auth/login', () => {
     expect(logOutput).not.toContain(SHARED_PASSWORD);
     expect(logOutput).not.toContain('wrong-guess');
     expect(logOutput).not.toContain(SESSION_SECRET);
+  });
+});
+
+describe('participant allow-list (production identity restriction)', () => {
+  it.each([
+    ['hyunji', 'hyunji'],
+    ['  Hyunji  ', 'hyunji'],
+    ['HYUNJI', 'hyunji'],
+    ['hyeonseo', 'hyeonseo'],
+    ['Hyeonseo', 'hyeonseo'],
+    ['  hyeonseo  ', 'hyeonseo'],
+  ])('accepts %j and normalizes it to the canonical key %j', async (input, expected) => {
+    const app = buildTestApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { name: input, password: SHARED_PASSWORD },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ name: expected });
+    await app.close();
+  });
+
+  it('rejects a correct password with a name outside the allow-list, with the same generic 401 shape as a wrong password', async () => {
+    const app = buildTestApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { name: 'Chris', password: SHARED_PASSWORD },
+    });
+    expect(response.statusCode).toBe(401);
+    const body = response.json();
+    expect(body.error.code).toBe('INVALID_CREDENTIALS');
+    expect(body.error.message).toBe('Invalid name or password');
+    // Never enumerates which names are allowed.
+    expect(JSON.stringify(body).toLowerCase()).not.toContain('hyunji');
+    expect(JSON.stringify(body).toLowerCase()).not.toContain('hyeonseo');
+    expect(response.headers['set-cookie']).toBeUndefined();
+    await app.close();
+  });
+
+  it('rejects an allowed name submitted with the wrong password', async () => {
+    const app = buildTestApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { name: 'hyunji', password: 'totally-wrong' },
+    });
+    expect(response.statusCode).toBe(401);
+    expect(response.json().error.code).toBe('INVALID_CREDENTIALS');
+    await app.close();
   });
 });
 
@@ -190,22 +241,35 @@ describe('GET /api/v1/auth/session', () => {
     await app.close();
   });
 
-  it('returns authenticated:true and the name for a valid session cookie', async () => {
+  it('returns authenticated:true and the canonical normalized name for a valid session cookie, even signed with non-canonical casing', async () => {
     const app = buildTestApp();
-    const token = signSession({ name: 'Alex' }, SESSION_SECRET, 2592000);
+    const token = signSession({ name: 'Hyunji' }, SESSION_SECRET, 2592000);
     const response = await app.inject({
       method: 'GET',
       url: '/api/v1/auth/session',
       headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` },
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ authenticated: true, name: 'Alex' });
+    expect(response.json()).toEqual({ authenticated: true, name: 'hyunji' });
+    await app.close();
+  });
+
+  it('returns authenticated:false (fail-closed) for a valid, unexpired session signed with a name outside the allow-list', async () => {
+    const app = buildTestApp();
+    const token = signSession({ name: 'SomeoneElse' }, SESSION_SECRET, 2592000);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/session',
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ authenticated: false });
     await app.close();
   });
 
   it('returns authenticated:false for an expired session cookie', async () => {
     const app = buildTestApp();
-    const token = signSession({ name: 'Alex' }, SESSION_SECRET, -1);
+    const token = signSession({ name: 'Hyunji' }, SESSION_SECRET, -1);
     const response = await app.inject({
       method: 'GET',
       url: '/api/v1/auth/session',
@@ -217,7 +281,7 @@ describe('GET /api/v1/auth/session', () => {
 
   it('returns authenticated:false for a tampered session cookie', async () => {
     const app = buildTestApp();
-    const token = signSession({ name: 'Alex' }, SESSION_SECRET, 2592000);
+    const token = signSession({ name: 'Hyunji' }, SESSION_SECRET, 2592000);
     const tampered = token.endsWith('a') ? `${token.slice(0, -1)}b` : `${token.slice(0, -1)}a`;
     const response = await app.inject({
       method: 'GET',
@@ -253,7 +317,7 @@ describe('POST /api/v1/auth/logout', () => {
     const login = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/login',
-      payload: { name: 'Alex', password: SHARED_PASSWORD },
+      payload: { name: 'Hyunji', password: SHARED_PASSWORD },
     });
     const sessionCookieHeader = Array.isArray(login.headers['set-cookie'])
       ? login.headers['set-cookie'][0]!
@@ -388,8 +452,8 @@ describe('session integration: a real login session can access the AI route', ()
       return sessionCookieHeader.split(';')[0]!;
     }
 
-    const alexCookie = await loginCookie('Alex');
-    const samCookie = await loginCookie('Sam');
+    const alexCookie = await loginCookie('Hyunji');
+    const samCookie = await loginCookie('Hyeonseo');
 
     const reflectionBody = (reflection: string) => ({
       article: { id: 'article-1', title: 'The Quiet Revolution', sourceUrl: null, summary: null },
@@ -435,11 +499,26 @@ describe('session integration: a real login session can access the AI route', ()
       headers: { cookie: alexCookie },
       payload: {
         article: { title: 'The Quiet Revolution', summary: 'A summary.' },
-        mine: { displayName: 'Alex', reflection: 'x'.repeat(60) },
-        partner: { displayName: 'Sam', reflection: 'y'.repeat(60) },
+        mine: { displayName: 'Hyunji', reflection: 'x'.repeat(60) },
+        partner: { displayName: 'Hyeonseo', reflection: 'y'.repeat(60) },
       },
     });
     expect(oldRouteResponse.statusCode).toBe(401);
+
+    // A session signed for a name outside the allow-list must be rejected
+    // by createSessionGate (session-gate.ts) on a real study-days route too
+    // — not just by GET /auth/session.
+    const disallowedCookie = `${SESSION_COOKIE_NAME}=${signSession({ name: 'Chris' }, SESSION_SECRET, 2592000)}`;
+    const disallowedResponse = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/study-days/${STUDY_DATE}/reflection`,
+      headers: { cookie: disallowedCookie },
+      payload: reflectionBody(
+        'This reflection is deliberately written to be well over fifty non-blank characters long.',
+      ),
+    });
+    expect(disallowedResponse.statusCode).toBe(401);
+    expect(disallowedResponse.json()).toMatchObject({ error: { code: 'UNAUTHORIZED' } });
 
     await app.close();
   });

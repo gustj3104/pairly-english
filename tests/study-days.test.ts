@@ -159,7 +159,7 @@ describe('POST /api/v1/study-days/:date/compare — auth', () => {
 describe('PUT /api/v1/study-days/:date/reflection — successful submission', () => {
   it('returns 200 with the expected shape', async () => {
     const app = buildTestApp();
-    const response = await submit(app, 'Alex');
+    const response = await submit(app, 'hyunji');
     expect(response.statusCode).toBe(200);
     const body = response.json();
     expect(body).toEqual({
@@ -173,21 +173,21 @@ describe('PUT /api/v1/study-days/:date/reflection — successful submission', ()
 
   it('derives the submitter from the session name, not any client-supplied field', async () => {
     const app = buildTestApp();
-    const response = await submit(app, 'Alex');
+    const response = await submit(app, 'hyunji');
     expect(response.statusCode).toBe(200);
 
     const status = await app.inject({
       method: 'GET',
       url: `/api/v1/study-days/${STUDY_DATE}/status`,
-      headers: { cookie: sessionCookie('Alex') },
+      headers: { cookie: sessionCookie('hyunji') },
     });
-    expect(status.json().mine).toEqual({ submitted: true, displayName: 'Alex' });
+    expect(status.json().mine).toEqual({ submitted: true, displayName: 'hyunji' });
     await app.close();
   });
 
   it('rejects a request body that tries to supply a displayName/participant field (schema is strict)', async () => {
     const app = buildTestApp();
-    const response = await submit(app, 'Alex', validBody({ displayName: 'NotAlex' }));
+    const response = await submit(app, 'hyunji', validBody({ displayName: 'NotHyunji' }));
     expect(response.statusCode).toBe(400);
     expect(response.json().error.code).toBe('VALIDATION_ERROR');
     await app.close();
@@ -197,7 +197,7 @@ describe('PUT /api/v1/study-days/:date/reflection — successful submission', ()
 describe('PUT /api/v1/study-days/:date/reflection — reflection validation', () => {
   it('returns 400 for a too-short reflection', async () => {
     const app = buildTestApp();
-    const response = await submit(app, 'Alex', validBody({ reflection: 'too short' }));
+    const response = await submit(app, 'hyunji', validBody({ reflection: 'too short' }));
     expect(response.statusCode).toBe(400);
     expect(response.json().error.code).toBe('VALIDATION_ERROR');
     await app.close();
@@ -205,21 +205,21 @@ describe('PUT /api/v1/study-days/:date/reflection — reflection validation', ()
 
   it('returns 400 for a too-long reflection', async () => {
     const app = buildTestApp();
-    const response = await submit(app, 'Alex', validBody({ reflection: 'a'.repeat(6001) }));
+    const response = await submit(app, 'hyunji', validBody({ reflection: 'a'.repeat(6001) }));
     expect(response.statusCode).toBe(400);
     await app.close();
   });
 
   it('returns 400 for a blank reflection', async () => {
     const app = buildTestApp();
-    const response = await submit(app, 'Alex', validBody({ reflection: '   ' }));
+    const response = await submit(app, 'hyunji', validBody({ reflection: '   ' }));
     expect(response.statusCode).toBe(400);
     await app.close();
   });
 
   it('returns 400 for a missing article.id', async () => {
     const app = buildTestApp();
-    const response = await submit(app, 'Alex', {
+    const response = await submit(app, 'hyunji', {
       article: { title: 'No id' },
       reflection: VALID_REFLECTION,
     });
@@ -231,13 +231,13 @@ describe('PUT /api/v1/study-days/:date/reflection — reflection validation', ()
 describe('PUT /api/v1/study-days/:date/reflection — idempotent resubmission', () => {
   it('the same user submitting twice does not duplicate or overwrite content', async () => {
     const app = buildTestApp();
-    const first = await submit(app, 'Alex', validBody({ reflection: VALID_REFLECTION }));
+    const first = await submit(app, 'hyunji', validBody({ reflection: VALID_REFLECTION }));
     expect(first.statusCode).toBe(200);
     const firstSubmittedAt = first.json().submittedAt;
 
     const second = await submit(
       app,
-      'Alex',
+      'hyunji',
       validBody({ reflection: `${VALID_REFLECTION} A different follow-up thought entirely.` }),
     );
     expect(second.statusCode).toBe(200);
@@ -252,14 +252,14 @@ describe('PUT /api/v1/study-days/:date/reflection — article mismatch', () => {
     const app = buildTestApp();
     const first = await submit(
       app,
-      'Alex',
+      'hyunji',
       validBody({ article: { id: 'article-1', title: 'A' } }),
     );
     expect(first.statusCode).toBe(200);
 
     const second = await submit(
       app,
-      'Sam',
+      'hyeonseo',
       validBody({ article: { id: 'article-2', title: 'B' } }),
     );
     expect(second.statusCode).toBe(409);
@@ -269,19 +269,12 @@ describe('PUT /api/v1/study-days/:date/reflection — article mismatch', () => {
   });
 });
 
-describe('PUT /api/v1/study-days/:date/reflection — participant limit', () => {
-  it('rejects a 3rd distinct name with 409 PARTICIPANT_LIMIT_REACHED', async () => {
-    const app = buildTestApp();
-    expect((await submit(app, 'Alex')).statusCode).toBe(200);
-    expect((await submit(app, 'Sam')).statusCode).toBe(200);
-
-    const third = await submit(app, 'Jordan');
-    expect(third.statusCode).toBe(409);
-    expect(third.json().error.code).toBe('PARTICIPANT_LIMIT_REACHED');
-
-    await app.close();
-  });
-});
+// The "3rd distinct participant" scenario moved to
+// tests/daily-reflection-repository.test.ts: with the production
+// participant allow-list (hyunji/hyeonseo only, see session-gate.ts) a real
+// 3rd authenticated HTTP caller is no longer reachable, but the
+// repository-level MAX_PARTICIPANTS_PER_DAY invariant is still tested
+// directly there, independent of who can authenticate.
 
 describe('GET /api/v1/study-days/:date/status', () => {
   it('reflects submission state before and after the partner submits, never exposing partner content', async () => {
@@ -290,7 +283,7 @@ describe('GET /api/v1/study-days/:date/status', () => {
     const beforeAny = await app.inject({
       method: 'GET',
       url: `/api/v1/study-days/${STUDY_DATE}/status`,
-      headers: { cookie: sessionCookie('Alex') },
+      headers: { cookie: sessionCookie('hyunji') },
     });
     expect(beforeAny.json()).toEqual({
       studyDate: STUDY_DATE,
@@ -299,31 +292,36 @@ describe('GET /api/v1/study-days/:date/status', () => {
       readyToCompare: false,
     });
 
-    expect((await submit(app, 'Alex')).statusCode).toBe(200);
+    expect((await submit(app, 'hyunji')).statusCode).toBe(200);
 
     const afterMine = await app.inject({
       method: 'GET',
       url: `/api/v1/study-days/${STUDY_DATE}/status`,
-      headers: { cookie: sessionCookie('Alex') },
+      headers: { cookie: sessionCookie('hyunji') },
     });
     const afterMineBody = afterMine.json();
-    expect(afterMineBody.mine).toEqual({ submitted: true, displayName: 'Alex' });
+    expect(afterMineBody.mine).toEqual({ submitted: true, displayName: 'hyunji' });
     expect(afterMineBody.partner).toEqual({ submitted: false, displayName: null });
     expect(afterMineBody.readyToCompare).toBe(false);
 
     expect(
-      (await submit(app, 'Sam', validBody({ reflection: `${VALID_REFLECTION} Sam's own take.` })))
-        .statusCode,
+      (
+        await submit(
+          app,
+          'hyeonseo',
+          validBody({ reflection: `${VALID_REFLECTION} Sam's own take.` }),
+        )
+      ).statusCode,
     ).toBe(200);
 
     const afterBoth = await app.inject({
       method: 'GET',
       url: `/api/v1/study-days/${STUDY_DATE}/status`,
-      headers: { cookie: sessionCookie('Alex') },
+      headers: { cookie: sessionCookie('hyunji') },
     });
     const afterBothBody = afterBoth.json();
-    expect(afterBothBody.mine).toEqual({ submitted: true, displayName: 'Alex' });
-    expect(afterBothBody.partner).toEqual({ submitted: true, displayName: 'Sam' });
+    expect(afterBothBody.mine).toEqual({ submitted: true, displayName: 'hyunji' });
+    expect(afterBothBody.partner).toEqual({ submitted: true, displayName: 'hyeonseo' });
     expect(afterBothBody.readyToCompare).toBe(true);
 
     // Partner's reflection content must never appear anywhere in the response.
@@ -339,12 +337,12 @@ describe('GET /api/v1/study-days/:date/status', () => {
 describe('POST /api/v1/study-days/:date/compare', () => {
   it('returns 409 PARTNER_NOT_READY when only one participant has submitted', async () => {
     const app = buildTestApp();
-    expect((await submit(app, 'Alex')).statusCode).toBe(200);
+    expect((await submit(app, 'hyunji')).statusCode).toBe(200);
 
     const response = await app.inject({
       method: 'POST',
       url: `/api/v1/study-days/${STUDY_DATE}/compare`,
-      headers: { cookie: sessionCookie('Alex') },
+      headers: { cookie: sessionCookie('hyunji') },
     });
     expect(response.statusCode).toBe(409);
     expect(response.json().error.code).toBe('PARTNER_NOT_READY');
@@ -356,7 +354,7 @@ describe('POST /api/v1/study-days/:date/compare', () => {
     const response = await app.inject({
       method: 'POST',
       url: `/api/v1/study-days/${STUDY_DATE}/compare`,
-      headers: { cookie: sessionCookie('Alex') },
+      headers: { cookie: sessionCookie('hyunji') },
     });
     expect(response.statusCode).toBe(409);
     expect(response.json().error.code).toBe('PARTNER_NOT_READY');
@@ -370,16 +368,21 @@ describe('POST /api/v1/study-days/:date/compare', () => {
     });
     const app = buildTestApp({ mindlogicClient });
 
-    expect((await submit(app, 'Alex')).statusCode).toBe(200);
+    expect((await submit(app, 'hyunji')).statusCode).toBe(200);
     expect(
-      (await submit(app, 'Sam', validBody({ reflection: `${VALID_REFLECTION} Sam's own take.` })))
-        .statusCode,
+      (
+        await submit(
+          app,
+          'hyeonseo',
+          validBody({ reflection: `${VALID_REFLECTION} Sam's own take.` }),
+        )
+      ).statusCode,
     ).toBe(200);
 
     const response = await app.inject({
       method: 'POST',
       url: `/api/v1/study-days/${STUDY_DATE}/compare`,
-      headers: { cookie: sessionCookie('Alex') },
+      headers: { cookie: sessionCookie('hyunji') },
     });
 
     expect(response.statusCode).toBe(200);
@@ -399,16 +402,21 @@ describe('POST /api/v1/study-days/:date/compare', () => {
     });
     const app = buildTestApp({ mindlogicClient });
 
-    expect((await submit(app, 'Alex')).statusCode).toBe(200);
+    expect((await submit(app, 'hyunji')).statusCode).toBe(200);
     expect(
-      (await submit(app, 'Sam', validBody({ reflection: `${VALID_REFLECTION} Sam's own take.` })))
-        .statusCode,
+      (
+        await submit(
+          app,
+          'hyeonseo',
+          validBody({ reflection: `${VALID_REFLECTION} Sam's own take.` }),
+        )
+      ).statusCode,
     ).toBe(200);
 
     const first = await app.inject({
       method: 'POST',
       url: `/api/v1/study-days/${STUDY_DATE}/compare`,
-      headers: { cookie: sessionCookie('Alex') },
+      headers: { cookie: sessionCookie('hyunji') },
     });
     expect(first.statusCode).toBe(200);
     expect(first.json().cached).toBe(false);
@@ -416,7 +424,7 @@ describe('POST /api/v1/study-days/:date/compare', () => {
     const second = await app.inject({
       method: 'POST',
       url: `/api/v1/study-days/${STUDY_DATE}/compare`,
-      headers: { cookie: sessionCookie('Sam') },
+      headers: { cookie: sessionCookie('hyeonseo') },
     });
     expect(second.statusCode).toBe(200);
     const secondBody = second.json();
@@ -429,7 +437,7 @@ describe('POST /api/v1/study-days/:date/compare', () => {
     const getResponse = await app.inject({
       method: 'GET',
       url: `/api/v1/study-days/${STUDY_DATE}/comparison`,
-      headers: { cookie: sessionCookie('Alex') },
+      headers: { cookie: sessionCookie('hyunji') },
     });
     expect(getResponse.statusCode).toBe(200);
     expect(getResponse.json()).toEqual({ status: 'completed', result: first.json().result });
@@ -444,7 +452,7 @@ describe('date validation', () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/v1/study-days/2026-13-40/status',
-      headers: { cookie: sessionCookie('Alex') },
+      headers: { cookie: sessionCookie('hyunji') },
     });
     expect(response.statusCode).toBe(400);
     expect(response.json().error.code).toBe('VALIDATION_ERROR');
@@ -458,7 +466,7 @@ describe('date validation', () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/v1/study-days/2026-08-20/status',
-      headers: { cookie: sessionCookie('Alex') },
+      headers: { cookie: sessionCookie('hyunji') },
     });
     expect(response.statusCode).toBe(400);
     await app.close();
@@ -470,7 +478,7 @@ describe('date validation', () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/v1/study-days/2026-08-19/status',
-      headers: { cookie: sessionCookie('Alex') },
+      headers: { cookie: sessionCookie('hyunji') },
     });
     expect(response.statusCode).toBe(200);
     await app.close();
@@ -481,7 +489,7 @@ describe('date validation', () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/v1/study-days/2000-01-01/status',
-      headers: { cookie: sessionCookie('Alex') },
+      headers: { cookie: sessionCookie('hyunji') },
     });
     expect(response.statusCode).toBe(200);
     await app.close();
@@ -498,34 +506,40 @@ describe('logging never contains sensitive content', () => {
 
     const app = buildTestApp({ loggerStream: logStream });
 
-    expect((await submit(app, 'Alex')).statusCode).toBe(200);
+    expect((await submit(app, 'hyunji')).statusCode).toBe(200);
     expect(
-      (await submit(app, 'Sam', validBody({ reflection: `${VALID_REFLECTION} Sam's own take.` })))
-        .statusCode,
+      (
+        await submit(
+          app,
+          'hyeonseo',
+          validBody({ reflection: `${VALID_REFLECTION} Sam's own take.` }),
+        )
+      ).statusCode,
     ).toBe(200);
 
     await app.inject({
       method: 'GET',
       url: `/api/v1/study-days/${STUDY_DATE}/status`,
-      headers: { cookie: sessionCookie('Alex') },
+      headers: { cookie: sessionCookie('hyunji') },
     });
 
     await app.inject({
       method: 'POST',
       url: `/api/v1/study-days/${STUDY_DATE}/compare`,
-      headers: { cookie: sessionCookie('Alex') },
+      headers: { cookie: sessionCookie('hyunji') },
     });
 
     await app.close();
     await new Promise((resolve) => setImmediate(resolve));
 
-    expect(logOutput).not.toContain('Alex');
-    expect(logOutput).not.toContain('Sam');
+    // Session identity is now the canonical normalized key itself (no
+    // separate raw display name), so this one check covers both the
+    // display name and the raw (unhashed) participant key — only its
+    // truncated hash is allow-listed for logs.
+    expect(logOutput).not.toContain('hyunji');
+    expect(logOutput).not.toContain('hyeonseo');
     expect(logOutput).not.toContain(VALID_REFLECTION);
     expect(logOutput).not.toContain("Sam's own take");
-    // The raw (unhashed) normalized participant key must never appear either.
-    expect(logOutput).not.toContain('alex');
-    expect(logOutput).not.toContain('sam');
 
     expect(logOutput).toContain('daily reflection submitted');
     expect(logOutput).toContain(STUDY_DATE);

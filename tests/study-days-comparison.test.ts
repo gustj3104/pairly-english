@@ -164,14 +164,19 @@ async function submit(
 }
 
 async function submitBoth(app: ReturnType<typeof buildApp>) {
-  expect((await submit(app, 'Alex')).statusCode).toBe(200);
+  expect((await submit(app, 'hyunji')).statusCode).toBe(200);
   expect(
-    (await submit(app, 'Sam', validBody({ reflection: `${VALID_REFLECTION} Sam's own take.` })))
-      .statusCode,
+    (
+      await submit(
+        app,
+        'hyeonseo',
+        validBody({ reflection: `${VALID_REFLECTION} Sam's own take.` }),
+      )
+    ).statusCode,
   ).toBe(200);
 }
 
-function post(app: ReturnType<typeof buildApp>, path: string, name = 'Alex') {
+function post(app: ReturnType<typeof buildApp>, path: string, name = 'hyunji') {
   return app.inject({
     method: 'POST',
     url: `/api/v1/study-days/${STUDY_DATE}${path}`,
@@ -179,7 +184,7 @@ function post(app: ReturnType<typeof buildApp>, path: string, name = 'Alex') {
   });
 }
 
-function get(app: ReturnType<typeof buildApp>, path: string, name = 'Alex') {
+function get(app: ReturnType<typeof buildApp>, path: string, name = 'hyunji') {
   return app.inject({
     method: 'GET',
     url: `/api/v1/study-days/${STUDY_DATE}${path}`,
@@ -190,7 +195,7 @@ function get(app: ReturnType<typeof buildApp>, path: string, name = 'Alex') {
 describe('POST /api/v1/study-days/:date/compare — partner readiness', () => {
   it('returns 409 PARTNER_NOT_READY when only one participant has submitted', async () => {
     const app = buildTestApp();
-    expect((await submit(app, 'Alex')).statusCode).toBe(200);
+    expect((await submit(app, 'hyunji')).statusCode).toBe(200);
     const response = await post(app, '/compare');
     expect(response.statusCode).toBe(409);
     expect(response.json().error.code).toBe('PARTNER_NOT_READY');
@@ -237,10 +242,10 @@ describe('POST /api/v1/study-days/:date/compare — first generation', () => {
     const app = buildTestApp({ mindlogicClient });
     await submitBoth(app);
 
-    const first = await post(app, '/compare', 'Alex');
+    const first = await post(app, '/compare', 'hyunji');
     expect(first.json().cached).toBe(false);
 
-    const second = await post(app, '/compare', 'Sam');
+    const second = await post(app, '/compare', 'hyeonseo');
     expect(second.statusCode).toBe(200);
     const secondBody = second.json();
     expect(secondBody.status).toBe('completed');
@@ -248,8 +253,8 @@ describe('POST /api/v1/study-days/:date/compare — first generation', () => {
     expect(secondBody.result).toEqual(first.json().result);
     expect(callCount).toBe(1);
 
-    const alexView = await get(app, '/comparison', 'Alex');
-    const samView = await get(app, '/comparison', 'Sam');
+    const alexView = await get(app, '/comparison', 'hyunji');
+    const samView = await get(app, '/comparison', 'hyeonseo');
     expect(alexView.json()).toEqual(samView.json());
     expect(alexView.json()).toEqual({ status: 'completed', result: first.json().result });
 
@@ -263,7 +268,7 @@ describe('POST /api/v1/study-days/:date/compare — in-flight (processing)', () 
     const app = buildTestApp({ mindlogicClient });
     await submitBoth(app);
 
-    const firstPromise = post(app, '/compare', 'Alex');
+    const firstPromise = post(app, '/compare', 'hyunji');
     // Give phase 1 of the first request time to claim and commit, and its
     // phase 2 time to reach (and block inside) the mocked fetch call,
     // before firing the second request — deterministic because the mocked
@@ -271,7 +276,7 @@ describe('POST /api/v1/study-days/:date/compare — in-flight (processing)', () 
     // once it's been entered the window stays open indefinitely.
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    const second = await post(app, '/compare', 'Sam');
+    const second = await post(app, '/compare', 'hyeonseo');
     expect(second.statusCode).toBe(202);
     expect(second.json()).toEqual({ status: 'processing' });
 
@@ -417,8 +422,8 @@ describe('logging never contains reflection content or the AI result', () => {
     await app.close();
     await new Promise((resolve) => setImmediate(resolve));
 
-    expect(logOutput).not.toContain('Alex');
-    expect(logOutput).not.toContain('Sam');
+    expect(logOutput).not.toContain('hyunji');
+    expect(logOutput).not.toContain('hyeonseo');
     expect(logOutput).not.toContain(VALID_REFLECTION);
     expect(logOutput).not.toContain('The Quiet Revolution');
     // The AI result content itself must never be logged.
