@@ -16,10 +16,11 @@ import type {
   MindlogicErrorObservability,
   ChatMessage,
 } from '../mindlogic/types.js';
-import { DAILY_NEWS_JSON_SCHEMA, generatedDailyNewsSchema } from './schema.js';
+import { DAILY_NEWS_JSON_SCHEMA, dailyNewsModelResponseSchema } from './schema.js';
 import type { GeneratedDailyNews } from './schema.js';
 import { DAILY_NEWS_SYSTEM_PROMPT, buildDailyNewsUserMessage } from './prompt.js';
 import { validateSourceUrl } from './source-url.js';
+import { topicForStudyDate } from './weekday-topics.js';
 
 const FEATURE = 'daily_news' as const;
 
@@ -58,9 +59,10 @@ export async function generateDailyNews(
   const now = deps.now ?? (() => new Date());
   const requestId = (deps.generateRequestId ?? randomUUID)();
   const { model, maxOutputTokens } = getFeatureModelConfig(FEATURE);
+  const topic = topicForStudyDate(studyDate);
   const messages: ChatMessage[] = [
     { role: 'system', content: DAILY_NEWS_SYSTEM_PROMPT },
-    { role: 'user', content: buildDailyNewsUserMessage(studyDate) },
+    { role: 'user', content: buildDailyNewsUserMessage(studyDate, topic) },
   ];
   const estimatedInputTokens = estimateChatRequestInputTokens({
     messages,
@@ -148,8 +150,12 @@ export async function generateDailyNews(
   } catch {
     return { status: 'upstream_schema_error', requestId };
   }
-  const checked = generatedDailyNewsSchema.safeParse(parsed);
+  const checked = dailyNewsModelResponseSchema.safeParse(parsed);
   if (!checked.success) return { status: 'upstream_schema_error', requestId };
+  // Fails closed on any mismatch: this only proves the model's declared
+  // `topic` string equals the required one, not that the article content
+  // is actually about that topic — the prompt is the real control there.
+  if (checked.data.topic !== topic) return { status: 'upstream_schema_error', requestId };
   const source = validateSourceUrl(checked.data.sourceUrl);
   const citations = completion.citations;
   if (
@@ -167,10 +173,21 @@ export async function generateDailyNews(
   ) {
     return { status: 'upstream_schema_error', requestId };
   }
+  // Built field-by-field (not spread) so `topic` — needed only for the
+  // check above — can never leak into the public/persisted article.
+  const article: GeneratedDailyNews = {
+    title: checked.data.title,
+    sourceName: checked.data.sourceName,
+    sourceUrl: source.href,
+    publishedAt: checked.data.publishedAt,
+    summary: checked.data.summary,
+    content: checked.data.content,
+    vocabulary: checked.data.vocabulary,
+  };
   return {
     status: 'ok',
     requestId,
-    article: { ...checked.data, sourceUrl: source.href },
+    article,
     generatedAt,
   };
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { generatedDailyNewsSchema } from './schema.js';
+import { dailyNewsModelResponseSchema, generatedDailyNewsSchema } from './schema.js';
 
 const words = [
   'advance',
@@ -48,4 +48,21 @@ describe('generatedDailyNewsSchema', () => {
         content: '<script>alert(1)</script>',
       }).success,
     ).toBe(false));
+  it('the public schema has no topic field, even if one is supplied', () =>
+    expect(generatedDailyNewsSchema.safeParse({ ...valid(), topic: 'Science' }).success).toBe(
+      false,
+    ));
+});
+
+describe('dailyNewsModelResponseSchema', () => {
+  it('accepts a valid response that declares one of the fixed topics', () =>
+    expect(dailyNewsModelResponseSchema.safeParse({ ...valid(), topic: 'Science' }).success).toBe(
+      true,
+    ));
+  it('rejects a topic string outside the fixed enum', () =>
+    expect(dailyNewsModelResponseSchema.safeParse({ ...valid(), topic: 'Sports' }).success).toBe(
+      false,
+    ));
+  it('rejects a response missing the topic field', () =>
+    expect(dailyNewsModelResponseSchema.safeParse(valid()).success).toBe(false));
 });

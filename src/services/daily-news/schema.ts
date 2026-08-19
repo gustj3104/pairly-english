@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { DAILY_NEWS_TOPICS } from './weekday-topics.js';
 
 const safeText = (max: number) =>
   z
@@ -18,39 +19,64 @@ export const vocabularyItemSchema = z
   })
   .strict();
 
+/** Enum of the fixed weekday topics — see weekday-topics.ts for the single source of truth. */
+export const dailyNewsTopicSchema = z.enum(DAILY_NEWS_TOPICS);
+
+const dailyNewsArticleFields = {
+  title: safeText(240),
+  sourceName: safeText(120),
+  sourceUrl: z.string().max(2048),
+  publishedAt: z.string().datetime({ offset: true }),
+  summary: safeText(1200),
+  content: safeText(8000),
+  vocabulary: z.array(vocabularyItemSchema).length(8),
+};
+
+/** Shared by both the public/persisted schema and the model-response schema below. */
+function checkVocabularyAppearsInContent(
+  article: { vocabulary: { word: string }[]; content: string },
+  context: z.RefinementCtx,
+): void {
+  const normalized = article.vocabulary.map((item) => item.word.normalize('NFKC').toLowerCase());
+  if (new Set(normalized).size !== normalized.length) {
+    context.addIssue({ code: 'custom', path: ['vocabulary'], message: 'duplicate words' });
+  }
+  for (const [index, item] of article.vocabulary.entries()) {
+    const escaped = item.word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (
+      !new RegExp(`(^|[^\\p{L}\\p{N}_])${escaped}(?=$|[^\\p{L}\\p{N}_])`, 'iu').test(
+        article.content,
+      )
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['vocabulary', index, 'word'],
+        message: 'word must appear in content',
+      });
+    }
+  }
+}
+
+/** Public/persisted article contract — deliberately has no `topic` field (see DailyNewsArticle). */
 export const generatedDailyNewsSchema = z
-  .object({
-    title: safeText(240),
-    sourceName: safeText(120),
-    sourceUrl: z.string().max(2048),
-    publishedAt: z.string().datetime({ offset: true }),
-    summary: safeText(1200),
-    content: safeText(8000),
-    vocabulary: z.array(vocabularyItemSchema).length(8),
-  })
+  .object(dailyNewsArticleFields)
   .strict()
-  .superRefine((article, context) => {
-    const normalized = article.vocabulary.map((item) => item.word.normalize('NFKC').toLowerCase());
-    if (new Set(normalized).size !== normalized.length) {
-      context.addIssue({ code: 'custom', path: ['vocabulary'], message: 'duplicate words' });
-    }
-    for (const [index, item] of article.vocabulary.entries()) {
-      const escaped = item.word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      if (
-        !new RegExp(`(^|[^\\p{L}\\p{N}_])${escaped}(?=$|[^\\p{L}\\p{N}_])`, 'iu').test(
-          article.content,
-        )
-      ) {
-        context.addIssue({
-          code: 'custom',
-          path: ['vocabulary', index, 'word'],
-          message: 'word must appear in content',
-        });
-      }
-    }
-  });
+  .superRefine(checkVocabularyAppearsInContent);
 
 export type GeneratedDailyNews = z.infer<typeof generatedDailyNewsSchema>;
+
+/**
+ * Raw sonar-pro response contract: the public article fields plus the
+ * `topic` the model claims it searched for, which generator.ts checks
+ * against the required weekday topic before ever constructing the public
+ * `GeneratedDailyNews` (topic never reaches storage or the API response).
+ */
+export const dailyNewsModelResponseSchema = z
+  .object({ ...dailyNewsArticleFields, topic: dailyNewsTopicSchema })
+  .strict()
+  .superRefine(checkVocabularyAppearsInContent);
+
+export type DailyNewsModelResponse = z.infer<typeof dailyNewsModelResponseSchema>;
 
 export interface DailyNewsArticle extends GeneratedDailyNews {
   id: string;
@@ -74,6 +100,7 @@ export const DAILY_NEWS_JSON_SCHEMA = {
         'summary',
         'content',
         'vocabulary',
+        'topic',
       ],
       properties: {
         title: { type: 'string' },
@@ -82,6 +109,7 @@ export const DAILY_NEWS_JSON_SCHEMA = {
         publishedAt: { type: 'string' },
         summary: { type: 'string' },
         content: { type: 'string' },
+        topic: { type: 'string', enum: DAILY_NEWS_TOPICS },
         vocabulary: {
           type: 'array',
           minItems: 8,
