@@ -4,6 +4,8 @@ import { reflections, studyDays } from '../../db/schema.js';
 import type * as schema from '../../db/schema.js';
 import type {
   DailyReflectionRepository,
+  DiscussionCompletion,
+  MarkDiscussionCompletedResult,
   ReflectionRow,
   StudyDayArticle,
   SubmitReflectionInput,
@@ -144,5 +146,41 @@ export class DrizzleDailyReflectionRepository implements DailyReflectionReposito
       sourceUrl: day.articleSourceUrl,
       summary: day.articleSummary,
     };
+  }
+
+  async markDiscussionCompleted(
+    studyDate: string,
+    displayName: string,
+    completedAt: Date,
+  ): Promise<MarkDiscussionCompletedResult> {
+    // COALESCE makes this a single atomic first-writer-wins statement — no
+    // transaction/row lock needed, since a second concurrent call for the
+    // same date just no-ops onto whatever the first one already wrote.
+    const [row] = await this.db
+      .update(studyDays)
+      .set({
+        discussionCompletedAt: sql`coalesce(${studyDays.discussionCompletedAt}, ${completedAt})`,
+        discussionCompletedBy: sql`coalesce(${studyDays.discussionCompletedBy}, ${displayName})`,
+        updatedAt: new Date(),
+      })
+      .where(eq(studyDays.studyDate, studyDate))
+      .returning({
+        completedAt: studyDays.discussionCompletedAt,
+        completedBy: studyDays.discussionCompletedBy,
+      });
+
+    if (!row || row.completedAt === null || row.completedBy === null) {
+      return { ok: false, reason: 'study_day_not_found' };
+    }
+
+    return { ok: true, completion: { completedAt: row.completedAt, completedBy: row.completedBy } };
+  }
+
+  async getDiscussionCompletion(studyDate: string): Promise<DiscussionCompletion | null> {
+    const [day] = await this.db.select().from(studyDays).where(eq(studyDays.studyDate, studyDate));
+    if (!day || day.discussionCompletedAt === null || day.discussionCompletedBy === null)
+      return null;
+
+    return { completedAt: day.discussionCompletedAt, completedBy: day.discussionCompletedBy };
   }
 }

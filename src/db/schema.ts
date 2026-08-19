@@ -257,6 +257,13 @@ export const studyDays = pgTable('study_days', {
   articleTitle: text('article_title').notNull(),
   articleSourceUrl: text('article_source_url'),
   articleSummary: text('article_summary'),
+  // The discussion step is one shared, in-person conversation between both
+  // participants (offline, never uploaded) — so its completion is a single
+  // flag for the day, not one per participant. First participant to mark
+  // it wins, same "first writer wins" idempotency as the article fields
+  // above; never overwritten afterward.
+  discussionCompletedAt: timestamp('discussion_completed_at', { withTimezone: true }),
+  discussionCompletedBy: text('discussion_completed_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

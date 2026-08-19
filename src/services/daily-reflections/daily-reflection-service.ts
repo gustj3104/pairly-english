@@ -1,5 +1,6 @@
 import type {
   DailyReflectionRepository,
+  MarkDiscussionCompletedResult,
   ReflectionRow,
   StudyDayArticle,
   SubmitReflectionInput,
@@ -24,11 +25,20 @@ export interface StudyDayReflectionProgress {
   content: string | null;
 }
 
+export interface StudyDayDiscussionProgress {
+  completed: boolean;
+  completedAt: string | null;
+}
+
 export interface StudyDayProgress {
   studyDate: string;
   mine: StudyDayReflectionProgress;
   partner: StudyDayReflectionProgress;
   readyToCompare: boolean;
+  // Shared, not per-participant — the discussion itself is one in-person
+  // conversation both participants have together, so there is exactly one
+  // completion signal for the day (see studyDays.discussionCompletedAt).
+  discussion: StudyDayDiscussionProgress;
 }
 
 export type ComparisonInputsResult =
@@ -77,7 +87,10 @@ export class DailyReflectionService {
    * whether the caller has submitted their own yet).
    */
   async getProgress(studyDate: string, callerParticipantKey: string): Promise<StudyDayProgress> {
-    const rows = await this.repository.getReflectionsForDate(studyDate);
+    const [rows, discussionCompletion] = await Promise.all([
+      this.repository.getReflectionsForDate(studyDate),
+      this.repository.getDiscussionCompletion(studyDate),
+    ]);
     const mineRow = rows.find((row) => row.participantKey === callerParticipantKey) ?? null;
     const partnerRow = rows.find((row) => row.participantKey !== callerParticipantKey) ?? null;
     const distinctParticipants = new Set(rows.map((row) => row.participantKey)).size;
@@ -95,7 +108,19 @@ export class DailyReflectionService {
         content: partnerRow?.content ?? null,
       },
       readyToCompare: distinctParticipants >= 2,
+      discussion: {
+        completed: discussionCompletion !== null,
+        completedAt: discussionCompletion?.completedAt.toISOString() ?? null,
+      },
     };
+  }
+
+  markDiscussionCompleted(
+    studyDate: string,
+    displayName: string,
+    completedAt: Date,
+  ): Promise<MarkDiscussionCompletedResult> {
+    return this.repository.markDiscussionCompleted(studyDate, displayName, completedAt);
   }
 
   async getComparisonInputs(

@@ -398,6 +398,57 @@ export async function studyDaysRoutes(
         vocabulary: partnerVocabulary,
       },
       readyToCompare: progress.readyToCompare,
+      discussion: progress.discussion,
+    };
+  });
+
+  // Marks the day's single shared discussion step complete — first
+  // participant to call this wins (idempotent), since it's one in-person
+  // conversation both participants have together, not a per-participant
+  // action. Requires a study_days row to already exist (created by the
+  // first reflection submission), which is always true in practice by the
+  // time either participant reaches the discussion step.
+  app.put('/study-days/:date/discussion', { preHandler: sessionGate }, async (request, reply) => {
+    const date = validateDateParam(request, reply, options.maxFutureDays, now);
+    if (date === undefined) return;
+
+    const session = requireSession(request, reply);
+    if (session === undefined) return;
+
+    const displayName = session.name.trim();
+    const participantKey = normalizeParticipantKey(session.name);
+    const result = await app.dailyReflectionService.markDiscussionCompleted(
+      date,
+      displayName,
+      now(),
+    );
+
+    request.log.info(
+      {
+        requestId: request.id,
+        studyDate: date,
+        participantKeyHash: hashForLogging(participantKey),
+        success: result.ok,
+      },
+      'discussion completion marked',
+    );
+
+    if (!result.ok) {
+      reply.code(409);
+      return {
+        error: {
+          message: 'This study day has no article yet — submit a reflection first',
+          code: 'STUDY_DAY_NOT_FOUND',
+          requestId: request.id,
+        },
+      };
+    }
+
+    reply.code(200);
+    return {
+      studyDate: date,
+      discussionCompleted: true,
+      completedAt: result.completion.completedAt.toISOString(),
     };
   });
 

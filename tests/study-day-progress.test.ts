@@ -166,6 +166,7 @@ describe('GET /api/v1/study-days/:date/progress', () => {
         vocabulary: [],
       },
       readyToCompare: false,
+      discussion: { completed: false, completedAt: null },
     });
     await app.close();
   });
@@ -241,6 +242,71 @@ describe('GET /api/v1/study-days/:date/progress', () => {
       'hyeonseo',
       'hyunji',
     ]);
+    await app.close();
+  });
+});
+
+function putDiscussion(app: ReturnType<typeof buildApp>, name: string) {
+  return app.inject({
+    method: 'PUT',
+    url: `/api/v1/study-days/${STUDY_DATE}/discussion`,
+    headers: { cookie: sessionCookie(name) },
+  });
+}
+
+describe('PUT /api/v1/study-days/:date/discussion — auth', () => {
+  it('returns 401 without a session cookie', async () => {
+    const { app } = buildTestApp();
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/study-days/${STUDY_DATE}/discussion`,
+    });
+    expect(response.statusCode).toBe(401);
+    await app.close();
+  });
+});
+
+describe('PUT /api/v1/study-days/:date/discussion', () => {
+  it('returns 409 STUDY_DAY_NOT_FOUND when no reflection has been submitted for this date yet', async () => {
+    const { app } = buildTestApp();
+    const response = await putDiscussion(app, 'hyunji');
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error.code).toBe('STUDY_DAY_NOT_FOUND');
+    await app.close();
+  });
+
+  it('marks the shared discussion complete, and GET /progress reflects it identically for both participants', async () => {
+    const { app } = buildTestApp();
+    expect((await submit(app, 'hyunji')).statusCode).toBe(200);
+
+    const putResponse = await putDiscussion(app, 'hyunji');
+    expect(putResponse.statusCode).toBe(200);
+    const putBody = putResponse.json();
+    expect(putBody).toEqual({
+      studyDate: STUDY_DATE,
+      discussionCompleted: true,
+      completedAt: expect.any(String),
+    });
+
+    const fromHyunji = (await getProgress(app, 'hyunji')).json();
+    const fromHyeonseo = (await getProgress(app, 'hyeonseo')).json();
+    expect(fromHyunji.discussion).toEqual({ completed: true, completedAt: putBody.completedAt });
+    expect(fromHyeonseo.discussion).toEqual({ completed: true, completedAt: putBody.completedAt });
+
+    await app.close();
+  });
+
+  it('is idempotent — the second participant to call it never overwrites the first completedAt', async () => {
+    const { app } = buildTestApp();
+    expect((await submit(app, 'hyunji')).statusCode).toBe(200);
+
+    const first = await putDiscussion(app, 'hyunji');
+    const firstCompletedAt = first.json().completedAt;
+
+    const second = await putDiscussion(app, 'hyeonseo');
+    expect(second.statusCode).toBe(200);
+    expect(second.json().completedAt).toBe(firstCompletedAt);
+
     await app.close();
   });
 });

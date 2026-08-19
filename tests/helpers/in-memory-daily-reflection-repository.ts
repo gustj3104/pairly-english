@@ -1,5 +1,7 @@
 import type {
   DailyReflectionRepository,
+  DiscussionCompletion,
+  MarkDiscussionCompletedResult,
   ReflectionRow,
   StudyDayArticle,
   SubmitReflectionInput,
@@ -12,6 +14,7 @@ interface StudyDayRow {
   articleTitle: string;
   articleSourceUrl: string | null;
   articleSummary: string | null;
+  discussionCompletion: DiscussionCompletion | null;
 }
 
 const MAX_PARTICIPANTS_PER_DAY = 2;
@@ -35,6 +38,7 @@ export class InMemoryDailyReflectionRepository implements DailyReflectionReposit
         articleTitle: input.article.title,
         articleSourceUrl: input.article.sourceUrl,
         articleSummary: input.article.summary,
+        discussionCompletion: null,
       };
       this.studyDays.set(input.studyDate, day);
     }
@@ -78,5 +82,23 @@ export class InMemoryDailyReflectionRepository implements DailyReflectionReposit
       sourceUrl: day.articleSourceUrl,
       summary: day.articleSummary,
     };
+  }
+
+  async markDiscussionCompleted(
+    studyDate: string,
+    displayName: string,
+    completedAt: Date,
+  ): Promise<MarkDiscussionCompletedResult> {
+    const day = this.studyDays.get(studyDate);
+    if (!day) return { ok: false, reason: 'study_day_not_found' };
+
+    if (!day.discussionCompletion) {
+      day.discussionCompletion = { completedAt, completedBy: displayName };
+    }
+    return { ok: true, completion: day.discussionCompletion };
+  }
+
+  async getDiscussionCompletion(studyDate: string): Promise<DiscussionCompletion | null> {
+    return this.studyDays.get(studyDate)?.discussionCompletion ?? null;
   }
 }

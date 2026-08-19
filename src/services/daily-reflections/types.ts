@@ -35,6 +35,14 @@ export interface ReflectionRow {
   submittedAt: Date;
 }
 
+export interface DiscussionCompletion {
+  completedAt: Date;
+  completedBy: string;
+}
+
+export type MarkDiscussionCompletedResult =
+  { ok: true; completion: DiscussionCompletion } | { ok: false; reason: 'study_day_not_found' };
+
 /**
  * Storage-agnostic contract for the daily-reflection feature. The real
  * implementation (DrizzleDailyReflectionRepository) enforces the
@@ -61,4 +69,17 @@ export interface DailyReflectionRepository {
   submitReflection(input: SubmitReflectionInput): Promise<SubmitReflectionResult>;
   getReflectionsForDate(studyDate: string): Promise<ReflectionRow[]>;
   getStudyDayArticle(studyDate: string): Promise<StudyDayArticle | null>;
+  /**
+   * Idempotent, first-participant-wins — mirrors submitReflection's
+   * article-info seeding. Returns `study_day_not_found` if no study_days
+   * row exists yet for the date (the discussion step is only reachable
+   * after both reflections have been submitted, which always creates the
+   * row first, but this is defended against rather than assumed).
+   */
+  markDiscussionCompleted(
+    studyDate: string,
+    displayName: string,
+    completedAt: Date,
+  ): Promise<MarkDiscussionCompletedResult>;
+  getDiscussionCompletion(studyDate: string): Promise<DiscussionCompletion | null>;
 }
