@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { z } from 'zod';
 import type { CreditService } from '../credits/credit-service.js';
 import { calculateCredits } from '../credits/credit-calculator.js';
 import { getBillingMonth } from '../credits/billing-period.js';
@@ -40,11 +41,36 @@ export type DailyNewsSchemaErrorReason =
   | 'source_not_allowlisted'
   | 'invalid_published_at';
 
+/**
+ * One failed Zod check, reduced to only its field path and issue code
+ * (e.g. 'too_big', 'invalid_value', 'unrecognized_keys') — never `message`
+ * or any received value, since either can echo the model's actual
+ * generated content or an enum's raw (attacker/model-controlled) input.
+ */
+export interface DailyNewsSchemaIssue {
+  path: string;
+  code: string;
+}
+
+const MAX_SCHEMA_ISSUES_CAPTURED = 10;
+
+function summarizeSchemaIssues(error: z.ZodError): DailyNewsSchemaIssue[] {
+  return error.issues.slice(0, MAX_SCHEMA_ISSUES_CAPTURED).map((issue) => ({
+    path: issue.path.join('.'),
+    code: issue.code,
+  }));
+}
+
 export type DailyNewsGenerationOutcome =
   | { status: 'ok'; requestId: string; article: GeneratedDailyNews; generatedAt: Date }
   | { status: 'limit_exceeded'; requestId: string; usage: UsageSummary }
   | { status: 'provider_exhausted'; requestId: string }
-  | { status: 'upstream_schema_error'; requestId: string; reason: DailyNewsSchemaErrorReason }
+  | {
+      status: 'upstream_schema_error';
+      requestId: string;
+      reason: DailyNewsSchemaErrorReason;
+      schemaIssues?: DailyNewsSchemaIssue[];
+    }
   | { status: 'reservation_exceeded'; requestId: string }
   | {
       status: 'upstream_failed';
@@ -168,7 +194,12 @@ export async function generateDailyNews(
   }
   const checked = dailyNewsModelResponseSchema.safeParse(parsed);
   if (!checked.success) {
-    return { status: 'upstream_schema_error', requestId, reason: 'schema_invalid' };
+    return {
+      status: 'upstream_schema_error',
+      requestId,
+      reason: 'schema_invalid',
+      schemaIssues: summarizeSchemaIssues(checked.error),
+    };
   }
   // Fails closed on any mismatch: this only proves the model's declared
   // `topic` string equals the required one, not that the article content
