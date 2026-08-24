@@ -17,6 +17,11 @@ export class DailyNewsService {
     private readonly mindlogicClient: MindlogicClient,
   ) {}
 
+  /** Read-only lookup: never enters generation or credit reservation paths. */
+  async findExisting(studyDate: string) {
+    return this.repository.find(studyDate);
+  }
+
   async getOrGenerate(studyDate: string, now: () => Date = () => new Date()) {
     const cached = await this.repository.find(studyDate);
     if (cached) return { article: cached, cached: true };

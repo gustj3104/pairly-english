@@ -250,6 +250,24 @@ export async function studyDaysRoutes(
     }
   });
 
+  app.get(
+    '/study-days/:date/article/status',
+    { preHandler: sessionGate },
+    async (request, reply) => {
+      const date = validateDateParam(request, reply, options.maxFutureDays, now);
+      if (date === undefined || requireSession(request, reply) === undefined) return;
+
+      const article = await app.dailyNewsService.findExisting(date);
+      if (!article) {
+        reply.header('Retry-After', '4').code(202);
+        return { status: 'pending' };
+      }
+
+      reply.code(200);
+      return { status: 'ready', article: { ...article, cached: true } };
+    },
+  );
+
   app.put('/study-days/:date/reflection', { preHandler: sessionGate }, async (request, reply) => {
     const date = validateDateParam(request, reply, options.maxFutureDays, now);
     if (date === undefined) return;

@@ -1,5 +1,5 @@
 import { PassThrough } from 'node:stream';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { CreditService } from '../src/services/credits/credit-service.js';
 import { InMemoryCreditRepository } from './helpers/in-memory-credit-repository.js';
@@ -96,9 +96,13 @@ function buildTestApp(
   extra: {
     loggerStream?: NodeJS.WritableStream;
     dailyNewsRepository?: InMemoryDailyNewsRepository;
+    creditRepository?: InMemoryCreditRepository;
   } = {},
 ) {
-  const creditService = new CreditService(new InMemoryCreditRepository(), 5000);
+  const creditService = new CreditService(
+    extra.creditRepository ?? new InMemoryCreditRepository(),
+    5000,
+  );
   const dailyNewsRepository = extra.dailyNewsRepository ?? new InMemoryDailyNewsRepository();
   const dailyNewsService = new DailyNewsService(
     dailyNewsRepository,
@@ -126,6 +130,66 @@ async function getArticle(app: ReturnType<typeof buildApp>) {
     headers: { cookie: sessionCookie('hyunji') },
   });
 }
+
+async function getArticleStatus(app: ReturnType<typeof buildApp>) {
+  return app.inject({
+    method: 'GET',
+    url: `/api/v1/study-days/${STUDY_DATE}/article/status`,
+    headers: { cookie: sessionCookie('hyunji') },
+  });
+}
+
+describe('GET /api/v1/study-days/:date/article/status — read only', () => {
+  it('returns pending with Retry-After without provider calls or credit reservations', async () => {
+    const { client, callCount } = mindlogicClientFor(articleBody());
+    const creditRepository = new InMemoryCreditRepository();
+    const reserveSpy = vi.spyOn(creditRepository, 'reserveCredits');
+    const app = buildTestApp(client, { creditRepository });
+
+    const response = await getArticleStatus(app);
+    await app.close();
+
+    expect(response.statusCode).toBe(202);
+    expect(response.headers['retry-after']).toBe('4');
+    expect(response.json()).toEqual({ status: 'pending' });
+    expect(callCount()).toBe(0);
+    expect(reserveSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns an already stored article without another provider call or reservation', async () => {
+    const { client, callCount } = mindlogicClientFor(articleBody());
+    const creditRepository = new InMemoryCreditRepository();
+    const reserveSpy = vi.spyOn(creditRepository, 'reserveCredits');
+    const app = buildTestApp(client, { creditRepository });
+
+    await getArticle(app);
+    const reservationsAfterGeneration = reserveSpy.mock.calls.length;
+    const response = await getArticleStatus(app);
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ status: 'ready', article: { cached: true } });
+    expect(callCount()).toBe(1);
+    expect(reserveSpy).toHaveBeenCalledTimes(reservationsAfterGeneration);
+  });
+
+  it('preserves authentication and date validation policies', async () => {
+    const { client } = mindlogicClientFor(articleBody());
+    const app = buildTestApp(client);
+    const unauthenticated = await app.inject({
+      method: 'GET',
+      url: `/api/v1/study-days/${STUDY_DATE}/article/status`,
+    });
+    const invalidDate = await app.inject({
+      method: 'GET',
+      url: '/api/v1/study-days/2026-02-30/article/status',
+      headers: { cookie: sessionCookie('hyunji') },
+    });
+    await app.close();
+    expect(unauthenticated.statusCode).toBe(401);
+    expect(invalidDate.statusCode).toBe(400);
+  });
+});
 
 describe('GET /api/v1/study-days/:date/article — success and caching', () => {
   it('generates and returns a fresh article matching the spec-compliant sonar-pro response', async () => {
