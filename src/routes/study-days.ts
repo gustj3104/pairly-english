@@ -224,7 +224,12 @@ export async function studyDaysRoutes(
               ...outcome.observability,
             }
           : outcome.status === 'upstream_schema_error'
-            ? { ...safeLog, reason: outcome.reason, schemaIssues: outcome.schemaIssues }
+            ? {
+                ...safeLog,
+                reason: outcome.reason,
+                schemaIssues: outcome.schemaIssues,
+                sourceDiagnostics: outcome.sourceDiagnostics,
+              }
             : safeLog,
         'daily news generation failed',
       );

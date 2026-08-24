@@ -9,11 +9,14 @@ describe('validateSourceUrl', () => {
   ])('allows approved source %s', (url) => expect(validateSourceUrl(url)).not.toBeNull());
   it.each([
     'https://reuters.com.evil.test/x',
+    'https://nasa.gov.attacker.net/x',
     'http://reuters.com/x',
     'https://localhost/x',
     'https://127.0.0.1/x',
     'https://user:pass@reuters.com/x',
     'https://reuters.com:8443/x',
     'https://reuters.com/x#fragment',
+    'javascript:alert(1)',
+    '/relative/path',
   ])('rejects unsafe source %s', (url) => expect(validateSourceUrl(url)).toBeNull());
 });
