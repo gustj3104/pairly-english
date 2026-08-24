@@ -446,6 +446,46 @@ describe('saved vocabulary — word-level Korean translations', () => {
     ]);
   });
 
+  it('still serves a pre-AI-redesign saved row (null example, empty koreanTranslations) without breaking the whole list', async () => {
+    // Deploy compatibility: a word saved under the old FreeDictionaryAPI-backed flow could have a
+    // null example and an empty koreanTranslations array — the new backend must keep reading
+    // these back rather than crashing GET /vocabulary for a user with pre-existing saved words.
+    const repository = new MemoryDictionaryRepository();
+    const aiLookup = fakeAiLookup(async (word) => entry({ query: word, normalizedWord: word }));
+    const dictionaryService = new DictionaryService(repository, aiLookup, () => NOW);
+    repository.saved.set('hyunji:legacyword', {
+      item: {
+        id: 'hyunji:legacyword',
+        word: 'legacyword',
+        normalizedWord: 'legacyword',
+        senseId: 'b'.repeat(64),
+        pronunciation: null,
+        partOfSpeech: 'noun',
+        definition: 'A word saved before the AI-only redesign.',
+        example: null,
+        koreanTranslations: [],
+        articleId: null,
+        contextSentence: null,
+        savedAt: NOW,
+      },
+      articleTitle: null,
+    });
+    const app = buildApp({
+      checkDatabaseConnection: async () => true,
+      dictionaryService,
+      studyDaysRoutesOptions: { sessionSecret: SECRET, maxFutureDays: 1 },
+    });
+    const list = await app.inject({
+      method: 'GET',
+      url: '/api/v1/vocabulary',
+      headers: { cookie: sessionCookie('hyunji') },
+    });
+    expect(list.statusCode).toBe(200);
+    expect(list.json()).toEqual([
+      expect.objectContaining({ word: 'legacyword', example: null, koreanTranslations: [] }),
+    ]);
+  });
+
   it('rejects saving a word that was never looked up (no cached AI entry)', async () => {
     const repository = new MemoryDictionaryRepository();
     const aiLookup = fakeAiLookup(async (word) => entry({ query: word, normalizedWord: word }));

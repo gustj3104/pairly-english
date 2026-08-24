@@ -4,11 +4,12 @@
  * FEATURE_MODEL_CONFIG (src/services/mindlogic/feature-config.ts), which
  * must always reference a key of this table.
  *
- * NOTE: Mindlogic's official docs (docs.mindlogic.ai) publish no
- * per-model credit-rate table — only a /credits/ balance-query endpoint.
- * Every rate below (including the pre-existing Haiku entry) is therefore
- * an operator-supplied value, not independently verifiable against an
- * official source — 확인 불가.
+ * NOTE: Mindlogic's official docs (docs.mindlogic.ai) publish a per-model
+ * credit-rate table at docs.mindlogic.ai/docs/puts/factchat/product/model-credits
+ * — gpt-5.6-luna's rate below is taken directly from it. Every other entry
+ * predates that discovery and is still an operator-supplied value, not
+ * independently verified against an official source — 확인 불가. Update
+ * each as its official rate is confirmed.
  */
 export const MODEL_CREDIT_RATES = {
   'claude-haiku-4-5-20251001': {
@@ -26,20 +27,14 @@ export const MODEL_CREDIT_RATES = {
     inputCreditsPerThousandTokens: 3,
     outputCreditsPerThousandTokens: 15,
   },
-  // gpt-5.6-luna: no per-model credit-rate table is published by Mindlogic
-  // (see the file-level note above), and — unlike gpt-5.4-mini's rate,
-  // which was set after a real smoke test — no real chat completion call
-  // against this specific model has been made from this codebase yet.
-  // These numbers are an operator-supplied reservation guard only, copied
-  // from the nearest already-accepted reference point in this table
-  // (gpt-5.4-mini, the other "mini/economical" tier model) rather than
-  // invented from scratch — 확인 불가. Treat as provisional: reconcile
-  // against GET /credits/ after the first real calls and correct this
-  // table (and re-run a one-shot smoke test per the README procedure)
-  // once Mindlogic's actual published rate for this model is known.
+  // Official published rate — confirmed against Mindlogic's own docs
+  // (docs.mindlogic.ai/docs/puts/factchat/product/model-credits), unlike
+  // every other entry in this table. Model ID and gateway endpoint
+  // (/v1/gateway/chat/completions/) confirmed against
+  // docs.mindlogic.ai/docs/sookmyung/api-gateway/getting-started/models.
   'gpt-5.6-luna': {
-    inputCreditsPerThousandTokens: 0.8,
-    outputCreditsPerThousandTokens: 4.5,
+    inputCreditsPerThousandTokens: 0.2,
+    outputCreditsPerThousandTokens: 1.2,
   },
 } as const;
 

@@ -111,6 +111,31 @@ describe('DictionaryAiLookup credit lifecycle', () => {
     expect(call?.[0]).toMatchObject({ model: 'gpt-5.6-luna' });
   });
 
+  it('commits the real gpt-5.6-luna credit-reservation rate computed from actual token usage, not a mocked value', async () => {
+    // 10,000 prompt tokens * 0.2/1000 = 2.0, 500 completion tokens * 1.2/1000 = 0.6 -> 2.6 -> ceil(2.6) = 3.
+    // Exercises the real calculateCredits/MODEL_CREDIT_RATES wiring end to end — see
+    // credit-calculator.test.ts for the same official rate asserted in isolation.
+    const reserveCredits = vi
+      .fn()
+      .mockResolvedValue({ ok: true, record: { creditsReserved: 100 } });
+    const commitCredits = vi.fn().mockResolvedValue(undefined);
+    const createChatCompletion = vi.fn().mockResolvedValue({
+      id: 'mock',
+      model: 'gpt-5.6-luna',
+      choices: [
+        { message: { role: 'assistant' as const, content: JSON.stringify(validResponse()) } },
+      ],
+      usage: { prompt_tokens: 10_000, completion_tokens: 500, total_tokens: 10_500 },
+    });
+    const lookup = new DictionaryAiLookup({
+      creditService: { reserveCredits, commitCredits } as unknown as CreditService,
+      mindlogicClient: { createChatCompletion } as unknown as MindlogicClient,
+      generateRequestId: () => '00000000-0000-4000-8000-000000000003',
+    });
+    await lookup.fetchEntry('robot', NOW);
+    expect(commitCredits).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000003', 3);
+  });
+
   it('throws DICTIONARY_CREDIT_LIMIT and never calls Mindlogic when the shared cap rejects reservation', async () => {
     const createChatCompletion = vi.fn();
     const lookup = new DictionaryAiLookup({

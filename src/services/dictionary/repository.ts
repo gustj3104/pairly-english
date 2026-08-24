@@ -68,7 +68,11 @@ export interface SavedVocabularyItemRow {
   pronunciation: string | null;
   partOfSpeech: string;
   definition: string;
-  example: string;
+  // Nullable because a row saved before this AI-only redesign can have a null example (the old
+  // FreeDictionaryAPI-backed flow allowed it) — every new save always writes a real, non-empty
+  // string (see SaveVocabularyInput.example below), but existing rows must keep reading back
+  // correctly rather than being hidden by a stricter contract.
+  example: string | null;
   koreanTranslations: string[];
   articleId: string | null;
   contextSentence: string | null;
@@ -350,7 +354,7 @@ function mapSavedItem(row: typeof savedVocabulary.$inferSelect): SavedVocabulary
     pronunciation: row.pronunciation,
     partOfSpeech: row.partOfSpeech,
     definition: row.definition,
-    example: row.example ?? '',
+    example: row.example,
     koreanTranslations: row.koreanTranslations,
     articleId: row.articleId,
     contextSentence: row.contextSentence,

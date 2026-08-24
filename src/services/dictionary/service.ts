@@ -19,7 +19,9 @@ export interface SavedVocabularyItem {
   pronunciation: string | null;
   partOfSpeech: string;
   definition: string;
-  example: string;
+  // Nullable: a row saved before the AI-only redesign can have a null example. See
+  // SavedVocabularyItemRow's comment in repository.ts.
+  example: string | null;
   koreanTranslations: string[];
   articleId: string | null;
   articleTitle: string | null;
