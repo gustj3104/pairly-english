@@ -28,22 +28,26 @@ export const FEATURE_MODEL_CONFIG: Partial<Record<CreditFeature, FeatureModelCon
     model: 'sonar-pro',
     maxOutputTokens: 2400,
   },
+  // Feature key kept as 'dictionary_translation' (the existing credit_feature Postgres enum
+  // value) even though this feature now does a full AI dictionary lookup, not just translation
+  // — adding a new enum value would require a migration that can't be applied via Render Shell
+  // in production (see README "Dictionary lookup"). The model was gpt-5.4-mini until a
+  // production 404 (upstreamCode: 'not_found') showed Mindlogic no longer serves it for this
+  // call shape; gpt-5.6-luna is Mindlogic's currently supported low-cost tier and is now pinned
+  // here instead. gpt-5.4-mini itself is untouched and remains pinned for reflection_comparison.
   dictionary_translation: {
-    model: 'gpt-5.4-mini',
-    // Was 96 — too small in practice. max_tokens caps *generation*, not a reservation
-    // estimate: GPT-family tokenizers represent Hangul syllables far less densely than
-    // estimateTokensUpperBound's byte-length upper bound implies (often 1.5-3 tokens per
-    // syllable, not close to 1), so a single near-max-length translation (up to 30 Hangul
-    // characters) alone can approach or exceed 60-90 tokens before any JSON structure or the
-    // up-to-5-item array is counted. At 96, the model silently hit max_tokens mid-string on
-    // production traffic (finish_reason: 'length'), truncating the JSON on every call — never a
-    // model/schema/credit failure, so it went completely unlogged before this file's dictionary
-    // -translation logging was added (see translation.ts's 'invalid_json' outcome, which now
-    // reports finishReason/completionTokens specifically to catch this again if it recurs).
-    // 400 gives ample headroom for the worst case (5 items x 30 chars + JSON overhead) while
-    // remaining a tiny fraction of the monthly credit cap (worst-case reservation ceiling here
-    // is under 2 credits/call; actual commitCredits() settles to real usage, typically far less).
-    maxOutputTokens: 400,
+    model: 'gpt-5.6-luna',
+    // One call now returns pronunciation + up to 5 koreanTranslations (<=30 chars each) + up to
+    // 3 meanings (each a short partOfSpeech + a <=300-char definition + a <=200-char example),
+    // all schema-length-capped (see ai-lookup.ts's DICTIONARY_LOOKUP_RESPONSE_FORMAT) specifically
+    // so this budget stays boundable. Worst case: 3 meanings x ~75 tokens (definition+example+
+    // partOfSpeech) + 5 Korean glosses x ~45 tokens (Hangul syllables run 1.5-3 tokens each, not
+    // ~1 — see the dictionary_translation history this replaced) + JSON overhead. 800 gives
+    // roughly 2x headroom over that worst case, following the same lesson as the translation-only
+    // predecessor of this config (too-tight max_tokens silently truncated JSON on every call,
+    // production-invisible until finishReason/completionTokens logging was added — see
+    // ai-lookup.ts's 'invalid_json' outcome) — a tiny fraction of the monthly credit cap either way.
+    maxOutputTokens: 800,
   },
   // Minimal bare-messages diagnostic call — see scripts/mindlogic-contract-check.ts.
   provider_contract_check: {

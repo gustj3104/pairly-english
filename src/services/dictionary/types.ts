@@ -1,39 +1,26 @@
-export const DICTIONARY_SOURCE = {
-  provider: 'FreeDictionaryAPI.com' as const,
-  name: 'Wiktionary' as const,
-  license: 'CC BY-SA 4.0' as const,
-  licenseUrl: 'https://creativecommons.org/licenses/by-sa/4.0/' as const,
-};
-
 /**
- * Which English dictionary provider actually produced a given entry, and under what license.
- * Dynamic (not a literal) because the secondary provider (dictionaryapi.dev) reports its own
- * real provider name/license, distinct from FreeDictionaryAPI's — see secondary-provider.ts.
+ * Cache schema version written by a successful single-call Mindlogic AI lookup (see
+ * ai-lookup.ts). Any stored row with a lower cacheSchemaVersion is pre-AI
+ * (FreeDictionaryAPI/Wiktionary, versions 1-3) and is always treated as stale — regenerated via
+ * AI on its next lookup rather than served, so a legacy row with an empty koreanTranslations
+ * array (or a first-meaning problem like "robot" surfacing medieval serfdom before the machine)
+ * gets replaced with a real AI result the next time anyone looks the word up.
  */
-export interface DictionaryAttribution {
-  provider: string;
-  name: string;
-  license: string;
-  licenseUrl: string;
-}
+export const AI_DICTIONARY_CACHE_SCHEMA_VERSION = 4;
 
 export interface DictionaryMeaning {
   senseId: string;
   partOfSpeech: string;
   definition: string;
-  example: string | null;
-  koreanTranslations: string[];
+  example: string;
 }
 
 export interface DictionaryEntry {
   query: string;
   normalizedWord: string;
   pronunciation: string | null;
-  audioUrl: string | null;
-  meanings: DictionaryMeaning[];
   koreanTranslations: string[];
-  sourceUrl: string;
-  attribution: DictionaryAttribution;
+  meanings: DictionaryMeaning[];
   fetchedAt: Date;
   expiresAt: Date;
   cacheSchemaVersion: number;
@@ -42,12 +29,9 @@ export interface DictionaryEntry {
 export interface DictionaryLookupResponse {
   query: string;
   normalizedWord: string;
-  koreanTranslations: string[];
-  koreanTranslationStatus: 'available' | 'unavailable';
   pronunciation: string | null;
-  audioUrl: string | null;
+  koreanTranslations: string[];
   meanings: DictionaryMeaning[];
-  source: DictionaryAttribution & { url: string };
   cached: boolean;
   stale: boolean;
 }
@@ -60,16 +44,18 @@ export interface DictionaryServiceLogger {
 export class DictionaryError extends Error {
   constructor(
     public readonly code:
-      | 'WORD_NOT_FOUND'
-      | 'DICTIONARY_RATE_LIMITED'
-      | 'DICTIONARY_TIMEOUT'
-      | 'DICTIONARY_UPSTREAM_ERROR'
-      | 'DICTIONARY_INVALID_RESPONSE',
+      // Mindlogic itself failed (network/timeout/rate-limited/5xx/reconciliation-pending) or a
+      // regeneration attempt was skipped because it's within the automatic-retry cooldown (see
+      // repository.ts's AUTOMATIC_RETRY_COOLDOWN_MS) — collapsed to one code because the client
+      // response is identical either way: "try again", with a Retry action.
+      | 'DICTIONARY_AI_UNAVAILABLE'
+      // Mindlogic responded, but its JSON was unparsable or failed the structured-output schema
+      // (see ai-lookup.ts's dictionaryLookupAiResponseSchema) — e.g. an empty koreanTranslations
+      // array or a malformed structured JSON payload.
+      | 'DICTIONARY_INVALID_RESPONSE'
+      // The monthly Mindlogic credit cap is exhausted; no call was made.
+      | 'DICTIONARY_CREDIT_LIMIT',
     public readonly statusCode: number,
-    public readonly retryAfter?: string,
-    // Which provider produced this error — safe to log (see routes/dictionary.ts), never exposed
-    // to the client. Defaults to 'primary' since most call sites are the primary provider.
-    public readonly provider: 'primary' | 'secondary' = 'primary',
   ) {
     super(code);
   }

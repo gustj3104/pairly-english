@@ -26,6 +26,21 @@ export const MODEL_CREDIT_RATES = {
     inputCreditsPerThousandTokens: 3,
     outputCreditsPerThousandTokens: 15,
   },
+  // gpt-5.6-luna: no per-model credit-rate table is published by Mindlogic
+  // (see the file-level note above), and — unlike gpt-5.4-mini's rate,
+  // which was set after a real smoke test — no real chat completion call
+  // against this specific model has been made from this codebase yet.
+  // These numbers are an operator-supplied reservation guard only, copied
+  // from the nearest already-accepted reference point in this table
+  // (gpt-5.4-mini, the other "mini/economical" tier model) rather than
+  // invented from scratch — 확인 불가. Treat as provisional: reconcile
+  // against GET /credits/ after the first real calls and correct this
+  // table (and re-run a one-shot smoke test per the README procedure)
+  // once Mindlogic's actual published rate for this model is known.
+  'gpt-5.6-luna': {
+    inputCreditsPerThousandTokens: 0.8,
+    outputCreditsPerThousandTokens: 4.5,
+  },
 } as const;
 
 export type AllowedModel = keyof typeof MODEL_CREDIT_RATES;

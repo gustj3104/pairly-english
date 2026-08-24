@@ -1,23 +1,53 @@
 import { and, desc, eq, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type * as schema from '../../db/schema.js';
+import type { DictionaryAttributionJson, DictionaryMeaningJson } from '../../db/schema.js';
 import { dailyNewsArticles, dictionaryEntries, savedVocabulary } from '../../db/schema.js';
-import { DictionaryError, type DictionaryEntry } from './types.js';
-import { CURRENT_DICTIONARY_CACHE_SCHEMA_VERSION } from './provider.js';
-import { TRANSLATED_DICTIONARY_CACHE_SCHEMA_VERSION } from './provider.js';
+import {
+  AI_DICTIONARY_CACHE_SCHEMA_VERSION,
+  DictionaryError,
+  type DictionaryEntry,
+} from './types.js';
 
 type Db = NodePgDatabase<typeof schema>;
+
+/**
+ * Fixed internal sentinel values written to the legacy `source_url`/`attribution` NOT NULL
+ * columns for every AI-generated row. Never a real external URL or license — an AI result has
+ * no such thing — and never returned by the public API or shown in the UI (see the
+ * dictionaryEntries table comment in src/db/schema.ts for why the columns still exist).
+ */
+export const AI_GENERATED_SOURCE_URL = 'internal:mindlogic-ai-generated';
+export const AI_GENERATED_ATTRIBUTION: DictionaryAttributionJson = {
+  provider: 'Mindlogic AI Gateway',
+  name: 'AI-generated',
+  license: 'N/A',
+  licenseUrl: 'internal:mindlogic-ai-generated',
+};
+
+/**
+ * Cache-schema version for a row that only records a failed-lookup cooldown timestamp — no
+ * successful AI result exists yet. Reuses the oldest legacy version number (rather than
+ * inventing 0, which the table's `cache_schema_version_positive` CHECK constraint forbids
+ * anyway): both mean the same thing to every reader, "always stale, always regenerate."
+ */
+const PENDING_LOOKUP_CACHE_SCHEMA_VERSION = 1;
+const PENDING_SENTINEL_MEANINGS: DictionaryMeaningJson[] = [
+  { senseId: '0'.repeat(64), partOfSpeech: 'pending', definition: 'pending', example: 'pending' },
+];
 
 function mapEntry(row: typeof dictionaryEntries.$inferSelect): DictionaryEntry {
   return {
     query: row.queryWord,
     normalizedWord: row.normalizedWord,
     pronunciation: row.pronunciation,
-    audioUrl: row.audioUrl,
-    meanings: row.meanings,
     koreanTranslations: row.koreanTranslations,
-    sourceUrl: row.sourceUrl,
-    attribution: row.attribution,
+    meanings: row.meanings.map((meaning) => ({
+      senseId: meaning.senseId,
+      partOfSpeech: meaning.partOfSpeech,
+      definition: meaning.definition,
+      example: meaning.example,
+    })),
     fetchedAt: row.fetchedAt,
     expiresAt: row.expiresAt,
     cacheSchemaVersion: row.cacheSchemaVersion,
@@ -30,9 +60,45 @@ export interface CachedLookup {
   stale: boolean;
 }
 
+export interface SavedVocabularyItemRow {
+  id: string;
+  word: string;
+  normalizedWord: string;
+  senseId: string;
+  pronunciation: string | null;
+  partOfSpeech: string;
+  definition: string;
+  example: string;
+  koreanTranslations: string[];
+  articleId: string | null;
+  contextSentence: string | null;
+  savedAt: Date;
+}
+
 export interface SavedVocabularyRow {
-  item: typeof savedVocabulary.$inferSelect;
+  item: SavedVocabularyItemRow;
   articleTitle: string | null;
+}
+
+export interface SaveVocabularyInput {
+  participantKey: string;
+  word: string;
+  normalizedWord: string;
+  senseId: string;
+  pronunciation: string | null;
+  partOfSpeech: string;
+  definition: string;
+  example: string;
+  koreanTranslations: string[];
+  articleId: string | null;
+  contextSentence: string | null;
+  savedAt: Date;
+}
+
+export interface GetOrRefreshOptions {
+  /** User-initiated retry — bypasses the automatic-retry cooldown below. Never bypasses the
+   * fresh-cache short-circuit: an already-successful, unexpired entry is never re-requested. */
+  force?: boolean;
 }
 
 export interface DictionaryRepository {
@@ -40,67 +106,51 @@ export interface DictionaryRepository {
     word: string,
     now: Date,
     create: () => Promise<DictionaryEntry>,
+    options?: GetOrRefreshOptions,
   ): Promise<CachedLookup>;
   findEntry(word: string): Promise<DictionaryEntry | null>;
   findArticle(id: string): Promise<{ id: string; title: string; content: string } | null>;
   findSaved(participantKey: string, normalizedWord: string): Promise<SavedVocabularyRow | null>;
-  saveVocabulary(input: typeof savedVocabulary.$inferInsert): Promise<SavedVocabularyRow>;
+  saveVocabulary(input: SaveVocabularyInput): Promise<SavedVocabularyRow>;
   listVocabulary(participantKey: string): Promise<SavedVocabularyRow[]>;
   deleteVocabulary(participantKey: string, normalizedWord: string): Promise<boolean>;
 }
 
-export interface GetOrCreateTranslationOptions {
-  /** User-initiated retry — bypasses the automatic-retry cooldown below. Never bypasses the
-   * version-3 cache short-circuit: an already-successful translation is never re-requested. */
-  force?: boolean;
-  now?: Date;
-}
-
-export interface DictionaryTranslationRepository {
-  getOrCreateTranslation(
-    word: string,
-    create: (entry: DictionaryEntry) => Promise<string[]>,
-    options?: GetOrCreateTranslationOptions,
-  ): Promise<string[]>;
-}
-
 /**
- * A word whose translation keeps failing (a systematic AI/schema/credit-limit issue, not a
+ * A word whose AI lookup keeps failing (a systematic Mindlogic/schema/credit-limit issue, not a
  * transient one) must never turn into an unbounded automatic retry: every plain page view or
  * word click that reaches DictionaryService.lookup() would otherwise re-spend a Mindlogic
- * reservation for the same word, forever, with no user action requested it. This cooldown
+ * reservation for the same word, forever, with no user action requesting it. This cooldown
  * throttles *automatic* re-attempts only; an explicit user retry (`force: true`, from the
  * dictionary panel's "다시 시도" action) always bypasses it, still bounded by the existing
  * monthly credit cap in CreditService.
  */
-export const AUTOMATIC_RETRANSLATION_COOLDOWN_MS = 5 * 60 * 1000;
+export const AUTOMATIC_RETRY_COOLDOWN_MS = 5 * 60 * 1000;
 
 /**
- * Pure decision of whether getOrCreateTranslation should skip calling the translator and just
- * return the (empty) cached result — i.e. this attempt is an automatic retry arriving before
- * the cooldown following the last attempt has elapsed. Extracted so it's unit-testable without
- * a real Postgres transaction.
+ * Pure decision of whether getOrRefresh should skip calling the AI lookup and just report "not
+ * ready yet" (or serve stale content, if any exists) instead — i.e. this attempt is an automatic
+ * retry arriving before the cooldown following the last attempt has elapsed. Extracted so it's
+ * unit-testable without a real Postgres transaction.
  */
-export function shouldSkipAutomaticRetranslation(
+export function shouldSkipAutomaticRetry(
   lastAttemptedAt: Date | null,
   now: Date,
   force: boolean | undefined,
 ): boolean {
   if (force) return false;
   if (!lastAttemptedAt) return false;
-  return now.getTime() - lastAttemptedAt.getTime() < AUTOMATIC_RETRANSLATION_COOLDOWN_MS;
+  return now.getTime() - lastAttemptedAt.getTime() < AUTOMATIC_RETRY_COOLDOWN_MS;
 }
 
-export class DrizzleDictionaryRepository
-  implements DictionaryRepository, DictionaryTranslationRepository
-{
+export class DrizzleDictionaryRepository implements DictionaryRepository {
   constructor(private readonly db: Db) {}
 
   async findEntry(word: string): Promise<DictionaryEntry | null> {
     const row = await this.db.query.dictionaryEntries.findFirst({
       where: eq(dictionaryEntries.normalizedWord, word),
     });
-    return row && row.cacheSchemaVersion >= CURRENT_DICTIONARY_CACHE_SCHEMA_VERSION
+    return row && row.cacheSchemaVersion >= AI_DICTIONARY_CACHE_SCHEMA_VERSION
       ? mapEntry(row)
       : null;
   }
@@ -109,121 +159,90 @@ export class DrizzleDictionaryRepository
     word: string,
     now: Date,
     create: () => Promise<DictionaryEntry>,
+    options: GetOrRefreshOptions = {},
   ): Promise<CachedLookup> {
     return this.db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`dictionary:${word}`}))`);
       const existing = await tx.query.dictionaryEntries.findFirst({
         where: eq(dictionaryEntries.normalizedWord, word),
       });
-      if (
+
+      if (existing && existing.cacheSchemaVersion >= AI_DICTIONARY_CACHE_SCHEMA_VERSION) {
+        if (existing.expiresAt > now) {
+          return { entry: mapEntry(existing), cached: true, stale: false };
+        }
+        // A previously-successful AI entry whose (near-permanent) TTL finally lapsed. If a
+        // refresh was already attempted recently, don't hit Mindlogic again on every view —
+        // just keep serving the still-good last-known result.
+        if (shouldSkipAutomaticRetry(existing.koreanTranslationAttemptedAt, now, options.force)) {
+          return { entry: mapEntry(existing), cached: true, stale: true };
+        }
+      } else if (
         existing &&
-        existing.cacheSchemaVersion >= CURRENT_DICTIONARY_CACHE_SCHEMA_VERSION &&
-        existing.expiresAt > now
+        shouldSkipAutomaticRetry(existing.koreanTranslationAttemptedAt, now, options.force)
       ) {
-        return { entry: mapEntry(existing), cached: true, stale: false };
+        // No usable entry yet (never succeeded, or pre-AI legacy data) and a lookup was already
+        // attempted recently — report unavailable instead of spending another Mindlogic call.
+        throw new DictionaryError('DICTIONARY_AI_UNAVAILABLE', 503);
       }
+
       try {
         const fresh = await create();
+        const values = {
+          queryWord: fresh.query,
+          normalizedWord: fresh.normalizedWord,
+          meanings: fresh.meanings,
+          koreanTranslations: fresh.koreanTranslations,
+          pronunciation: fresh.pronunciation,
+          audioUrl: null,
+          sourceUrl: AI_GENERATED_SOURCE_URL,
+          attribution: AI_GENERATED_ATTRIBUTION,
+          cacheSchemaVersion: fresh.cacheSchemaVersion,
+          koreanTranslationAttemptedAt: now,
+          fetchedAt: fresh.fetchedAt,
+          expiresAt: fresh.expiresAt,
+          updatedAt: fresh.fetchedAt,
+        };
         const [row] = await tx
           .insert(dictionaryEntries)
-          .values({
-            queryWord: fresh.query,
-            normalizedWord: fresh.normalizedWord,
-            meanings: fresh.meanings,
-            koreanTranslations: fresh.koreanTranslations,
-            pronunciation: fresh.pronunciation,
-            audioUrl: fresh.audioUrl,
-            sourceUrl: fresh.sourceUrl,
-            attribution: fresh.attribution,
-            cacheSchemaVersion: fresh.cacheSchemaVersion,
-            fetchedAt: fresh.fetchedAt,
-            expiresAt: fresh.expiresAt,
-            updatedAt: fresh.fetchedAt,
-          })
-          .onConflictDoUpdate({
-            target: dictionaryEntries.normalizedWord,
-            set: {
-              queryWord: fresh.query,
-              meanings: fresh.meanings,
-              pronunciation: fresh.pronunciation,
-              audioUrl: fresh.audioUrl,
-              sourceUrl: fresh.sourceUrl,
-              // Attribution always reflects whichever provider produced *this* refresh — unlike
-              // koreanTranslations below, it must not be pinned to whatever produced the row
-              // before, since a later refresh can legitimately come from the other provider.
-              attribution: fresh.attribution,
-              // English refresh must preserve a completed word-level translation.
-              koreanTranslations: existing?.koreanTranslations ?? fresh.koreanTranslations,
-              cacheSchemaVersion:
-                existing?.cacheSchemaVersion === TRANSLATED_DICTIONARY_CACHE_SCHEMA_VERSION
-                  ? TRANSLATED_DICTIONARY_CACHE_SCHEMA_VERSION
-                  : fresh.cacheSchemaVersion,
-              fetchedAt: fresh.fetchedAt,
-              expiresAt: fresh.expiresAt,
-              updatedAt: fresh.fetchedAt,
-            },
-          })
+          .values(values)
+          .onConflictDoUpdate({ target: dictionaryEntries.normalizedWord, set: values })
           .returning();
         if (!row) throw new Error('dictionary upsert failed');
         return { entry: mapEntry(row), cached: false, stale: false };
       } catch (error) {
-        if (
-          existing &&
-          existing.cacheSchemaVersion >= CURRENT_DICTIONARY_CACHE_SCHEMA_VERSION &&
-          error instanceof DictionaryError &&
-          // Every FreeDictionaryAPI-side failure mode (rate limit, timeout, transport error,
-          // or a malformed/oversized response) prefers a valid stale cache over hard-failing.
-          // WORD_NOT_FOUND is deliberately excluded: that's a real "this word doesn't exist"
-          // answer from the provider, not a failure.
-          [
-            'DICTIONARY_RATE_LIMITED',
-            'DICTIONARY_TIMEOUT',
-            'DICTIONARY_UPSTREAM_ERROR',
-            'DICTIONARY_INVALID_RESPONSE',
-          ].includes(error.code)
-        ) {
-          return { entry: mapEntry(existing), cached: true, stale: true };
+        if (error instanceof DictionaryError) {
+          if (existing) {
+            await tx
+              .update(dictionaryEntries)
+              .set({ koreanTranslationAttemptedAt: now })
+              .where(eq(dictionaryEntries.normalizedWord, word));
+          } else {
+            await tx
+              .insert(dictionaryEntries)
+              .values({
+                queryWord: word,
+                normalizedWord: word,
+                meanings: PENDING_SENTINEL_MEANINGS,
+                koreanTranslations: [],
+                pronunciation: null,
+                audioUrl: null,
+                sourceUrl: AI_GENERATED_SOURCE_URL,
+                attribution: AI_GENERATED_ATTRIBUTION,
+                cacheSchemaVersion: PENDING_LOOKUP_CACHE_SCHEMA_VERSION,
+                koreanTranslationAttemptedAt: now,
+                fetchedAt: now,
+                expiresAt: new Date(now.getTime() + AUTOMATIC_RETRY_COOLDOWN_MS),
+                updatedAt: now,
+              })
+              // The advisory lock already serializes every writer for this word within this
+              // transaction; a conflict here would only mean a row appeared through some other
+              // path (e.g. a since-fixed bug) — never clobber real data with the pending sentinel.
+              .onConflictDoNothing({ target: dictionaryEntries.normalizedWord });
+          }
         }
         throw error;
       }
-    });
-  }
-
-  async getOrCreateTranslation(
-    word: string,
-    create: (entry: DictionaryEntry) => Promise<string[]>,
-    options: GetOrCreateTranslationOptions = {},
-  ): Promise<string[]> {
-    const now = options.now ?? new Date();
-    return this.db.transaction(async (tx) => {
-      await tx.execute(
-        sql`select pg_advisory_xact_lock(hashtext(${`dictionary-translation:${word}`}))`,
-      );
-      const row = await tx.query.dictionaryEntries.findFirst({
-        where: eq(dictionaryEntries.normalizedWord, word),
-      });
-      if (!row) return [];
-      if (row.cacheSchemaVersion >= TRANSLATED_DICTIONARY_CACHE_SCHEMA_VERSION) {
-        return row.koreanTranslations;
-      }
-      if (shouldSkipAutomaticRetranslation(row.koreanTranslationAttemptedAt, now, options.force)) {
-        return row.koreanTranslations;
-      }
-      const translations = await create(mapEntry(row));
-      await tx
-        .update(dictionaryEntries)
-        .set(
-          translations.length === 0
-            ? { koreanTranslationAttemptedAt: now }
-            : {
-                koreanTranslations: translations,
-                cacheSchemaVersion: TRANSLATED_DICTIONARY_CACHE_SCHEMA_VERSION,
-                koreanTranslationAttemptedAt: now,
-                updatedAt: now,
-              },
-        )
-        .where(eq(dictionaryEntries.normalizedWord, word));
-      return translations;
     });
   }
 
@@ -235,32 +254,49 @@ export class DrizzleDictionaryRepository
     return row ?? null;
   }
 
-  async saveVocabulary(input: typeof savedVocabulary.$inferInsert): Promise<SavedVocabularyRow> {
+  async saveVocabulary(input: SaveVocabularyInput): Promise<SavedVocabularyRow> {
+    const { participantKey, ...rest } = input;
     const [item] = await this.db
       .insert(savedVocabulary)
-      .values(input)
+      .values({
+        participantKey,
+        word: rest.word,
+        normalizedWord: rest.normalizedWord,
+        senseId: rest.senseId,
+        pronunciation: rest.pronunciation,
+        audioUrl: null,
+        partOfSpeech: rest.partOfSpeech,
+        definition: rest.definition,
+        example: rest.example,
+        koreanTranslations: rest.koreanTranslations,
+        sourceUrl: AI_GENERATED_SOURCE_URL,
+        attribution: AI_GENERATED_ATTRIBUTION,
+        articleId: rest.articleId,
+        contextSentence: rest.contextSentence,
+        savedAt: rest.savedAt,
+      })
       .onConflictDoUpdate({
         target: [savedVocabulary.participantKey, savedVocabulary.normalizedWord],
         set: {
-          word: input.word,
-          senseId: input.senseId,
-          pronunciation: input.pronunciation,
-          audioUrl: input.audioUrl,
-          partOfSpeech: input.partOfSpeech,
-          definition: input.definition,
-          example: input.example,
-          koreanTranslations: input.koreanTranslations,
-          sourceUrl: input.sourceUrl,
-          attribution: input.attribution,
-          articleId: input.articleId,
-          contextSentence: input.contextSentence,
-          savedAt: input.savedAt,
+          word: rest.word,
+          senseId: rest.senseId,
+          pronunciation: rest.pronunciation,
+          audioUrl: null,
+          partOfSpeech: rest.partOfSpeech,
+          definition: rest.definition,
+          example: rest.example,
+          koreanTranslations: rest.koreanTranslations,
+          sourceUrl: AI_GENERATED_SOURCE_URL,
+          attribution: AI_GENERATED_ATTRIBUTION,
+          articleId: rest.articleId,
+          contextSentence: rest.contextSentence,
+          savedAt: rest.savedAt,
         },
       })
       .returning();
     if (!item) throw new Error('vocabulary upsert failed');
     const article = item.articleId ? await this.findArticle(item.articleId) : null;
-    return { item, articleTitle: article?.title ?? null };
+    return { item: mapSavedItem(item), articleTitle: article?.title ?? null };
   }
 
   async findSaved(
@@ -278,7 +314,7 @@ export class DrizzleDictionaryRepository
         ),
       )
       .limit(1);
-    return row ?? null;
+    return row ? { item: mapSavedItem(row.item), articleTitle: row.articleTitle } : null;
   }
 
   async listVocabulary(participantKey: string): Promise<SavedVocabularyRow[]> {
@@ -288,7 +324,7 @@ export class DrizzleDictionaryRepository
       .leftJoin(dailyNewsArticles, eq(savedVocabulary.articleId, dailyNewsArticles.id))
       .where(eq(savedVocabulary.participantKey, participantKey))
       .orderBy(desc(savedVocabulary.savedAt), desc(savedVocabulary.id));
-    return rows;
+    return rows.map((row) => ({ item: mapSavedItem(row.item), articleTitle: row.articleTitle }));
   }
 
   async deleteVocabulary(participantKey: string, normalizedWord: string): Promise<boolean> {
@@ -303,4 +339,21 @@ export class DrizzleDictionaryRepository
       .returning({ id: savedVocabulary.id });
     return rows.length > 0;
   }
+}
+
+function mapSavedItem(row: typeof savedVocabulary.$inferSelect): SavedVocabularyItemRow {
+  return {
+    id: row.id,
+    word: row.word,
+    normalizedWord: row.normalizedWord,
+    senseId: row.senseId,
+    pronunciation: row.pronunciation,
+    partOfSpeech: row.partOfSpeech,
+    definition: row.definition,
+    example: row.example ?? '',
+    koreanTranslations: row.koreanTranslations,
+    articleId: row.articleId,
+    contextSentence: row.contextSentence,
+    savedAt: row.savedAt,
+  };
 }

@@ -27,7 +27,7 @@ import { DrizzleDailyNewsRepository } from './services/daily-news/repository.js'
 import { dictionaryRoutes } from './routes/dictionary.js';
 import { DictionaryService } from './services/dictionary/service.js';
 import { DrizzleDictionaryRepository } from './services/dictionary/repository.js';
-import { DictionaryTranslator } from './services/dictionary/translation.js';
+import { DictionaryAiLookup } from './services/dictionary/ai-lookup.js';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -128,15 +128,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     options.dictionaryService ??
       new DictionaryService(
         dictionaryRepository,
-        fetch,
-        () => new Date(),
-        dictionaryRepository,
-        new DictionaryTranslator({
+        new DictionaryAiLookup({
           creditService: app.creditService,
           mindlogicClient: app.mindlogicClient,
           logger: app.log,
         }),
-        app.log,
+        () => new Date(),
       ),
   );
 

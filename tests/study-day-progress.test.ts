@@ -11,6 +11,7 @@ import type {
   DictionaryRepository,
   SavedVocabularyRow,
 } from '../src/services/dictionary/repository.js';
+import type { DictionaryAiLookup } from '../src/services/dictionary/ai-lookup.js';
 import type { DictionaryEntry } from '../src/services/dictionary/types.js';
 import { SESSION_COOKIE_NAME, signSession } from '../src/services/auth/session.js';
 
@@ -38,7 +39,7 @@ function validBody(overrides: Record<string, unknown> = {}) {
  * ignores participantKey and keeps only one row total), this actually scopes listVocabulary
  * so mine/partner word lists in the progress response can be asserted independently. */
 class InMemoryMultiParticipantDictionaryRepository implements DictionaryRepository {
-  rows: SavedVocabularyRow[] = [];
+  rows: Array<{ participantKey: string; row: SavedVocabularyRow }> = [];
   async getOrRefresh(): Promise<never> {
     throw new Error('not used by these tests');
   }
@@ -51,46 +52,43 @@ class InMemoryMultiParticipantDictionaryRepository implements DictionaryReposito
   async findSaved(participantKey: string, normalizedWord: string) {
     return (
       this.rows.find(
-        (row) =>
-          row.item.participantKey === participantKey && row.item.normalizedWord === normalizedWord,
-      ) ?? null
+        (entry) =>
+          entry.participantKey === participantKey &&
+          entry.row.item.normalizedWord === normalizedWord,
+      )?.row ?? null
     );
   }
   async saveVocabulary(): Promise<never> {
     throw new Error('not used by these tests');
   }
   async listVocabulary(participantKey: string) {
-    return this.rows.filter((row) => row.item.participantKey === participantKey);
+    return this.rows
+      .filter((entry) => entry.participantKey === participantKey)
+      .map((entry) => entry.row);
   }
   async deleteVocabulary() {
     return false;
   }
   addWord(participantKey: string, word: string): void {
     this.rows.push({
-      item: {
-        id: `${participantKey}-${word}`,
-        participantKey,
-        word,
-        normalizedWord: word,
-        senseId: 'a'.repeat(64),
-        pronunciation: null,
-        audioUrl: null,
-        partOfSpeech: 'noun',
-        definition: `Definition of ${word}`,
-        example: null,
-        koreanTranslations: [],
-        sourceUrl: 'https://en.wiktionary.org/wiki/' + word,
-        attribution: {
-          provider: 'FreeDictionaryAPI.com',
-          name: 'Wiktionary',
-          license: 'CC BY-SA 4.0',
-          licenseUrl: 'https://creativecommons.org/licenses/by-sa/4.0/',
+      participantKey,
+      row: {
+        item: {
+          id: `${participantKey}-${word}`,
+          word,
+          normalizedWord: word,
+          senseId: 'a'.repeat(64),
+          pronunciation: null,
+          partOfSpeech: 'noun',
+          definition: `Definition of ${word}`,
+          example: `Example sentence with ${word}.`,
+          koreanTranslations: [],
+          articleId: null,
+          contextSentence: null,
+          savedAt: FIXED_NOW,
         },
-        articleId: null,
-        contextSentence: null,
-        savedAt: FIXED_NOW,
+        articleTitle: null,
       },
-      articleTitle: null,
     });
   }
 }
@@ -103,7 +101,10 @@ function buildTestApp() {
     new InMemoryComparisonRepository(dailyReflectionRepository),
   );
   const dictionaryRepository = new InMemoryMultiParticipantDictionaryRepository();
-  const dictionaryService = new DictionaryService(dictionaryRepository);
+  const dictionaryService = new DictionaryService(
+    dictionaryRepository,
+    {} as DictionaryAiLookup, // never invoked — these tests don't exercise dictionary lookup
+  );
   const app = buildApp({
     checkDatabaseConnection: async () => true,
     studyDaysRoutesOptions: {

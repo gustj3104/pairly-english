@@ -19,16 +19,14 @@ function error(reply: FastifyReply, request: FastifyRequest, status: number, cod
 }
 
 /**
- * Every DictionaryError code that means "the FreeDictionaryAPI provider itself failed"
- * (rate limited, timed out, unreachable, or returned something we couldn't validate) —
- * collapsed to one stable public code so the client never has to special-case internal
- * detail, and never given the raw provider URL or response body. WORD_NOT_FOUND is a real
- * answer ("no such word"), not a provider failure, so it keeps its own distinct code/status.
+ * Every DictionaryError code that means "the Mindlogic AI lookup itself failed" (upstream
+ * error, invalid/unparsable structured JSON, or an automatic-retry cooldown still in effect) —
+ * collapsed to one stable public code so the client never has to special-case internal detail.
+ * DICTIONARY_CREDIT_LIMIT is deliberately excluded: its own 402 status already gets a distinct
+ * "credit limit exceeded" message on the client (see client.ts's status===402 branch).
  */
 const DICTIONARY_PROVIDER_FAILURE_CODES = new Set([
-  'DICTIONARY_RATE_LIMITED',
-  'DICTIONARY_TIMEOUT',
-  'DICTIONARY_UPSTREAM_ERROR',
+  'DICTIONARY_AI_UNAVAILABLE',
   'DICTIONARY_INVALID_RESPONSE',
 ]);
 
@@ -49,24 +47,22 @@ export async function dictionaryRoutes(
       config: { rateLimit: { max: 60, timeWindow: '1 hour' } },
     },
     async (request, reply) => {
-      const query = request.query as { word?: unknown; retryTranslation?: unknown };
+      const query = request.query as { word?: unknown; retry?: unknown };
       const word = normalizeLookupWord(query.word);
       if (!word) return error(reply, request, 400, 'VALIDATION_ERROR');
-      // User-initiated only: set by the dictionary panel's "다시 시도" (Retry) action after
-      // koreanTranslationStatus === 'unavailable', never sent automatically by a plain lookup.
-      const forceTranslationRetry = query.retryTranslation === 'true';
+      // User-initiated only: set by the dictionary panel's "다시 시도" (Retry) action after a
+      // failed lookup, never sent automatically by a plain lookup.
+      const forceRetry = query.retry === 'true';
       try {
-        return await app.dictionaryService.lookup(word, { forceTranslationRetry });
+        return await app.dictionaryService.lookup(word, { forceRetry });
       } catch (caught) {
         if (!(caught instanceof DictionaryError)) throw caught;
-        if (caught.retryAfter) reply.header('retry-after', caught.retryAfter);
-        // Safe fields only: no provider URL, no response body, no query word. The internal
+        // Safe fields only: no request/response body, no query word. The internal
         // DictionaryError code is enough to tell failure stages apart in logs without it.
         request.log.warn(
           {
             feature: 'dictionary_lookup',
-            failureStage: 'english_provider',
-            provider: caught.provider,
+            failureStage: 'ai_lookup',
             internalErrorCode: caught.code,
             httpStatus: caught.statusCode,
           },

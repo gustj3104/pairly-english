@@ -1,6 +1,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { DrizzleDictionaryRepository } from '../../src/services/dictionary/repository.js';
-import { DictionaryError } from '../../src/services/dictionary/types.js';
+import {
+  DrizzleDictionaryRepository,
+  AUTOMATIC_RETRY_COOLDOWN_MS,
+} from '../../src/services/dictionary/repository.js';
+import {
+  AI_DICTIONARY_CACHE_SCHEMA_VERSION,
+  DictionaryError,
+} from '../../src/services/dictionary/types.js';
 import type { DictionaryEntry } from '../../src/services/dictionary/types.js';
 import {
   startTestDatabase,
@@ -11,32 +17,23 @@ import {
 let testDb: TestDatabase;
 let repository: DrizzleDictionaryRepository;
 
-const now = new Date('2026-08-18T00:00:00.000Z');
+const now = new Date('2026-08-24T00:00:00.000Z');
 const entry = (): DictionaryEntry => ({
-  query: 'announce',
-  normalizedWord: 'announce',
-  pronunciation: '/əˈnaʊns/',
-  audioUrl: null,
-  koreanTranslations: [],
+  query: 'robot',
+  normalizedWord: 'robot',
+  pronunciation: '/ˈroʊbɑːt/',
+  koreanTranslations: ['로봇', '자동 기계'],
   meanings: [
     {
       senseId: 'a'.repeat(64),
-      partOfSpeech: 'verb',
-      definition: 'To give public notice.',
-      example: 'They announce the result.',
-      koreanTranslations: [],
+      partOfSpeech: 'noun',
+      definition: 'A machine that can perform tasks automatically.',
+      example: 'The robot cleaned the floor.',
     },
   ],
-  sourceUrl: 'https://en.wiktionary.org/wiki/announce',
-  attribution: {
-    provider: 'FreeDictionaryAPI.com',
-    name: 'Wiktionary',
-    license: 'CC BY-SA 4.0',
-    licenseUrl: 'https://creativecommons.org/licenses/by-sa/4.0/',
-  },
   fetchedAt: now,
-  expiresAt: new Date(now.getTime() + 30 * 86400_000),
-  cacheSchemaVersion: 2,
+  expiresAt: new Date(now.getTime() + 3650 * 86400_000),
+  cacheSchemaVersion: AI_DICTIONARY_CACHE_SCHEMA_VERSION,
 });
 
 beforeAll(async () => {
@@ -55,11 +52,11 @@ beforeEach(async () => {
 });
 
 describe('dictionary PostgreSQL cache', () => {
-  it('performs exactly one callback for 20 concurrent cache misses without deadlock', async () => {
+  it('performs exactly one AI call for 20 concurrent cache misses without deadlock', async () => {
     let calls = 0;
     const results = await Promise.all(
       Array.from({ length: 20 }, () =>
-        repository.getOrRefresh('announce', now, async () => {
+        repository.getOrRefresh('robot', now, async () => {
           calls += 1;
           await new Promise((resolve) => setTimeout(resolve, 15));
           return entry();
@@ -67,41 +64,16 @@ describe('dictionary PostgreSQL cache', () => {
       ),
     );
     expect(calls).toBe(1);
-    expect(results.every((result) => result.entry.normalizedWord === 'announce')).toBe(true);
+    expect(results.every((result) => result.entry.normalizedWord === 'robot')).toBe(true);
     expect(new Set(results.map((result) => result.entry.meanings[0]!.senseId)).size).toBe(1);
     expect(results.filter((result) => !result.cached)).toHaveLength(1);
   }, 30_000);
 
-  it('performs exactly one primary+secondary fallback sequence for 20 concurrent cache misses without deadlock', async () => {
-    // Simulates DictionaryService.lookup's callback, which is fetchDictionaryEntryWithFallback:
-    // primary fails, secondary succeeds. The singleflight advisory lock must still collapse all
-    // 20 waiters onto the one attempt's *outcome*, not just call the outer callback once — this
-    // guards against a future regression where the lock is acquired but the primary+secondary
-    // sequence inside is somehow re-entered.
-    let primaryAttempts = 0;
-    let secondaryAttempts = 0;
-    const results = await Promise.all(
-      Array.from({ length: 20 }, () =>
-        repository.getOrRefresh('emergency', now, async () => {
-          primaryAttempts += 1;
-          await new Promise((resolve) => setTimeout(resolve, 5));
-          secondaryAttempts += 1;
-          await new Promise((resolve) => setTimeout(resolve, 5));
-          return { ...entry(), query: 'emergency', normalizedWord: 'emergency' };
-        }),
-      ),
-    );
-    expect(primaryAttempts).toBe(1);
-    expect(secondaryAttempts).toBe(1);
-    expect(results.every((result) => result.entry.normalizedWord === 'emergency')).toBe(true);
-    expect(results.filter((result) => !result.cached)).toHaveLength(1);
-  }, 30_000);
-
   it('returns a fresh cache hit without invoking the callback', async () => {
-    await repository.getOrRefresh('announce', now, async () => entry());
+    await repository.getOrRefresh('robot', now, async () => entry());
     let calls = 0;
     const result = await repository.getOrRefresh(
-      'announce',
+      'robot',
       new Date(now.getTime() + 1000),
       async () => {
         calls += 1;
@@ -112,17 +84,17 @@ describe('dictionary PostgreSQL cache', () => {
     expect(result).toMatchObject({ cached: true, stale: false });
   });
 
-  it('forces one refresh for 20 concurrent legacy-cache reads', async () => {
+  it('forces one regeneration for 20 concurrent reads of a legacy (pre-AI) cache row', async () => {
     await testDb.pool.query(
       `insert into dictionary_entries
-        (query_word, normalized_word, meanings, source_url, fetched_at, expires_at, updated_at)
-       values ('announce', 'announce', $1::jsonb, 'https://en.wiktionary.org/wiki/announce', $2, $3, $2)`,
+        (query_word, normalized_word, meanings, source_url, cache_schema_version, fetched_at, expires_at, updated_at)
+       values ('robot', 'robot', $1::jsonb, 'https://en.wiktionary.org/wiki/robot', 2, $2, $3, $2)`,
       [
         JSON.stringify([
           {
             senseId: 'a'.repeat(64),
-            partOfSpeech: 'verb',
-            definition: 'To give public notice.',
+            partOfSpeech: 'noun',
+            definition: 'A serf under forced labor.',
             example: null,
           },
         ]),
@@ -133,7 +105,7 @@ describe('dictionary PostgreSQL cache', () => {
     let calls = 0;
     const results = await Promise.all(
       Array.from({ length: 20 }, () =>
-        repository.getOrRefresh('announce', now, async () => {
+        repository.getOrRefresh('robot', now, async () => {
           calls += 1;
           await new Promise((resolve) => setTimeout(resolve, 15));
           return entry();
@@ -141,126 +113,85 @@ describe('dictionary PostgreSQL cache', () => {
       ),
     );
     expect(calls).toBe(1);
-    expect(
-      results.every((result) => result.entry.meanings[0]!.koreanTranslations.length === 0),
-    ).toBe(true);
-  }, 30_000);
-
-  it('treats a current-version empty translation array as a valid cache hit', async () => {
-    await repository.getOrRefresh('announce', now, async () => entry());
-    let calls = 0;
-    const result = await repository.getOrRefresh('announce', now, async () => {
-      calls += 1;
-      return entry();
-    });
-    expect(calls).toBe(0);
-    expect(result.entry.meanings[0]!.koreanTranslations).toEqual([]);
-  });
-
-  it('collapses 20 concurrent translation misses and permanently caches version 3', async () => {
-    await repository.getOrRefresh('announce', now, async () => entry());
-    let calls = 0;
-    const results = await Promise.all(
-      Array.from({ length: 20 }, () =>
-        repository.getOrCreateTranslation('announce', async () => {
-          calls += 1;
-          await new Promise((resolve) => setTimeout(resolve, 15));
-          return ['발표하다', '알리다'];
-        }),
-      ),
+    expect(results.every((result) => result.entry.koreanTranslations.length > 0)).toBe(true);
+    expect((await repository.findEntry('robot'))?.cacheSchemaVersion).toBe(
+      AI_DICTIONARY_CACHE_SCHEMA_VERSION,
     );
-    expect(calls).toBe(1);
-    expect(results.every((value) => value.join(',') === '발표하다,알리다')).toBe(true);
-    expect(await repository.getOrCreateTranslation('announce', async () => ['호출 금지'])).toEqual([
-      '발표하다',
-      '알리다',
-    ]);
-    const cached = await repository.findEntry('announce');
-    expect(cached).toMatchObject({ cacheSchemaVersion: 3 });
   }, 30_000);
 
-  it('does not promote a failed or empty translation to version 3', async () => {
-    await repository.getOrRefresh('announce', now, async () => entry());
-    expect(await repository.getOrCreateTranslation('announce', async () => [])).toEqual([]);
-    expect((await repository.findEntry('announce'))?.cacheSchemaVersion).toBe(2);
-    await expect(
-      repository.getOrCreateTranslation('announce', async () => {
-        throw new Error('mock failure');
-      }),
-    ).rejects.toThrow('mock failure');
-    expect((await repository.findEntry('announce'))?.cacheSchemaVersion).toBe(2);
-  });
-
-  it('preserves a version 3 translation across an expired English refresh', async () => {
-    await repository.getOrRefresh('announce', now, async () => entry());
-    await repository.getOrCreateTranslation('announce', async () => ['발표하다']);
-    const later = new Date(now.getTime() + 31 * 86400_000);
-    const refreshed = entry();
-    refreshed.fetchedAt = later;
-    refreshed.expiresAt = new Date(later.getTime() + 30 * 86400_000);
-    const result = await repository.getOrRefresh('announce', later, async () => refreshed);
-    expect(result.entry.koreanTranslations).toEqual(['발표하다']);
-    expect(result.entry.cacheSchemaVersion).toBe(3);
-  });
-
-  // Reproduces the production "life" 502: a word with no prior cache whose FreeDictionaryAPI
-  // fetch fails. No row should ever be persisted, and the advisory-lock transaction must not
-  // deadlock or partially commit under concurrent load.
-  it('persists no row for 20 concurrent cache misses when the provider fails and there is no prior cache', async () => {
+  it('persists no successful-looking row for 20 concurrent cache misses when the AI call fails, and never calls it again within the cooldown', async () => {
     let calls = 0;
     const results = await Promise.allSettled(
       Array.from({ length: 20 }, () =>
         repository.getOrRefresh('life', now, async () => {
           calls += 1;
           await new Promise((resolve) => setTimeout(resolve, 15));
-          throw new DictionaryError('DICTIONARY_UPSTREAM_ERROR', 503);
+          throw new DictionaryError('DICTIONARY_AI_UNAVAILABLE', 503);
         }),
       ),
     );
     expect(results.every((result) => result.status === 'rejected')).toBe(true);
-    expect(calls).toBe(20); // no existing cache to short-circuit on, so every attempt tries
+    expect(calls).toBe(1); // the 20 concurrent attempts collapse onto one AI call
     expect(await repository.findEntry('life')).toBeNull();
-    const rows = await testDb.pool.query(
-      'select count(*)::int as n from dictionary_entries where normalized_word = $1',
-      ['life'],
+
+    // A later plain (non-forced) lookup within the cooldown must not spend another AI call.
+    let secondCalls = 0;
+    await expect(
+      repository.getOrRefresh('life', new Date(now.getTime() + 1000), async () => {
+        secondCalls += 1;
+        return entry();
+      }),
+    ).rejects.toMatchObject({ code: 'DICTIONARY_AI_UNAVAILABLE' });
+    expect(secondCalls).toBe(0);
+
+    // An explicit user retry bypasses the cooldown.
+    const retried = await repository.getOrRefresh(
+      'life',
+      new Date(now.getTime() + 1000),
+      async () => ({ ...entry(), query: 'life', normalizedWord: 'life' }),
+      { force: true },
     );
-    expect(rows.rows[0].n).toBe(0);
+    expect(retried.cached).toBe(false);
   }, 30_000);
 
-  it('serves a valid stale cache instead of failing when a refresh gets an invalid provider response', async () => {
-    await repository.getOrRefresh('announce', now, async () => entry());
-    const later = new Date(now.getTime() + 31 * 86400_000); // past expiresAt, refresh is due
-    const result = await repository.getOrRefresh('announce', later, async () => {
-      throw new DictionaryError('DICTIONARY_INVALID_RESPONSE', 502);
-    });
-    expect(result).toMatchObject({ cached: true, stale: true });
-    expect(result.entry.meanings[0]!.definition).toBe('To give public notice.');
-  });
-
-  it('still fails when there is no cache to fall back to, even for an invalid provider response', async () => {
+  it('allows a fresh AI call once the cooldown has elapsed', async () => {
     await expect(
       repository.getOrRefresh('life', now, async () => {
-        throw new DictionaryError('DICTIONARY_INVALID_RESPONSE', 502);
+        throw new DictionaryError('DICTIONARY_AI_UNAVAILABLE', 503);
       }),
-    ).rejects.toMatchObject({ code: 'DICTIONARY_INVALID_RESPONSE', statusCode: 502 });
-    expect(await repository.findEntry('life')).toBeNull();
+    ).rejects.toMatchObject({ code: 'DICTIONARY_AI_UNAVAILABLE' });
+    const later = new Date(now.getTime() + AUTOMATIC_RETRY_COOLDOWN_MS + 1000);
+    const result = await repository.getOrRefresh('life', later, async () => ({
+      ...entry(),
+      query: 'life',
+      normalizedWord: 'life',
+    }));
+    expect(result.cached).toBe(false);
+  });
+
+  it('serves the last-known-good AI entry as stale when a rare post-expiry refresh fails', async () => {
+    await repository.getOrRefresh('robot', now, async () => entry());
+    const muchLater = new Date(now.getTime() + 3651 * 86400_000); // past the ~10-year TTL
+    const result = await repository.getOrRefresh('robot', muchLater, async () => {
+      throw new DictionaryError('DICTIONARY_AI_UNAVAILABLE', 503);
+    });
+    expect(result).toMatchObject({ cached: true, stale: true });
+    expect(result.entry.koreanTranslations).toEqual(['로봇', '자동 기계']);
   });
 });
 
 describe('saved vocabulary PostgreSQL constraints', () => {
   it('upserts one row per participant and word while isolating participant lists', async () => {
-    await repository.getOrRefresh('announce', now, async () => entry());
+    await repository.getOrRefresh('robot', now, async () => entry());
     const base = {
-      word: 'announce',
-      normalizedWord: 'announce',
+      word: 'robot',
+      normalizedWord: 'robot',
       senseId: 'a'.repeat(64),
       pronunciation: null,
-      audioUrl: null,
-      partOfSpeech: 'verb',
-      definition: 'To give public notice.',
-      example: null,
-      koreanTranslations: ['발표하다'],
-      sourceUrl: 'https://en.wiktionary.org/wiki/announce',
+      partOfSpeech: 'noun',
+      definition: 'A machine that can perform tasks automatically.',
+      example: 'The robot cleaned the floor.',
+      koreanTranslations: ['로봇'],
       articleId: null,
       contextSentence: null,
       savedAt: now,
@@ -269,38 +200,38 @@ describe('saved vocabulary PostgreSQL constraints', () => {
     const again = await repository.saveVocabulary({ ...base, participantKey: 'alice' });
     await repository.saveVocabulary({ ...base, participantKey: 'bob' });
     expect(again.item.id).toBe(first.item.id);
-    expect(again.item.koreanTranslations).toEqual(['발표하다']);
+    expect(again.item.koreanTranslations).toEqual(['로봇']);
     expect(await repository.listVocabulary('alice')).toHaveLength(1);
     expect(await repository.listVocabulary('bob')).toHaveLength(1);
-    expect(await repository.deleteVocabulary('alice', 'announce')).toBe(true);
+    expect(await repository.deleteVocabulary('alice', 'robot')).toBe(true);
     expect(await repository.listVocabulary('bob')).toHaveLength(1);
   });
 
-  it('enforces dictionary and article foreign keys and nonblank checks', async () => {
+  it('enforces the dictionary foreign key and nonblank checks', async () => {
     await expect(
       testDb.pool.query(
         `insert into saved_vocabulary
         (participant_key, word, normalized_word, sense_id, part_of_speech, definition, source_url, saved_at)
-        values ('alice', 'missing', 'missing', $1, 'verb', 'definition', 'https://en.wiktionary.org/wiki/missing', now())`,
+        values ('alice', 'missing', 'missing', $1, 'noun', 'definition', 'internal:mindlogic-ai-generated', now())`,
         ['a'.repeat(64)],
       ),
     ).rejects.toMatchObject({ code: '23503' });
     await expect(
       testDb.pool.query(`insert into dictionary_entries
         (query_word, normalized_word, meanings, source_url, fetched_at, expires_at, updated_at)
-        values (' ', ' ', '[]'::jsonb, 'https://en.wiktionary.org/wiki/x', now(), now() + interval '30 days', now())`),
+        values (' ', ' ', '[]'::jsonb, 'internal:mindlogic-ai-generated', now(), now() + interval '30 days', now())`),
     ).rejects.toMatchObject({ code: '23514' });
   });
 
   it('rejects a non-array saved Korean translation snapshot', async () => {
-    await repository.getOrRefresh('announce', now, async () => entry());
+    await repository.getOrRefresh('robot', now, async () => entry());
     await expect(
       testDb.pool.query(
         `insert into saved_vocabulary
           (participant_key, word, normalized_word, sense_id, part_of_speech, definition,
            korean_translations, source_url, saved_at)
-         values ('alice', 'announce', 'announce', $1, 'verb', 'definition',
-           '{}'::jsonb, 'https://en.wiktionary.org/wiki/announce', now())`,
+         values ('alice', 'robot', 'robot', $1, 'noun', 'definition',
+           '{}'::jsonb, 'internal:mindlogic-ai-generated', now())`,
         ['a'.repeat(64)],
       ),
     ).rejects.toMatchObject({ code: '23514' });

@@ -87,15 +87,15 @@ export interface DictionaryMeaningJson {
   senseId: string;
   partOfSpeech: string;
   definition: string;
-  example: string | null;
-  koreanTranslations: string[];
+  example: string;
 }
 
 /**
- * Which English dictionary provider produced a row, and under what license — required to
- * attribute secondary-provider (dictionaryapi.dev) results correctly, since its real license
- * (CC BY-SA 3.0) differs from the primary provider's (FreeDictionaryAPI.com, CC BY-SA 4.0). See
- * DictionaryAttribution in src/services/dictionary/types.ts.
+ * Legacy column, kept only so pre-AI (FreeDictionaryAPI/Wiktionary) rows still satisfy the
+ * table's NOT NULL constraint without a migration. Current (cacheSchemaVersion >= 4, AI-only)
+ * rows write a fixed internal sentinel here (see AI_GENERATED_ATTRIBUTION in
+ * src/services/dictionary/repository.ts) — never a real external source — and this field is
+ * never returned by the public API or shown in the UI. See "Dictionary lookup" in the README.
  */
 export interface DictionaryAttributionJson {
   provider: string;
@@ -106,7 +106,12 @@ export interface DictionaryAttributionJson {
 
 const LEGACY_FREEDICTIONARYAPI_ATTRIBUTION_DEFAULT = sql`'{"provider":"FreeDictionaryAPI.com","name":"Wiktionary","license":"CC BY-SA 4.0","licenseUrl":"https://creativecommons.org/licenses/by-sa/4.0/"}'::jsonb`;
 
-/** Bounded, normalized Wiktionary data; provider response bodies are never persisted. */
+/**
+ * Bounded, cached dictionary lookup results. cacheSchemaVersion >= 4 (see
+ * AI_DICTIONARY_CACHE_SCHEMA_VERSION in repository.ts) means a single-call Mindlogic AI result;
+ * anything lower is a pre-AI (FreeDictionaryAPI/Wiktionary) row that always gets regenerated on
+ * its next lookup rather than served. Mindlogic response bodies are never persisted verbatim.
+ */
 export const dictionaryEntries = pgTable(
   'dictionary_entries',
   {
@@ -115,19 +120,26 @@ export const dictionaryEntries = pgTable(
     normalizedWord: varchar('normalized_word', { length: 60 }).notNull().unique(),
     meanings: jsonb('meanings').$type<DictionaryMeaningJson[]>().notNull(),
     koreanTranslations: jsonb('korean_translations').$type<string[]>().notNull().default([]),
-    // Set every time a Korean translation attempt finishes (success or failure), never on a
-    // plain English refresh. Lets getOrCreateTranslation() throttle automatic re-attempts for a
-    // word whose translation keeps failing, without ever permanently caching the failure itself
-    // (cacheSchemaVersion is only bumped on success — see TRANSLATED_DICTIONARY_CACHE_SCHEMA_VERSION).
+    // Set every time an AI lookup attempt finishes (success or failure), never left untouched on
+    // a failure. Lets getOrRefresh() throttle automatic re-attempts for a word whose lookup keeps
+    // failing, without ever permanently caching the failure itself as a successful entry (only a
+    // real success bumps cacheSchemaVersion to AI_DICTIONARY_CACHE_SCHEMA_VERSION). Column name
+    // predates the single-call AI redesign (see repository.ts) but is reused as-is to avoid a
+    // migration.
     koreanTranslationAttemptedAt: timestamp('korean_translation_attempted_at', {
       withTimezone: true,
     }),
     pronunciation: varchar('pronunciation', { length: 240 }),
+    // Legacy column from the removed FreeDictionaryAPI/dictionaryapi.dev providers. AI lookups
+    // never produce audio and always write null; kept only so old rows still read back cleanly.
     audioUrl: varchar('audio_url', { length: 2048 }),
+    // NOT NULL with no real per-row meaning for an AI-generated entry (there is no external
+    // source URL) — AI rows write a fixed internal sentinel (see AI_GENERATED_SOURCE_URL in
+    // repository.ts), never a real fetchable link, and it is never returned by the public API.
     sourceUrl: varchar('source_url', { length: 2048 }).notNull(),
-    // Every row written before this column existed came from FreeDictionaryAPI (the secondary
-    // provider didn't exist yet), so the DB-level default backfills existing rows accurately.
-    // The application always sets this explicitly on every insert/update going forward.
+    // Every row written before this column existed came from FreeDictionaryAPI, so the DB-level
+    // default backfills existing legacy rows accurately. AI rows always set this explicitly to
+    // AI_GENERATED_ATTRIBUTION (repository.ts) — never a real external license/source.
     attribution: jsonb('attribution')
       .$type<DictionaryAttributionJson>()
       .notNull()
@@ -166,15 +178,19 @@ export const savedVocabulary = pgTable(
       .references(() => dictionaryEntries.normalizedWord, { onDelete: 'restrict' }),
     senseId: varchar('sense_id', { length: 64 }).notNull(),
     pronunciation: varchar('pronunciation', { length: 240 }),
+    // Legacy column; AI-saved vocabulary never has audio and always writes null.
     audioUrl: varchar('audio_url', { length: 2048 }),
     partOfSpeech: varchar('part_of_speech', { length: 80 }).notNull(),
     definition: text('definition').notNull(),
     example: text('example'),
     koreanTranslations: jsonb('korean_translations').$type<string[]>().notNull().default([]),
+    // NOT NULL with no real per-row meaning for an AI-generated save — see the dictionaryEntries
+    // comment above; kept as a fixed internal sentinel, never a real source, never returned by
+    // the public API.
     sourceUrl: varchar('source_url', { length: 2048 }).notNull(),
     // Snapshotted at save time, same rationale as koreanTranslations above: a later cache
-    // refresh of this word (possibly via the other provider) must never silently change the
-    // attribution already shown for a word the user already saved.
+    // refresh of this word must never silently change the attribution already shown for a word
+    // the user already saved. AI saves always snapshot AI_GENERATED_ATTRIBUTION.
     attribution: jsonb('attribution')
       .$type<DictionaryAttributionJson>()
       .notNull()
