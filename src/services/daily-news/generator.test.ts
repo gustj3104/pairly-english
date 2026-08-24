@@ -77,7 +77,7 @@ describe('generateDailyNews', () => {
     });
     expect(result.status).toBe('ok');
   });
-  it('fails closed when citations are absent or do not match', async () => {
+  it('fails closed with source_citation_mismatch when citations are present but do not match sourceUrl', async () => {
     const { client: mindlogicClient } = client(
       success({ citations: ['https://www.bbc.com/news/other'] }),
     );
@@ -87,6 +87,57 @@ describe('generateDailyNews', () => {
       now,
     });
     expect(result.status).toBe('upstream_schema_error');
+    if (result.status === 'upstream_schema_error') {
+      expect(result.reason).toBe('source_citation_mismatch');
+      expect(result.sourceDiagnostics).toEqual({
+        sourceHostname: 'www.reuters.com',
+        sourceAllowlisted: true,
+        citationsPresent: true,
+        citationCount: 1,
+        citationHostnames: ['www.bbc.com'],
+        citationAllowlistedCount: 1,
+      });
+    }
+  });
+
+  it('fails closed with source_citation_missing when the completion carries no citations array', async () => {
+    const { client: mindlogicClient } = client(success({ citations: undefined }));
+    const result = await generateDailyNews('2026-08-18', {
+      creditService: new CreditService(new InMemoryCreditRepository(), 5000),
+      mindlogicClient,
+      now,
+    });
+    expect(result.status).toBe('upstream_schema_error');
+    if (result.status === 'upstream_schema_error') {
+      expect(result.reason).toBe('source_citation_missing');
+      expect(result.sourceDiagnostics?.citationsPresent).toBe(false);
+      expect(result.sourceDiagnostics?.sourceAllowlisted).toBe(true);
+    }
+  });
+
+  it('fails closed with source_not_allowlisted when the model cites an off-allowlist host', async () => {
+    const { client: mindlogicClient } = client(
+      successWithBody({
+        sourceUrl: 'https://www.cnn.com/world/story',
+      }),
+    );
+    const result = await generateDailyNews('2026-08-18', {
+      creditService: new CreditService(new InMemoryCreditRepository(), 5000),
+      mindlogicClient,
+      now,
+    });
+    expect(result.status).toBe('upstream_schema_error');
+    if (result.status === 'upstream_schema_error') {
+      expect(result.reason).toBe('source_not_allowlisted');
+      expect(result.sourceDiagnostics).toEqual({
+        sourceHostname: 'www.cnn.com',
+        sourceAllowlisted: false,
+        citationsPresent: true,
+        citationCount: 1,
+        citationHostnames: ['www.cnn.com'],
+        citationAllowlistedCount: 0,
+      });
+    }
   });
   it('does not call the provider when the hard cap cannot reserve', async () => {
     const { client: mindlogicClient, onCall } = client(success());

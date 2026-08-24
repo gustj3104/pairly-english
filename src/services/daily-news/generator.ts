@@ -29,9 +29,21 @@ const FEATURE = 'daily_news' as const;
  * Which local check rejected an otherwise-successful completion. Never
  * carries model content — just enough to tell, from logs alone, whether
  * the model is missing usage, returning malformed JSON, failing the
- * article schema, drifting off-topic, or citing an off-allowlist source
- * (see source-url.ts) — the last of which was previously indistinguishable
- * from every other schema failure in production logs.
+ * article schema, drifting off-topic, or failing the source-allowlist
+ * check (see source-url.ts).
+ *
+ * The source check is split into three distinct reasons — previously all
+ * three collapsed into one `source_not_allowlisted` value, which made it
+ * impossible to tell from production logs alone which of three very
+ * different problems actually occurred:
+ *  - `source_not_allowlisted` — the model's own structured `sourceUrl`
+ *    field fails the allowlist (wrong host, not https, etc).
+ *  - `source_citation_missing` — `sourceUrl` itself is allowlisted, but
+ *    the completion carried no usable `citations` array at all (e.g. the
+ *    gateway didn't pass the Perplexity extension through).
+ *  - `source_citation_mismatch` — `sourceUrl` is allowlisted and
+ *    `citations` is present, but no citation normalizes to the exact same
+ *    URL as `sourceUrl`.
  */
 export type DailyNewsSchemaErrorReason =
   | 'missing_usage'
@@ -39,6 +51,8 @@ export type DailyNewsSchemaErrorReason =
   | 'schema_invalid'
   | 'topic_mismatch'
   | 'source_not_allowlisted'
+  | 'source_citation_missing'
+  | 'source_citation_mismatch'
   | 'invalid_published_at';
 
 /**
@@ -61,6 +75,64 @@ function summarizeSchemaIssues(error: z.ZodError): DailyNewsSchemaIssue[] {
   }));
 }
 
+/**
+ * Safe diagnostic detail for a `source_not_allowlisted` /
+ * `source_citation_missing` / `source_citation_mismatch` outcome —
+ * hostnames and counts only, never a full URL (which could carry a query
+ * string or path segment echoing article content). Lets an operator tell
+ * from sanitized logs alone which of the three source-check branches
+ * actually fired, without ever needing the raw model response.
+ */
+export interface DailyNewsSourceDiagnostics {
+  /** Hostname of the model's declared `sourceUrl`, or null if it wasn't even a parseable URL. */
+  sourceHostname: string | null;
+  /** Whether `sourceUrl` itself passed the allowlist (validateSourceUrl). */
+  sourceAllowlisted: boolean;
+  /** Whether the completion carried a `citations` array at all. */
+  citationsPresent: boolean;
+  /** Number of entries in `citations`, if present. */
+  citationCount: number;
+  /** Deduplicated, capped hostnames parsed from `citations` — domain names only. */
+  citationHostnames: string[];
+  /** How many `citations` entries independently pass the allowlist. */
+  citationAllowlistedCount: number;
+}
+
+const MAX_CITATION_HOSTNAMES_CAPTURED = 10;
+
+function hostnameOf(value: string): string | null {
+  try {
+    return new URL(value).hostname.toLowerCase().replace(/\.$/, '') || null;
+  } catch {
+    return null;
+  }
+}
+
+function summarizeSourceDiagnostics(
+  sourceUrl: string,
+  citations: unknown,
+): DailyNewsSourceDiagnostics {
+  const citationList = Array.isArray(citations) ? citations : [];
+  const citationHostnames = new Set<string>();
+  let citationAllowlistedCount = 0;
+  for (const citation of citationList) {
+    if (typeof citation !== 'string') continue;
+    const hostname = hostnameOf(citation);
+    if (hostname && citationHostnames.size < MAX_CITATION_HOSTNAMES_CAPTURED) {
+      citationHostnames.add(hostname);
+    }
+    if (validateSourceUrl(citation)) citationAllowlistedCount += 1;
+  }
+  return {
+    sourceHostname: hostnameOf(sourceUrl),
+    sourceAllowlisted: validateSourceUrl(sourceUrl) !== null,
+    citationsPresent: Array.isArray(citations),
+    citationCount: citationList.length,
+    citationHostnames: [...citationHostnames],
+    citationAllowlistedCount,
+  };
+}
+
 export type DailyNewsGenerationOutcome =
   | { status: 'ok'; requestId: string; article: GeneratedDailyNews; generatedAt: Date }
   | { status: 'limit_exceeded'; requestId: string; usage: UsageSummary }
@@ -70,6 +142,7 @@ export type DailyNewsGenerationOutcome =
       requestId: string;
       reason: DailyNewsSchemaErrorReason;
       schemaIssues?: DailyNewsSchemaIssue[];
+      sourceDiagnostics?: DailyNewsSourceDiagnostics;
     }
   | { status: 'reservation_exceeded'; requestId: string }
   | {
@@ -209,12 +282,29 @@ export async function generateDailyNews(
   }
   const source = validateSourceUrl(checked.data.sourceUrl);
   const citations = completion.citations;
-  if (
-    !source ||
-    !Array.isArray(citations) ||
-    !citations.some((citation) => validateSourceUrl(citation)?.href === source.href)
-  ) {
-    return { status: 'upstream_schema_error', requestId, reason: 'source_not_allowlisted' };
+  if (!source) {
+    return {
+      status: 'upstream_schema_error',
+      requestId,
+      reason: 'source_not_allowlisted',
+      sourceDiagnostics: summarizeSourceDiagnostics(checked.data.sourceUrl, citations),
+    };
+  }
+  if (!Array.isArray(citations)) {
+    return {
+      status: 'upstream_schema_error',
+      requestId,
+      reason: 'source_citation_missing',
+      sourceDiagnostics: summarizeSourceDiagnostics(checked.data.sourceUrl, citations),
+    };
+  }
+  if (!citations.some((citation) => validateSourceUrl(citation)?.href === source.href)) {
+    return {
+      status: 'upstream_schema_error',
+      requestId,
+      reason: 'source_citation_mismatch',
+      sourceDiagnostics: summarizeSourceDiagnostics(checked.data.sourceUrl, citations),
+    };
   }
   const publishedAt = new Date(checked.data.publishedAt);
   const generatedAt = now();

@@ -1120,6 +1120,18 @@ Gateway passthrough of those Perplexity extensions and JSON Schema support have 
 by a real `sonar-pro` POST, so deployment must run one separately approved smoke test before
 enabling production traffic. There is no model fallback and no automatic retry.
 
+The source check itself resolves through three independent conditions — `sourceUrl` allowlisted,
+`citations` present as an array, and `sourceUrl` matching one of those citations exactly — and
+production logs kept showing every one of them collapsed into a single `source_not_allowlisted`
+reason, indistinguishable from each other. `generator.ts` now reports three distinct reasons
+instead (`source_not_allowlisted`, `source_citation_missing`, `source_citation_mismatch`), each
+paired with a `sourceDiagnostics` object logged alongside it: the declared `sourceUrl`'s hostname,
+whether it's allowlisted, whether `citations` was present, its count, and up to 10 deduplicated
+citation hostnames plus how many of them independently pass the allowlist. Only hostnames and
+counts are captured — never a full URL (which could carry a query string or path segment) and
+never article content — so an operator can tell which of the three conditions actually fired
+straight from sanitized logs, without needing the raw model response.
+
 Mindlogic does not publish a verified credit-unit conversion for `sonar-pro`. The ledger therefore
 uses a deliberately conservative feature reservation rate of 3 input / 15 output credits per
 1,000 tokens and a 2,400-token output ceiling. These are internal guard units, not asserted provider
