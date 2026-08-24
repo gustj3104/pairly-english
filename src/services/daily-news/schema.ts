@@ -41,11 +41,17 @@ function checkVocabularyAppearsInContent(
   if (new Set(normalized).size !== normalized.length) {
     context.addIssue({ code: 'custom', path: ['vocabulary'], message: 'duplicate words' });
   }
+  // Compare both sides through the same NFKC normalization used for the
+  // duplicate check above, so e.g. full-width or compatibility-equivalent
+  // characters the model uses in one field but not the other don't cause a
+  // spurious "word must appear in content" rejection.
+  const normalizedContent = article.content.normalize('NFKC');
   for (const [index, item] of article.vocabulary.entries()) {
-    const escaped = item.word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const word = item.word.normalize('NFKC');
+    const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     if (
       !new RegExp(`(^|[^\\p{L}\\p{N}_])${escaped}(?=$|[^\\p{L}\\p{N}_])`, 'iu').test(
-        article.content,
+        normalizedContent,
       )
     ) {
       context.addIssue({
