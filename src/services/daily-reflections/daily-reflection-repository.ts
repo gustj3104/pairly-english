@@ -132,6 +132,7 @@ export class DrizzleDailyReflectionRepository implements DailyReflectionReposito
       participantKey: row.participantKey,
       displayName: row.displayName,
       content: row.content,
+      status: row.status,
       submittedAt: row.submittedAt,
     }));
   }

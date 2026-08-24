@@ -32,6 +32,7 @@ export interface ReflectionRow {
   participantKey: string;
   displayName: string;
   content: string;
+  status: 'submitted';
   submittedAt: Date;
 }
 

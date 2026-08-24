@@ -6,6 +6,7 @@ import type {
   SubmitReflectionInput,
   SubmitReflectionResult,
 } from './types.js';
+import { getPartnerParticipantKey } from '../auth/allowed-participants.js';
 
 export interface StudyDayParticipantStatus {
   submitted: boolean;
@@ -65,17 +66,19 @@ export class DailyReflectionService {
 
   async getStatus(studyDate: string, callerParticipantKey: string): Promise<StudyDayStatus> {
     const rows = await this.repository.getReflectionsForDate(studyDate);
+    const partnerParticipantKey = getPartnerParticipantKey(callerParticipantKey);
     const mineRow = rows.find((row) => row.participantKey === callerParticipantKey) ?? null;
-    const partnerRow = rows.find((row) => row.participantKey !== callerParticipantKey) ?? null;
-    const distinctParticipants = new Set(rows.map((row) => row.participantKey)).size;
+    const partnerRow = rows.find((row) => row.participantKey === partnerParticipantKey) ?? null;
+    const mineSubmitted = mineRow?.status === 'submitted';
+    const partnerSubmitted = partnerRow?.status === 'submitted';
 
     return {
       studyDate,
-      mine: { submitted: mineRow !== null, displayName: mineRow?.displayName ?? null },
+      mine: { submitted: mineSubmitted, displayName: mineRow?.displayName ?? null },
       // Partner's content/reflection is deliberately never exposed here —
       // only submitted/displayName. See src/routes/study-days.ts.
-      partner: { submitted: partnerRow !== null, displayName: partnerRow?.displayName ?? null },
-      readyToCompare: distinctParticipants >= 2,
+      partner: { submitted: partnerSubmitted, displayName: partnerRow?.displayName ?? null },
+      readyToCompare: mineSubmitted && partnerSubmitted,
     };
   }
 
@@ -91,23 +94,25 @@ export class DailyReflectionService {
       this.repository.getReflectionsForDate(studyDate),
       this.repository.getDiscussionCompletion(studyDate),
     ]);
+    const partnerParticipantKey = getPartnerParticipantKey(callerParticipantKey);
     const mineRow = rows.find((row) => row.participantKey === callerParticipantKey) ?? null;
-    const partnerRow = rows.find((row) => row.participantKey !== callerParticipantKey) ?? null;
-    const distinctParticipants = new Set(rows.map((row) => row.participantKey)).size;
+    const partnerRow = rows.find((row) => row.participantKey === partnerParticipantKey) ?? null;
+    const mineSubmitted = mineRow?.status === 'submitted';
+    const partnerSubmitted = partnerRow?.status === 'submitted';
 
     return {
       studyDate,
       mine: {
         displayName: mineRow?.displayName ?? null,
-        submitted: mineRow !== null,
+        submitted: mineSubmitted,
         content: mineRow?.content ?? null,
       },
       partner: {
         displayName: partnerRow?.displayName ?? null,
-        submitted: partnerRow !== null,
+        submitted: partnerSubmitted,
         content: partnerRow?.content ?? null,
       },
-      readyToCompare: distinctParticipants >= 2,
+      readyToCompare: mineSubmitted && partnerSubmitted,
       discussion: {
         completed: discussionCompletion !== null,
         completedAt: discussionCompletion?.completedAt.toISOString() ?? null,
@@ -128,13 +133,10 @@ export class DailyReflectionService {
     callerParticipantKey: string,
   ): Promise<ComparisonInputsResult> {
     const rows = await this.repository.getReflectionsForDate(studyDate);
-    if (rows.length < 2) {
-      return { ok: false, reason: 'partner_not_ready' };
-    }
-
+    const partnerParticipantKey = getPartnerParticipantKey(callerParticipantKey);
     const mine = rows.find((row) => row.participantKey === callerParticipantKey);
-    const partner = rows.find((row) => row.participantKey !== callerParticipantKey);
-    if (!mine || !partner) {
+    const partner = rows.find((row) => row.participantKey === partnerParticipantKey);
+    if (!mine || !partner || mine.status !== 'submitted' || partner.status !== 'submitted') {
       // Two rows exist but neither belongs to the caller — shouldn't
       // happen in practice (the caller would be a 3rd participant, which
       // submitReflection already rejects), but defend against it rather

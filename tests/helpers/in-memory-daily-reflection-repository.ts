@@ -62,6 +62,7 @@ export class InMemoryDailyReflectionRepository implements DailyReflectionReposit
       participantKey: input.participantKey,
       displayName: input.displayName,
       content: input.content,
+      status: 'submitted',
       submittedAt: input.submittedAt,
     };
     this.reflectionsByDate.set(input.studyDate, [...existingRows, row]);

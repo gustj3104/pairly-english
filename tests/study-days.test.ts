@@ -324,6 +324,15 @@ describe('GET /api/v1/study-days/:date/status', () => {
     expect(afterBothBody.partner).toEqual({ submitted: true, displayName: 'hyeonseo' });
     expect(afterBothBody.readyToCompare).toBe(true);
 
+    const reversed = await app.inject({
+      method: 'GET',
+      url: `/api/v1/study-days/${STUDY_DATE}/status`,
+      headers: { cookie: sessionCookie('hyeonseo') },
+    });
+    expect(reversed.json().mine).toEqual({ submitted: true, displayName: 'hyeonseo' });
+    expect(reversed.json().partner).toEqual({ submitted: true, displayName: 'hyunji' });
+    expect(reversed.json().readyToCompare).toBe(true);
+
     // Partner's reflection content must never appear anywhere in the response.
     const serialized = JSON.stringify(afterBothBody);
     expect(serialized).not.toContain(VALID_REFLECTION);
