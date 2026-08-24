@@ -12,7 +12,7 @@ import {
   UNCERTAIN_BILLING_ERROR_CODES,
   type ChatMessage,
 } from '../mindlogic/types.js';
-import type { DictionaryEntry } from './types.js';
+import type { DictionaryEntry, DictionaryServiceLogger } from './types.js';
 
 const FEATURE = 'dictionary_translation' as const;
 const HANGUL = /[가-힣]/;
@@ -96,11 +96,28 @@ export function buildDictionaryTranslationMessages(entry: DictionaryEntry): Chat
   ];
 }
 
+/** One failed Zod check, reduced to only its field path and issue code — never `message` or any
+ * received value, since either could echo the model's actual generated Korean text. */
+export interface DictionaryTranslationZodIssue {
+  path: string;
+  code: string;
+}
+
+const MAX_ZOD_ISSUES_CAPTURED = 10;
+
+function summarizeZodIssues(error: z.ZodError): DictionaryTranslationZodIssue[] {
+  return error.issues.slice(0, MAX_ZOD_ISSUES_CAPTURED).map((issue) => ({
+    path: issue.path.join('.'),
+    code: issue.code,
+  }));
+}
+
 export interface DictionaryTranslatorDeps {
   creditService: CreditService;
   mindlogicClient: MindlogicClient;
   now?: () => Date;
   generateRequestId?: () => string;
+  logger?: DictionaryServiceLogger;
 }
 
 export class DictionaryTranslator {
@@ -122,7 +139,13 @@ export class DictionaryTranslator {
       outputTokens: maxOutputTokens,
       now: this.deps.now?.(),
     });
-    if (!reservation.ok) return [];
+    if (!reservation.ok) {
+      this.deps.logger?.warn(
+        { feature: FEATURE, outcome: 'reservation_rejected', reason: reservation.reason, model },
+        'dictionary translation failed',
+      );
+      return [];
+    }
     const reserved = reservation.record.creditsReserved;
     let completion;
     try {
@@ -135,19 +158,43 @@ export class DictionaryTranslator {
       });
     } catch (error) {
       if (error instanceof MindlogicApiError) {
+        let settlement: string;
         if (UNCERTAIN_BILLING_ERROR_CODES.includes(error.code)) {
           await this.deps.creditService.markReconciliationPending(requestId, error.code);
+          settlement = 'reconciliation_pending';
         } else if (
           RECEIVED_RESPONSE_ERROR_CODES.includes(error.code) ||
           CERTAIN_NOT_SENT_ERROR_CODES.includes(error.code)
         ) {
           await this.deps.creditService.releaseCredits(requestId, error.code);
+          settlement = 'released';
         } else {
           await this.deps.creditService.releaseCredits(requestId, 'unknown_error');
+          settlement = 'released_unknown_error';
         }
+        this.deps.logger?.warn(
+          {
+            feature: FEATURE,
+            outcome: 'upstream_failed',
+            upstreamCode: error.code,
+            upstreamStatus: error.status,
+            settlement,
+            model,
+          },
+          'dictionary translation failed',
+        );
         return [];
       }
       await this.deps.creditService.releaseCredits(requestId, 'pre_provider_failure');
+      this.deps.logger?.warn(
+        {
+          feature: FEATURE,
+          outcome: 'pre_provider_failure',
+          errorType: error instanceof Error ? error.name : 'unknown',
+          model,
+        },
+        'dictionary translation failed',
+      );
       return [];
     }
     const usage = completion.usage;
@@ -155,13 +202,44 @@ export class DictionaryTranslator {
       ? calculateCredits(model, usage.prompt_tokens, usage.completion_tokens)
       : reserved;
     await this.deps.creditService.commitCredits(requestId, Math.min(actual, reserved));
-    if (actual > reserved) return [];
-    try {
-      const parsed = JSON.parse(completion.choices[0]?.message.content ?? '');
-      const result = dictionaryTranslationSchema.safeParse(parsed);
-      return result.success ? result.data.koreanTranslations : [];
-    } catch {
+    if (actual > reserved) {
+      this.deps.logger?.warn(
+        { feature: FEATURE, outcome: 'reservation_exceeded', model, reserved, actual },
+        'dictionary translation failed',
+      );
       return [];
     }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(completion.choices[0]?.message.content ?? '');
+    } catch {
+      this.deps.logger?.warn(
+        {
+          feature: FEATURE,
+          outcome: 'invalid_json',
+          model,
+          // Whether max_tokens was actually hit — a truncated response is the most likely
+          // reason JSON.parse fails, distinct from the model returning malformed JSON outright.
+          finishReason: completion.choices[0]?.finish_reason ?? null,
+          completionTokens: usage?.completion_tokens ?? null,
+        },
+        'dictionary translation failed',
+      );
+      return [];
+    }
+    const result = dictionaryTranslationSchema.safeParse(parsed);
+    if (!result.success) {
+      this.deps.logger?.warn(
+        {
+          feature: FEATURE,
+          outcome: 'schema_invalid',
+          model,
+          issues: summarizeZodIssues(result.error),
+        },
+        'dictionary translation failed',
+      );
+      return [];
+    }
+    return result.data.koreanTranslations;
   }
 }

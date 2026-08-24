@@ -30,7 +30,20 @@ export const FEATURE_MODEL_CONFIG: Partial<Record<CreditFeature, FeatureModelCon
   },
   dictionary_translation: {
     model: 'gpt-5.4-mini',
-    maxOutputTokens: 96,
+    // Was 96 — too small in practice. max_tokens caps *generation*, not a reservation
+    // estimate: GPT-family tokenizers represent Hangul syllables far less densely than
+    // estimateTokensUpperBound's byte-length upper bound implies (often 1.5-3 tokens per
+    // syllable, not close to 1), so a single near-max-length translation (up to 30 Hangul
+    // characters) alone can approach or exceed 60-90 tokens before any JSON structure or the
+    // up-to-5-item array is counted. At 96, the model silently hit max_tokens mid-string on
+    // production traffic (finish_reason: 'length'), truncating the JSON on every call — never a
+    // model/schema/credit failure, so it went completely unlogged before this file's dictionary
+    // -translation logging was added (see translation.ts's 'invalid_json' outcome, which now
+    // reports finishReason/completionTokens specifically to catch this again if it recurs).
+    // 400 gives ample headroom for the worst case (5 items x 30 chars + JSON overhead) while
+    // remaining a tiny fraction of the monthly credit cap (worst-case reservation ceiling here
+    // is under 2 credits/call; actual commitCredits() settles to real usage, typically far less).
+    maxOutputTokens: 400,
   },
   // Minimal bare-messages diagnostic call — see scripts/mindlogic-contract-check.ts.
   provider_contract_check: {

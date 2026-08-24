@@ -134,6 +134,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         new DictionaryTranslator({
           creditService: app.creditService,
           mindlogicClient: app.mindlogicClient,
+          logger: app.log,
         }),
         app.log,
       ),

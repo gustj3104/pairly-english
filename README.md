@@ -1400,6 +1400,38 @@ of rejecting the whole translation — models routinely add one despite the syst
 for word-level meanings only, and treating that cosmetic habit as a hard schema failure meant a
 translation that was otherwise perfectly valid was silently discarded every time.
 
+### Korean translation: root cause of the persistent "unavailable" bug + failure logging
+
+Even with the cooldown above, several real words (confirmed in production: "communication",
+"problem") kept failing on every attempt, cooldown or not —
+`korean_translation_attempted_at` was set but `korean_translations` stayed `[]` forever, meaning
+`DictionaryTranslator.translate()` itself was failing deterministically on every call. Before this
+fix, every branch inside `translate()` swallowed its failure straight to `[]` with **zero
+logging** — a rejected credit reservation, every Mindlogic error, a JSON parse failure, and a Zod
+schema rejection were all completely invisible in production logs, making the actual cause
+unfindable from outside the process.
+
+Root cause: `FEATURE_MODEL_CONFIG.dictionary_translation.maxOutputTokens` was `96`
+(`src/services/mindlogic/feature-config.ts`) — `max_tokens` caps the model's _generation_, not a
+token-count estimate, and GPT-family tokenizers represent Hangul syllables far less densely than
+`estimateTokensUpperBound`'s byte-length upper bound implies (often 1.5–3 tokens/syllable). A
+single near-max-length translation (up to 30 Hangul characters, the schema's own limit) can alone
+approach or exceed 60–90 tokens before the JSON structure or the rest of the up-to-5-item array is
+counted, so the model was silently hitting `max_tokens` mid-string (`finish_reason: 'length'`) on
+real words, producing truncated/invalid JSON on every call — deterministically, not transiently,
+which is exactly why retrying (even after the cooldown) never helped. Raised to `400` — ample
+headroom for the worst case, while the reservation ceiling per call is still under 2 credits
+(`commitCredits` settles to real usage, typically far less).
+
+`DictionaryTranslator` now takes an optional `logger` (wired to `app.log` in `app.ts`, same
+`DictionaryServiceLogger` shape `DictionaryService` already uses) and logs a `warn` at every
+failure exit — never on success — with only safe fields, never request/response content:
+`feature`, `outcome` (`reservation_rejected` / `upstream_failed` / `pre_provider_failure` /
+`reservation_exceeded` / `invalid_json` / `schema_invalid`), `model`, and outcome-specific detail
+(`reason` for a rejected reservation; `upstreamCode`/`upstreamStatus`/`settlement` for a Mindlogic
+error; `finishReason`/`completionTokens` for `invalid_json` — specifically so a future
+`max_tokens` truncation is distinguishable from a genuinely malformed response at a glance; `path` +`code`-only Zod issues, never `message` or the rejected value, for `schema_invalid`).
+
 ## Next steps (not yet implemented)
 
 - **A real smoke test of `POST /api/v1/reflections/compare`** — see

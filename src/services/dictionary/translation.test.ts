@@ -136,6 +136,7 @@ describe('DictionaryTranslator credit lifecycle', () => {
     const commitCredits = vi.fn().mockResolvedValue(undefined);
     const releaseCredits = vi.fn().mockResolvedValue(undefined);
     const markReconciliationPending = vi.fn().mockResolvedValue(undefined);
+    const warn = vi.fn();
     const translator = new DictionaryTranslator({
       creditService: {
         reserveCredits,
@@ -145,15 +146,23 @@ describe('DictionaryTranslator credit lifecycle', () => {
       } as unknown as CreditService,
       mindlogicClient: mindlogicClient as MindlogicClient,
       generateRequestId: () => '00000000-0000-4000-8000-000000000002',
+      logger: { warn },
     });
-    return { translator, reserveCredits, commitCredits, releaseCredits, markReconciliationPending };
+    return {
+      translator,
+      reserveCredits,
+      commitCredits,
+      releaseCredits,
+      markReconciliationPending,
+      warn,
+    };
   }
 
   // These four cover section 4's "Mindlogic 한국어 번역 실패" policy at the translator layer —
   // none of them may ever throw out of translate(); the caller always gets [] back so the
   // already-fetched English result can still be returned with HTTP 200.
   it('releases the reservation and returns [] on a Mindlogic 429', async () => {
-    const { translator, releaseCredits, markReconciliationPending } = reservedTranslator({
+    const { translator, releaseCredits, markReconciliationPending, warn } = reservedTranslator({
       createChatCompletion: vi
         .fn()
         .mockRejectedValue(
@@ -166,6 +175,19 @@ describe('DictionaryTranslator credit lifecycle', () => {
       'rate_limited',
     );
     expect(markReconciliationPending).not.toHaveBeenCalled();
+    // The actual upstream HTTP status/code and the credit settlement action taken — never any
+    // request/response content — are what makes a production failure diagnosable from logs.
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        feature: 'dictionary_translation',
+        outcome: 'upstream_failed',
+        upstreamCode: 'rate_limited',
+        upstreamStatus: 429,
+        settlement: 'released',
+        model: 'gpt-5.4-mini',
+      }),
+      'dictionary translation failed',
+    );
   });
 
   it('releases the reservation and returns [] on a Mindlogic 5xx', async () => {
@@ -200,7 +222,7 @@ describe('DictionaryTranslator credit lifecycle', () => {
   });
 
   it('commits the reservation but returns [] on malformed structured output', async () => {
-    const { translator, commitCredits } = reservedTranslator({
+    const { translator, commitCredits, warn } = reservedTranslator({
       createChatCompletion: vi.fn().mockResolvedValue({
         id: 'mock',
         model: 'gpt-5.4-mini',
@@ -214,10 +236,48 @@ describe('DictionaryTranslator credit lifecycle', () => {
       '00000000-0000-4000-8000-000000000002',
       expect.any(Number),
     );
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        feature: 'dictionary_translation',
+        outcome: 'invalid_json',
+        model: 'gpt-5.4-mini',
+        completionTokens: 10,
+      }),
+      'dictionary translation failed',
+    );
+  });
+
+  it('logs finish_reason so a max_tokens truncation is distinguishable from a genuinely malformed response — the actual production root cause of the "always unavailable" bug (maxOutputTokens was 96, too small for Korean output)', async () => {
+    const { translator, warn } = reservedTranslator({
+      createChatCompletion: vi.fn().mockResolvedValue({
+        id: 'mock',
+        model: 'gpt-5.4-mini',
+        choices: [
+          {
+            message: {
+              role: 'assistant' as const,
+              // A real truncated response: valid JSON prefix cut off mid-string by max_tokens.
+              content: '{"koreanTranslations":["여름","전성기","한창',
+            },
+            finish_reason: 'length',
+          },
+        ],
+        usage: { prompt_tokens: 100, completion_tokens: 96, total_tokens: 196 },
+      }),
+    });
+    await expect(translator.translate(entry())).resolves.toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: 'invalid_json',
+        finishReason: 'length',
+        completionTokens: 96,
+      }),
+      'dictionary translation failed',
+    );
   });
 
   it('commits the reservation but returns [] when the structured output has no Hangul (schema rejects it)', async () => {
-    const { translator, commitCredits } = reservedTranslator({
+    const { translator, commitCredits, warn } = reservedTranslator({
       createChatCompletion: vi.fn().mockResolvedValue({
         id: 'mock',
         model: 'gpt-5.4-mini',
@@ -234,5 +294,46 @@ describe('DictionaryTranslator credit lifecycle', () => {
     });
     await expect(translator.translate(entry())).resolves.toEqual([]);
     expect(commitCredits).toHaveBeenCalled();
+    // path+code only — never the model's actual rejected text.
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        feature: 'dictionary_translation',
+        outcome: 'schema_invalid',
+        model: 'gpt-5.4-mini',
+        issues: expect.arrayContaining([expect.objectContaining({ path: 'koreanTranslations.0' })]),
+      }),
+      'dictionary translation failed',
+    );
+  });
+
+  it('logs the reservation rejection reason (e.g. the shared monthly cap) without calling Mindlogic', async () => {
+    const warn = vi.fn();
+    const createChatCompletion = vi.fn();
+    const translator = new DictionaryTranslator({
+      creditService: {
+        reserveCredits: vi.fn().mockResolvedValue({ ok: false, reason: 'limit_exceeded' }),
+      } as unknown as CreditService,
+      mindlogicClient: { createChatCompletion } as unknown as MindlogicClient,
+      logger: { warn },
+    });
+    expect(await translator.translate(entry())).toEqual([]);
+    expect(createChatCompletion).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        feature: 'dictionary_translation',
+        outcome: 'reservation_rejected',
+        reason: 'limit_exceeded',
+        model: 'gpt-5.4-mini',
+      }),
+      'dictionary translation failed',
+    );
+  });
+
+  it('never logs anything on a successful translation', async () => {
+    const { translator, warn } = reservedTranslator({
+      createChatCompletion: vi.fn().mockResolvedValue(completed({ koreanTranslations: ['여름'] })),
+    });
+    await expect(translator.translate(entry())).resolves.toEqual(['여름']);
+    expect(warn).not.toHaveBeenCalled();
   });
 });
