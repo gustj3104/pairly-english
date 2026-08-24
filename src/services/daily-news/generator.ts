@@ -24,11 +24,27 @@ import { topicForStudyDate } from './weekday-topics.js';
 
 const FEATURE = 'daily_news' as const;
 
+/**
+ * Which local check rejected an otherwise-successful completion. Never
+ * carries model content — just enough to tell, from logs alone, whether
+ * the model is missing usage, returning malformed JSON, failing the
+ * article schema, drifting off-topic, or citing an off-allowlist source
+ * (see source-url.ts) — the last of which was previously indistinguishable
+ * from every other schema failure in production logs.
+ */
+export type DailyNewsSchemaErrorReason =
+  | 'missing_usage'
+  | 'invalid_json'
+  | 'schema_invalid'
+  | 'topic_mismatch'
+  | 'source_not_allowlisted'
+  | 'invalid_published_at';
+
 export type DailyNewsGenerationOutcome =
   | { status: 'ok'; requestId: string; article: GeneratedDailyNews; generatedAt: Date }
   | { status: 'limit_exceeded'; requestId: string; usage: UsageSummary }
   | { status: 'provider_exhausted'; requestId: string }
-  | { status: 'upstream_schema_error'; requestId: string }
+  | { status: 'upstream_schema_error'; requestId: string; reason: DailyNewsSchemaErrorReason }
   | { status: 'reservation_exceeded'; requestId: string }
   | {
       status: 'upstream_failed';
@@ -130,7 +146,7 @@ export async function generateDailyNews(
 
   if (!completion.usage) {
     await deps.creditService.commitCredits(requestId, reservedCredits);
-    return { status: 'upstream_schema_error', requestId };
+    return { status: 'upstream_schema_error', requestId, reason: 'missing_usage' };
   }
   const actual = calculateCredits(
     model,
@@ -148,14 +164,18 @@ export async function generateDailyNews(
   try {
     parsed = JSON.parse(completion.choices[0]?.message?.content ?? '');
   } catch {
-    return { status: 'upstream_schema_error', requestId };
+    return { status: 'upstream_schema_error', requestId, reason: 'invalid_json' };
   }
   const checked = dailyNewsModelResponseSchema.safeParse(parsed);
-  if (!checked.success) return { status: 'upstream_schema_error', requestId };
+  if (!checked.success) {
+    return { status: 'upstream_schema_error', requestId, reason: 'schema_invalid' };
+  }
   // Fails closed on any mismatch: this only proves the model's declared
   // `topic` string equals the required one, not that the article content
   // is actually about that topic — the prompt is the real control there.
-  if (checked.data.topic !== topic) return { status: 'upstream_schema_error', requestId };
+  if (checked.data.topic !== topic) {
+    return { status: 'upstream_schema_error', requestId, reason: 'topic_mismatch' };
+  }
   const source = validateSourceUrl(checked.data.sourceUrl);
   const citations = completion.citations;
   if (
@@ -163,7 +183,7 @@ export async function generateDailyNews(
     !Array.isArray(citations) ||
     !citations.some((citation) => validateSourceUrl(citation)?.href === source.href)
   ) {
-    return { status: 'upstream_schema_error', requestId };
+    return { status: 'upstream_schema_error', requestId, reason: 'source_not_allowlisted' };
   }
   const publishedAt = new Date(checked.data.publishedAt);
   const generatedAt = now();
@@ -171,7 +191,7 @@ export async function generateDailyNews(
     !Number.isFinite(publishedAt.getTime()) ||
     publishedAt.getTime() > generatedAt.getTime() + 60 * 60 * 1000
   ) {
-    return { status: 'upstream_schema_error', requestId };
+    return { status: 'upstream_schema_error', requestId, reason: 'invalid_published_at' };
   }
   // Built field-by-field (not spread) so `topic` — needed only for the
   // check above — can never leak into the public/persisted article.

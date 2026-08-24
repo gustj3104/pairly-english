@@ -1109,10 +1109,16 @@ allowlist covers Reuters, AP, BBC, NPR, The Guardian, NASA, WHO, and UN hosts, p
 IP literals, localhost, and suffix tricks such as `reuters.com.evil.test` are rejected. The server
 does not download or crawl the URL. Perplexity's official Sonar contract documents top-level
 `citations`, `search_results`, and `usage`; saving fails closed unless the structured `sourceUrl`
-exactly matches an allowlisted citation URL. Mindlogic Gateway passthrough of those Perplexity
-extensions and JSON Schema support have not been verified by a real `sonar-pro` POST, so deployment
-must run one separately approved smoke test before enabling production traffic. There is no model
-fallback and no automatic retry.
+exactly matches an allowlisted citation URL. `prompt.ts`'s system prompt spells this same allowlist
+out to the model by name (derived from `source-url.ts`'s `DAILY_NEWS_SOURCE_ALLOWLIST`, so the two
+can never drift apart) — without that, sonar-pro's real web search routinely cites outlets outside
+the allowlist and every generation fails closed as `upstream_schema_error`, which is exactly what
+production logs showed before this was added. A rejected completion's specific cause (missing
+usage, invalid JSON, schema mismatch, topic mismatch, disallowed source, bad `publishedAt`) is
+captured as a `reason` code and logged, rather than collapsing into one opaque outcome. Mindlogic
+Gateway passthrough of those Perplexity extensions and JSON Schema support have not been verified
+by a real `sonar-pro` POST, so deployment must run one separately approved smoke test before
+enabling production traffic. There is no model fallback and no automatic retry.
 
 Mindlogic does not publish a verified credit-unit conversion for `sonar-pro`. The ledger therefore
 uses a deliberately conservative feature reservation rate of 3 input / 15 output credits per

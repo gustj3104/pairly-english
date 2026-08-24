@@ -223,7 +223,9 @@ export async function studyDaysRoutes(
               upstreamStatus: outcome.upstreamStatus,
               ...outcome.observability,
             }
-          : safeLog,
+          : outcome.status === 'upstream_schema_error'
+            ? { ...safeLog, reason: outcome.reason }
+            : safeLog,
         'daily news generation failed',
       );
       reply.code(outcome.status === 'reservation_exceeded' ? 500 : 502);
