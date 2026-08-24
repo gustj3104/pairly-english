@@ -80,7 +80,10 @@ export class DictionaryService {
     private readonly logger?: DictionaryServiceLogger,
   ) {}
 
-  async lookup(word: string): Promise<DictionaryLookupResponse> {
+  async lookup(
+    word: string,
+    options: { forceTranslationRetry?: boolean } = {},
+  ): Promise<DictionaryLookupResponse> {
     const result = await this.repository.getOrRefresh(word, this.now(), () =>
       fetchDictionaryEntryWithFallback(word, this.fetchImpl, this.now, this.logger),
     );
@@ -90,6 +93,7 @@ export class DictionaryService {
         koreanTranslations = await this.translationRepository.getOrCreateTranslation(
           result.entry.normalizedWord,
           (entry) => this.translator!.translate(entry),
+          { force: options.forceTranslationRetry, now: this.now() },
         );
       } catch (error) {
         // Never lets a Mindlogic/translation-storage failure fail the whole lookup — the

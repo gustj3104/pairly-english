@@ -1,0 +1,1 @@
+ALTER TABLE "dictionary_entries" ADD COLUMN "korean_translation_attempted_at" timestamp with time zone;

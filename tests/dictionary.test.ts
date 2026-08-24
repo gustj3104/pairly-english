@@ -458,6 +458,46 @@ describe('dictionary provider failure isolation (life-502 regression)', () => {
     await app.close();
   });
 
+  it('a plain lookup never forces a translation retry; only ?retryTranslation=true does', async () => {
+    const receivedForce: Array<boolean | undefined> = [];
+    const repo = new MemoryRepository();
+    const translationRepository: DictionaryTranslationRepository = {
+      getOrCreateTranslation: async (_word, create, options) => {
+        receivedForce.push(options?.force);
+        return create(repo.entry!);
+      },
+    };
+    const service = new DictionaryService(
+      repo,
+      async () => jsonResponse(providerBody()),
+      () => NOW,
+      translationRepository,
+      { translate: async () => ['발표하다'] } as unknown as DictionaryTranslator,
+    );
+    const app = buildApp({
+      dictionaryService: service,
+      studyDaysRoutesOptions: { sessionSecret: SECRET, maxFutureDays: 1 },
+    });
+    const token = signSession({ name: 'hyunji' }, SECRET, 3600);
+
+    const plain = await app.inject({
+      method: 'GET',
+      url: '/api/v1/dictionary/lookup?word=announce',
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` },
+    });
+    expect(plain.statusCode).toBe(200);
+
+    const retried = await app.inject({
+      method: 'GET',
+      url: '/api/v1/dictionary/lookup?word=announce&retryTranslation=true',
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` },
+    });
+    expect(retried.statusCode).toBe(200);
+
+    expect(receivedForce).toEqual([false, true]);
+    await app.close();
+  });
+
   it('never calls the provider or reserves credit on a cache hit', async () => {
     const repo = new MemoryRepository();
     repo.entry = {

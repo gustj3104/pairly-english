@@ -115,6 +115,13 @@ export const dictionaryEntries = pgTable(
     normalizedWord: varchar('normalized_word', { length: 60 }).notNull().unique(),
     meanings: jsonb('meanings').$type<DictionaryMeaningJson[]>().notNull(),
     koreanTranslations: jsonb('korean_translations').$type<string[]>().notNull().default([]),
+    // Set every time a Korean translation attempt finishes (success or failure), never on a
+    // plain English refresh. Lets getOrCreateTranslation() throttle automatic re-attempts for a
+    // word whose translation keeps failing, without ever permanently caching the failure itself
+    // (cacheSchemaVersion is only bumped on success — see TRANSLATED_DICTIONARY_CACHE_SCHEMA_VERSION).
+    koreanTranslationAttemptedAt: timestamp('korean_translation_attempted_at', {
+      withTimezone: true,
+    }),
     pronunciation: varchar('pronunciation', { length: 240 }),
     audioUrl: varchar('audio_url', { length: 2048 }),
     sourceUrl: varchar('source_url', { length: 2048 }).notNull(),

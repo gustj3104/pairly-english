@@ -1,0 +1,959 @@
+{
+  "id": "4ce717c0-3b01-423c-8e91-56971e878365",
+  "prevId": "f658187c-5d1e-4bf4-8ba9-dc47e93038f6",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.credit_periods": {
+      "name": "credit_periods",
+      "schema": "",
+      "columns": {
+        "billing_month": {
+          "name": "billing_month",
+          "type": "varchar(7)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "committed_credits": {
+          "name": "committed_credits",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "reserved_credits": {
+          "name": "reserved_credits",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "provider_reported_credits": {
+          "name": "provider_reported_credits",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "exhausted": {
+          "name": "exhausted",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "credit_periods_committed_credits_non_negative": {
+          "name": "credit_periods_committed_credits_non_negative",
+          "value": "\"credit_periods\".\"committed_credits\" >= 0"
+        },
+        "credit_periods_reserved_credits_non_negative": {
+          "name": "credit_periods_reserved_credits_non_negative",
+          "value": "\"credit_periods\".\"reserved_credits\" >= 0"
+        },
+        "credit_periods_provider_reported_credits_non_negative": {
+          "name": "credit_periods_provider_reported_credits_non_negative",
+          "value": "\"credit_periods\".\"provider_reported_credits\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.credit_usage_records": {
+      "name": "credit_usage_records",
+      "schema": "",
+      "columns": {
+        "request_id": {
+          "name": "request_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "billing_month": {
+          "name": "billing_month",
+          "type": "varchar(7)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "feature": {
+          "name": "feature",
+          "type": "credit_feature",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model": {
+          "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "requested_at": {
+          "name": "requested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "input_tokens": {
+          "name": "input_tokens",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "output_tokens": {
+          "name": "output_tokens",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "credits_reserved": {
+          "name": "credits_reserved",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "credits_used": {
+          "name": "credits_used",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "credit_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "error_code": {
+          "name": "error_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "user_ref": {
+          "name": "user_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "retry_count": {
+          "name": "retry_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "credit_usage_records_billing_month_credit_periods_billing_month_fk": {
+          "name": "credit_usage_records_billing_month_credit_periods_billing_month_fk",
+          "tableFrom": "credit_usage_records",
+          "tableTo": "credit_periods",
+          "columnsFrom": [
+            "billing_month"
+          ],
+          "columnsTo": [
+            "billing_month"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "credit_usage_records_input_tokens_non_negative": {
+          "name": "credit_usage_records_input_tokens_non_negative",
+          "value": "\"credit_usage_records\".\"input_tokens\" >= 0"
+        },
+        "credit_usage_records_output_tokens_non_negative": {
+          "name": "credit_usage_records_output_tokens_non_negative",
+          "value": "\"credit_usage_records\".\"output_tokens\" >= 0"
+        },
+        "credit_usage_records_credits_reserved_non_negative": {
+          "name": "credit_usage_records_credits_reserved_non_negative",
+          "value": "\"credit_usage_records\".\"credits_reserved\" >= 0"
+        },
+        "credit_usage_records_credits_used_non_negative": {
+          "name": "credit_usage_records_credits_used_non_negative",
+          "value": "\"credit_usage_records\".\"credits_used\" IS NULL OR \"credit_usage_records\".\"credits_used\" >= 0"
+        },
+        "credit_usage_records_retry_count_non_negative": {
+          "name": "credit_usage_records_retry_count_non_negative",
+          "value": "\"credit_usage_records\".\"retry_count\" >= 0"
+        },
+        "credit_usage_records_reconciliation_pending_has_error_code": {
+          "name": "credit_usage_records_reconciliation_pending_has_error_code",
+          "value": "\"credit_usage_records\".\"status\" != 'reconciliation_pending' OR \"credit_usage_records\".\"error_code\" IS NOT NULL"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.daily_news_articles": {
+      "name": "daily_news_articles",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "study_date": {
+          "name": "study_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "title": {
+          "name": "title",
+          "type": "varchar(240)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_name": {
+          "name": "source_name",
+          "type": "varchar(120)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_url": {
+          "name": "source_url",
+          "type": "varchar(2048)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "published_at": {
+          "name": "published_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "generated_at": {
+          "name": "generated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "summary": {
+          "name": "summary",
+          "type": "varchar(1200)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content": {
+          "name": "content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "vocabulary": {
+          "name": "vocabulary",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "daily_news_articles_study_date_unique": {
+          "name": "daily_news_articles_study_date_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "study_date"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.dictionary_entries": {
+      "name": "dictionary_entries",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "query_word": {
+          "name": "query_word",
+          "type": "varchar(60)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "normalized_word": {
+          "name": "normalized_word",
+          "type": "varchar(60)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "meanings": {
+          "name": "meanings",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "korean_translations": {
+          "name": "korean_translations",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "korean_translation_attempted_at": {
+          "name": "korean_translation_attempted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pronunciation": {
+          "name": "pronunciation",
+          "type": "varchar(240)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "audio_url": {
+          "name": "audio_url",
+          "type": "varchar(2048)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_url": {
+          "name": "source_url",
+          "type": "varchar(2048)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attribution": {
+          "name": "attribution",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{\"provider\":\"FreeDictionaryAPI.com\",\"name\":\"Wiktionary\",\"license\":\"CC BY-SA 4.0\",\"licenseUrl\":\"https://creativecommons.org/licenses/by-sa/4.0/\"}'::jsonb"
+        },
+        "cache_schema_version": {
+          "name": "cache_schema_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "fetched_at": {
+          "name": "fetched_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "dictionary_entries_expires_at_idx": {
+          "name": "dictionary_entries_expires_at_idx",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "dictionary_entries_normalized_word_unique": {
+          "name": "dictionary_entries_normalized_word_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "normalized_word"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "dictionary_entries_query_word_non_blank": {
+          "name": "dictionary_entries_query_word_non_blank",
+          "value": "length(trim(\"dictionary_entries\".\"query_word\")) > 0"
+        },
+        "dictionary_entries_normalized_word_non_blank": {
+          "name": "dictionary_entries_normalized_word_non_blank",
+          "value": "length(trim(\"dictionary_entries\".\"normalized_word\")) > 0"
+        },
+        "dictionary_entries_meanings_non_empty": {
+          "name": "dictionary_entries_meanings_non_empty",
+          "value": "jsonb_array_length(\"dictionary_entries\".\"meanings\") > 0"
+        },
+        "dictionary_entries_expiry_after_fetch": {
+          "name": "dictionary_entries_expiry_after_fetch",
+          "value": "\"dictionary_entries\".\"expires_at\" > \"dictionary_entries\".\"fetched_at\""
+        },
+        "dictionary_entries_cache_schema_version_positive": {
+          "name": "dictionary_entries_cache_schema_version_positive",
+          "value": "\"dictionary_entries\".\"cache_schema_version\" > 0"
+        },
+        "dictionary_entries_attribution_is_object": {
+          "name": "dictionary_entries_attribution_is_object",
+          "value": "jsonb_typeof(\"dictionary_entries\".\"attribution\") = 'object'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.reflections": {
+      "name": "reflections",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "study_date": {
+          "name": "study_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "participant_key": {
+          "name": "participant_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content": {
+          "name": "content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "reflection_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'submitted'"
+        },
+        "submitted_at": {
+          "name": "submitted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "reflections_study_date_study_days_study_date_fk": {
+          "name": "reflections_study_date_study_days_study_date_fk",
+          "tableFrom": "reflections",
+          "tableTo": "study_days",
+          "columnsFrom": [
+            "study_date"
+          ],
+          "columnsTo": [
+            "study_date"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "reflections_study_date_participant_key_unique": {
+          "name": "reflections_study_date_participant_key_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "study_date",
+            "participant_key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "reflections_display_name_non_blank": {
+          "name": "reflections_display_name_non_blank",
+          "value": "length(trim(\"reflections\".\"display_name\")) > 0"
+        },
+        "reflections_content_non_blank": {
+          "name": "reflections_content_non_blank",
+          "value": "length(trim(\"reflections\".\"content\")) > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.saved_vocabulary": {
+      "name": "saved_vocabulary",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "participant_key": {
+          "name": "participant_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "word": {
+          "name": "word",
+          "type": "varchar(60)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "normalized_word": {
+          "name": "normalized_word",
+          "type": "varchar(60)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sense_id": {
+          "name": "sense_id",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pronunciation": {
+          "name": "pronunciation",
+          "type": "varchar(240)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "audio_url": {
+          "name": "audio_url",
+          "type": "varchar(2048)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "part_of_speech": {
+          "name": "part_of_speech",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "definition": {
+          "name": "definition",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "example": {
+          "name": "example",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "korean_translations": {
+          "name": "korean_translations",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "source_url": {
+          "name": "source_url",
+          "type": "varchar(2048)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attribution": {
+          "name": "attribution",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{\"provider\":\"FreeDictionaryAPI.com\",\"name\":\"Wiktionary\",\"license\":\"CC BY-SA 4.0\",\"licenseUrl\":\"https://creativecommons.org/licenses/by-sa/4.0/\"}'::jsonb"
+        },
+        "article_id": {
+          "name": "article_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "context_sentence": {
+          "name": "context_sentence",
+          "type": "varchar(1000)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "saved_at": {
+          "name": "saved_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "saved_vocabulary_participant_saved_at_idx": {
+          "name": "saved_vocabulary_participant_saved_at_idx",
+          "columns": [
+            {
+              "expression": "participant_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "saved_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "saved_vocabulary_normalized_word_dictionary_entries_normalized_word_fk": {
+          "name": "saved_vocabulary_normalized_word_dictionary_entries_normalized_word_fk",
+          "tableFrom": "saved_vocabulary",
+          "tableTo": "dictionary_entries",
+          "columnsFrom": [
+            "normalized_word"
+          ],
+          "columnsTo": [
+            "normalized_word"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "saved_vocabulary_article_id_daily_news_articles_id_fk": {
+          "name": "saved_vocabulary_article_id_daily_news_articles_id_fk",
+          "tableFrom": "saved_vocabulary",
+          "tableTo": "daily_news_articles",
+          "columnsFrom": [
+            "article_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "saved_vocabulary_participant_word_unique": {
+          "name": "saved_vocabulary_participant_word_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "participant_key",
+            "normalized_word"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "saved_vocabulary_participant_non_blank": {
+          "name": "saved_vocabulary_participant_non_blank",
+          "value": "length(trim(\"saved_vocabulary\".\"participant_key\")) > 0"
+        },
+        "saved_vocabulary_definition_non_blank": {
+          "name": "saved_vocabulary_definition_non_blank",
+          "value": "length(trim(\"saved_vocabulary\".\"definition\")) > 0"
+        },
+        "saved_vocabulary_part_of_speech_non_blank": {
+          "name": "saved_vocabulary_part_of_speech_non_blank",
+          "value": "length(trim(\"saved_vocabulary\".\"part_of_speech\")) > 0"
+        },
+        "saved_vocabulary_korean_translations_array": {
+          "name": "saved_vocabulary_korean_translations_array",
+          "value": "jsonb_typeof(\"saved_vocabulary\".\"korean_translations\") = 'array'"
+        },
+        "saved_vocabulary_attribution_is_object": {
+          "name": "saved_vocabulary_attribution_is_object",
+          "value": "jsonb_typeof(\"saved_vocabulary\".\"attribution\") = 'object'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.study_day_comparisons": {
+      "name": "study_day_comparisons",
+      "schema": "",
+      "columns": {
+        "study_date": {
+          "name": "study_date",
+          "type": "date",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "request_id": {
+          "name": "request_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "comparison_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model": {
+          "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "input_fingerprint": {
+          "name": "input_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "result": {
+          "name": "result",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error_code": {
+          "name": "error_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "study_day_comparisons_study_date_study_days_study_date_fk": {
+          "name": "study_day_comparisons_study_date_study_days_study_date_fk",
+          "tableFrom": "study_day_comparisons",
+          "tableTo": "study_days",
+          "columnsFrom": [
+            "study_date"
+          ],
+          "columnsTo": [
+            "study_date"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "study_day_comparisons_request_id_unique": {
+          "name": "study_day_comparisons_request_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "request_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "study_day_comparisons_completed_has_result": {
+          "name": "study_day_comparisons_completed_has_result",
+          "value": "(\"study_day_comparisons\".\"status\" = 'completed') = (\"study_day_comparisons\".\"result\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.study_days": {
+      "name": "study_days",
+      "schema": "",
+      "columns": {
+        "study_date": {
+          "name": "study_date",
+          "type": "date",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "article_id": {
+          "name": "article_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "article_title": {
+          "name": "article_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "article_source_url": {
+          "name": "article_source_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "article_summary": {
+          "name": "article_summary",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "discussion_completed_at": {
+          "name": "discussion_completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "discussion_completed_by": {
+          "name": "discussion_completed_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {
+    "public.comparison_status": {
+      "name": "comparison_status",
+      "schema": "public",
+      "values": [
+        "processing",
+        "completed",
+        "failed",
+        "reconciliation_pending"
+      ]
+    },
+    "public.credit_feature": {
+      "name": "credit_feature",
+      "schema": "public",
+      "values": [
+        "reflection_comparison",
+        "daily_news",
+        "dictionary_translation",
+        "grammar_feedback",
+        "vocabulary_extraction",
+        "news_processing",
+        "reconciliation_adjustment",
+        "provider_contract_check"
+      ]
+    },
+    "public.credit_status": {
+      "name": "credit_status",
+      "schema": "public",
+      "values": [
+        "reserved",
+        "completed",
+        "failed",
+        "released",
+        "reconciliation_pending"
+      ]
+    },
+    "public.reflection_status": {
+      "name": "reflection_status",
+      "schema": "public",
+      "values": [
+        "submitted"
+      ]
+    }
+  },
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

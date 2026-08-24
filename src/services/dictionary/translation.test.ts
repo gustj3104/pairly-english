@@ -58,6 +58,14 @@ describe('dictionaryTranslationSchema', () => {
     expect(dictionaryTranslationSchema.safeParse(value).success).toBe(false);
   });
 
+  it('strips a trailing sentence-ending mark instead of rejecting the translation', () => {
+    expect(
+      dictionaryTranslationSchema.parse({
+        koreanTranslations: ['의사소통.', '전달!', '통신 。', '확인?'],
+      }).koreanTranslations,
+    ).toEqual(['의사소통', '전달', '통신', '확인']);
+  });
+
   it('accepts one through five short Korean meanings', () => {
     expect(
       dictionaryTranslationSchema.parse({

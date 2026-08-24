@@ -26,9 +26,17 @@ function containsControlCharacter(value: string): boolean {
   });
 }
 
+// Models routinely add a trailing sentence-ending mark to a short gloss despite the system
+// prompt asking for word-level meanings only (e.g. "의사소통." instead of "의사소통") — cosmetic,
+// not unsafe, so it's normalized away here rather than rejecting an otherwise-valid translation
+// outright. HTML/URL/markdown/control-character checks below are unaffected and still reject.
+const TRAILING_SENTENCE_PUNCTUATION = /[.!?。！？]+\s*$/;
+
 const shortTranslation = z
   .string()
-  .transform((value) => value.normalize('NFKC').trim())
+  .transform((value) =>
+    value.normalize('NFKC').trim().replace(TRAILING_SENTENCE_PUNCTUATION, '').trim(),
+  )
   .pipe(
     z
       .string()
@@ -36,8 +44,7 @@ const shortTranslation = z
       .max(30)
       .refine((value) => HANGUL.test(value))
       .refine((value) => !URL.test(value) && !MARKDOWN.test(value) && !HTML.test(value))
-      .refine((value) => !containsControlCharacter(value))
-      .refine((value) => !/[.!?。！？]\s*$/.test(value)),
+      .refine((value) => !containsControlCharacter(value)),
   );
 
 export const dictionaryTranslationSchema = z

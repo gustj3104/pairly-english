@@ -71,6 +71,13 @@
       "when": 1787143044482,
       "tag": "0009_huge_jane_foster",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1787569031718,
+      "tag": "0010_add_korean_translation_attempted_at",
+      "breakpoints": true
     }
   ]
 }

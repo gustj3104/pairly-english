@@ -1370,6 +1370,36 @@ When article context is saved, the article UUID must exist in `daily_news_articl
 whitespace context must be present in its content, and the selected word must occur at an English
 word boundary. The saved row references the article rather than duplicating article content.
 
+### Korean translation: bounded automatic retry
+
+A word whose Mindlogic translation keeps failing (a systematic issue, not a one-off) must never
+turn into an unbounded automatic retry loop: before this fix, every plain
+`GET /dictionary/lookup` for such a word re-attempted translation — and re-reserved credit —
+because a failed attempt is deliberately never promoted to
+`TRANSLATED_DICTIONARY_CACHE_SCHEMA_VERSION` (a failure must not be permanently cached as a
+"successful empty" result, since a transient failure should still be retried on the _next_
+lookup). The gap: nothing distinguished "the next lookup" from "every single lookup, forever,"
+so a structurally-failing word (e.g. a systematic AI/schema mismatch) silently spent one Mindlogic
+reservation per page view.
+
+Fixed with `korean_translation_attempted_at` (`dictionary_entries`, migration
+`0010_add_korean_translation_attempted_at`), set on every translation attempt, success or
+failure. `DrizzleDictionaryRepository.getOrCreateTranslation` now skips calling the translator —
+returning the cached (empty) result instead — when the last attempt was less than
+`AUTOMATIC_RETRANSLATION_COOLDOWN_MS` (5 minutes, `src/services/dictionary/repository.ts`) ago,
+via the pure, unit-tested `shouldSkipAutomaticRetranslation()`. An explicit user retry (the
+dictionary panel's "다시 시도" action, `GET /dictionary/lookup?word=...&retryTranslation=true`)
+always bypasses the cooldown — `DictionaryService.lookup(word, { forceTranslationRetry: true })`
+— but never bypasses the version-3 short-circuit: a word that already has a successful
+translation is never re-requested regardless of `retryTranslation`. The existing monthly credit
+cap (`CreditService.reserveCredits`) still bounds total spend either way.
+
+Separately, `dictionaryTranslationSchema` (`src/services/dictionary/translation.ts`) now strips a
+trailing sentence-ending mark (`.`/`!`/`?`/full-width equivalents) from each Korean gloss instead
+of rejecting the whole translation — models routinely add one despite the system prompt asking
+for word-level meanings only, and treating that cosmetic habit as a hard schema failure meant a
+translation that was otherwise perfectly valid was silently discarded every time.
+
 ## Next steps (not yet implemented)
 
 - **A real smoke test of `POST /api/v1/reflections/compare`** — see

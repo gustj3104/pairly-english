@@ -49,11 +49,46 @@ export interface DictionaryRepository {
   deleteVocabulary(participantKey: string, normalizedWord: string): Promise<boolean>;
 }
 
+export interface GetOrCreateTranslationOptions {
+  /** User-initiated retry — bypasses the automatic-retry cooldown below. Never bypasses the
+   * version-3 cache short-circuit: an already-successful translation is never re-requested. */
+  force?: boolean;
+  now?: Date;
+}
+
 export interface DictionaryTranslationRepository {
   getOrCreateTranslation(
     word: string,
     create: (entry: DictionaryEntry) => Promise<string[]>,
+    options?: GetOrCreateTranslationOptions,
   ): Promise<string[]>;
+}
+
+/**
+ * A word whose translation keeps failing (a systematic AI/schema/credit-limit issue, not a
+ * transient one) must never turn into an unbounded automatic retry: every plain page view or
+ * word click that reaches DictionaryService.lookup() would otherwise re-spend a Mindlogic
+ * reservation for the same word, forever, with no user action requested it. This cooldown
+ * throttles *automatic* re-attempts only; an explicit user retry (`force: true`, from the
+ * dictionary panel's "다시 시도" action) always bypasses it, still bounded by the existing
+ * monthly credit cap in CreditService.
+ */
+export const AUTOMATIC_RETRANSLATION_COOLDOWN_MS = 5 * 60 * 1000;
+
+/**
+ * Pure decision of whether getOrCreateTranslation should skip calling the translator and just
+ * return the (empty) cached result — i.e. this attempt is an automatic retry arriving before
+ * the cooldown following the last attempt has elapsed. Extracted so it's unit-testable without
+ * a real Postgres transaction.
+ */
+export function shouldSkipAutomaticRetranslation(
+  lastAttemptedAt: Date | null,
+  now: Date,
+  force: boolean | undefined,
+): boolean {
+  if (force) return false;
+  if (!lastAttemptedAt) return false;
+  return now.getTime() - lastAttemptedAt.getTime() < AUTOMATIC_RETRANSLATION_COOLDOWN_MS;
 }
 
 export class DrizzleDictionaryRepository
@@ -157,7 +192,9 @@ export class DrizzleDictionaryRepository
   async getOrCreateTranslation(
     word: string,
     create: (entry: DictionaryEntry) => Promise<string[]>,
+    options: GetOrCreateTranslationOptions = {},
   ): Promise<string[]> {
+    const now = options.now ?? new Date();
     return this.db.transaction(async (tx) => {
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtext(${`dictionary-translation:${word}`}))`,
@@ -169,15 +206,22 @@ export class DrizzleDictionaryRepository
       if (row.cacheSchemaVersion >= TRANSLATED_DICTIONARY_CACHE_SCHEMA_VERSION) {
         return row.koreanTranslations;
       }
+      if (shouldSkipAutomaticRetranslation(row.koreanTranslationAttemptedAt, now, options.force)) {
+        return row.koreanTranslations;
+      }
       const translations = await create(mapEntry(row));
-      if (translations.length === 0) return [];
       await tx
         .update(dictionaryEntries)
-        .set({
-          koreanTranslations: translations,
-          cacheSchemaVersion: TRANSLATED_DICTIONARY_CACHE_SCHEMA_VERSION,
-          updatedAt: new Date(),
-        })
+        .set(
+          translations.length === 0
+            ? { koreanTranslationAttemptedAt: now }
+            : {
+                koreanTranslations: translations,
+                cacheSchemaVersion: TRANSLATED_DICTIONARY_CACHE_SCHEMA_VERSION,
+                koreanTranslationAttemptedAt: now,
+                updatedAt: now,
+              },
+        )
         .where(eq(dictionaryEntries.normalizedWord, word));
       return translations;
     });

@@ -49,10 +49,14 @@ export async function dictionaryRoutes(
       config: { rateLimit: { max: 60, timeWindow: '1 hour' } },
     },
     async (request, reply) => {
-      const word = normalizeLookupWord((request.query as { word?: unknown }).word);
+      const query = request.query as { word?: unknown; retryTranslation?: unknown };
+      const word = normalizeLookupWord(query.word);
       if (!word) return error(reply, request, 400, 'VALIDATION_ERROR');
+      // User-initiated only: set by the dictionary panel's "다시 시도" (Retry) action after
+      // koreanTranslationStatus === 'unavailable', never sent automatically by a plain lookup.
+      const forceTranslationRetry = query.retryTranslation === 'true';
       try {
-        return await app.dictionaryService.lookup(word);
+        return await app.dictionaryService.lookup(word, { forceTranslationRetry });
       } catch (caught) {
         if (!(caught instanceof DictionaryError)) throw caught;
         if (caught.retryAfter) reply.header('retry-after', caught.retryAfter);
