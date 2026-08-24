@@ -41,6 +41,12 @@ class StubRepository implements ComparisonRepository {
   async getByDate(): Promise<StudyDayComparisonRow | null> {
     return this.byDate;
   }
+  async getReadSnapshot() {
+    return {
+      comparison: this.byDate,
+      currentInputFingerprint: this.byDate?.inputFingerprint ?? null,
+    };
+  }
   async claimRetry(): Promise<ClaimRetryOutcome> {
     return this.claimRetryResult;
   }

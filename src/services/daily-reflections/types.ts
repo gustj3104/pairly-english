@@ -23,17 +23,20 @@ export interface SubmitReflectionInput {
 }
 
 export type SubmitReflectionResult =
-  | { ok: true; submittedAt: Date; alreadySubmitted: boolean }
+  | { ok: true; reflection: ReflectionRow; alreadySubmitted: boolean; updated: boolean }
   | { ok: false; reason: 'article_mismatch' }
-  | { ok: false; reason: 'participant_limit_reached' };
+  | { ok: false; reason: 'participant_limit_reached' }
+  | { ok: false; reason: 'comparison_in_progress' };
 
 export interface ReflectionRow {
+  id: string;
   studyDate: string;
   participantKey: string;
   displayName: string;
   content: string;
   status: 'submitted';
   submittedAt: Date;
+  updatedAt: Date;
 }
 
 export interface DiscussionCompletion {
@@ -61,8 +64,8 @@ export interface DailyReflectionRepository {
    *  1. Ensure the study_days row exists (first submitter's article wins).
    *  2. Lock that row for the rest of this call.
    *  3. Reject with 'article_mismatch' if the locked row's article differs.
-   *  4. If this participant already submitted, return that row's
-   *     submittedAt idempotently (content is never overwritten).
+   *  4. If this participant already submitted, update that same row in
+   *     place (preserving id/submittedAt) when content changed.
    *  5. Otherwise, reject with 'participant_limit_reached' once 2 distinct
    *     participants have already submitted for this date.
    *  6. Otherwise, insert the new reflection row.

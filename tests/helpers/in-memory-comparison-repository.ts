@@ -145,6 +145,23 @@ export class InMemoryComparisonRepository implements ComparisonRepository {
     return this.rows.get(studyDate) ?? null;
   }
 
+  async getReadSnapshot(studyDate: string, computeFingerprint: ComputeFingerprint) {
+    const comparison = this.rows.get(studyDate) ?? null;
+    const article = await this.dailyReflectionRepository.getStudyDayArticle(studyDate);
+    const reflectionRows = await this.dailyReflectionRepository.getReflectionsForDate(studyDate);
+    const currentInputFingerprint =
+      article && reflectionRows.length === 2
+        ? computeFingerprint({
+            articleId: article.id,
+            reflections: reflectionRows.map((row) => ({
+              participantKey: row.participantKey,
+              content: row.content,
+            })),
+          })
+        : null;
+    return { comparison, currentInputFingerprint };
+  }
+
   async claimRetry(studyDate: string): Promise<ClaimRetryOutcome> {
     const existing = this.rows.get(studyDate);
     if (!existing) return { outcome: 'not_started' };

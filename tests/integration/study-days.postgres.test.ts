@@ -16,7 +16,7 @@ import { ComparisonService } from '../../src/services/daily-reflections/comparis
 import { DrizzleComparisonRepository } from '../../src/services/daily-reflections/comparison-repository.js';
 import { MindlogicClient } from '../../src/services/mindlogic/client.js';
 import { SESSION_COOKIE_NAME, signSession } from '../../src/services/auth/session.js';
-import { reflections } from '../../src/db/schema.js';
+import { reflections, studyDays } from '../../src/db/schema.js';
 
 /**
  * Combines a real, throwaway PostgreSQL instance (Testcontainers) with a
@@ -134,6 +134,45 @@ function buildTestApp(
 }
 
 describe('daily reflections — real PostgreSQL end to end', () => {
+  it('loads a manually inserted submitted reflection and updates the same id', async () => {
+    const originalId = crypto.randomUUID();
+    await testDb.db.insert(studyDays).values({
+      studyDate: STUDY_DATE,
+      articleId: 'article-1',
+      articleTitle: 'The Quiet Revolution',
+    });
+    await testDb.db.insert(reflections).values({
+      id: originalId,
+      studyDate: STUDY_DATE,
+      participantKey: 'hyunji',
+      displayName: 'A display name that is not an identity',
+      content: VALID_REFLECTION,
+      status: 'submitted',
+      submittedAt: FIXED_NOW,
+      updatedAt: FIXED_NOW,
+    });
+    const app = buildTestApp();
+    const read = await app.inject({
+      method: 'GET',
+      url: `/api/v1/study-days/${STUDY_DATE}/reflection`,
+      headers: { cookie: sessionCookie('hyunji') },
+    });
+    expect(read.json().reflection).toMatchObject({ id: originalId, content: VALID_REFLECTION });
+
+    const update = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/study-days/${STUDY_DATE}/reflection`,
+      headers: { cookie: sessionCookie('hyunji') },
+      payload: validBody({ reflection: `${VALID_REFLECTION} Updated.` }),
+    });
+    expect(update.json()).toMatchObject({ id: originalId, updated: true });
+    const rows = await testDb.db.select().from(reflections).where(eq(reflections.studyDate, STUDY_DATE));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.submittedAt).toEqual(FIXED_NOW);
+    expect(rows[0]?.updatedAt.getTime()).toBeGreaterThanOrEqual(FIXED_NOW.getTime());
+    await app.close();
+  });
+
   it('the two real production participants can both succeed via the real HTTP+DB path', async () => {
     const app = buildTestApp();
 

@@ -162,10 +162,15 @@ describe('PUT /api/v1/study-days/:date/reflection — successful submission', ()
     const response = await submit(app, 'hyunji');
     expect(response.statusCode).toBe(200);
     const body = response.json();
-    expect(body).toEqual({
+    expect(body).toMatchObject({
       studyDate: STUDY_DATE,
+      id: expect.any(String),
+      content: VALID_REFLECTION,
+      status: 'submitted',
       submitted: true,
       submittedAt: expect.any(String),
+      updatedAt: expect.any(String),
+      updated: false,
     });
     expect(() => new Date(body.submittedAt).toISOString()).not.toThrow();
     await app.close();
@@ -182,6 +187,33 @@ describe('PUT /api/v1/study-days/:date/reflection — successful submission', ()
       headers: { cookie: sessionCookie('hyunji') },
     });
     expect(status.json().mine).toEqual({ submitted: true, displayName: 'hyunji' });
+    await app.close();
+  });
+
+  it('returns only the caller reflection and updates it in place', async () => {
+    const app = buildTestApp();
+    const first = await submit(app, 'hyunji');
+    await submit(app, 'hyeonseo', validBody({ reflection: `${VALID_REFLECTION} Partner.` }));
+
+    const mine = await app.inject({
+      method: 'GET',
+      url: `/api/v1/study-days/${STUDY_DATE}/reflection`,
+      headers: { cookie: sessionCookie('hyunji') },
+    });
+    expect(mine.json().reflection.content).toBe(VALID_REFLECTION);
+    expect(JSON.stringify(mine.json())).not.toContain('Partner.');
+
+    const editedContent = `${VALID_REFLECTION} Edited.`;
+    const edited = await submit(app, 'hyunji', validBody({ reflection: editedContent }));
+    expect(edited.json()).toMatchObject({
+      id: first.json().id,
+      content: editedContent,
+      submittedAt: first.json().submittedAt,
+      updated: true,
+    });
+    expect(new Date(edited.json().updatedAt).getTime()).toBeGreaterThanOrEqual(
+      new Date(first.json().updatedAt).getTime(),
+    );
     await app.close();
   });
 

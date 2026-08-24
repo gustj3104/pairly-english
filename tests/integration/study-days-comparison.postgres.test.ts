@@ -248,6 +248,21 @@ describe('real concurrency: ~20 concurrent POST /compare for the same date', () 
   });
 });
 
+describe('real concurrency: reflection edits versus comparison generation', () => {
+  it('rejects an edit while the shared comparison row is processing', async () => {
+    const app = buildTestApp({ mindlogicClient: successfulMindlogicClient(undefined, 200) });
+    await submitBoth(app);
+    const comparison = post(app, '/compare', 'hyunji');
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    const edit = await submit(app, 'hyeonseo', ' Edited while processing.');
+    expect(edit.statusCode).toBe(409);
+    expect(edit.json().error.code).toBe('COMPARISON_IN_PROGRESS');
+    await comparison;
+    await app.close();
+  });
+});
+
 describe('caching', () => {
   it('completed result is persisted and re-querying does not call the provider again', async () => {
     let callCount = 0;

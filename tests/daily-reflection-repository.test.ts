@@ -40,7 +40,7 @@ describe('DailyReflectionRepository — participant limit', () => {
     expect(third).toEqual({ ok: false, reason: 'participant_limit_reached' });
   });
 
-  it('the same participant resubmitting is idempotent, not counted as a new slot', async () => {
+  it('the same participant updates the existing row without consuming a new slot', async () => {
     const repository = new InMemoryDailyReflectionRepository();
 
     const first = await repository.submitReflection(submission('participant-a', 'A'));
@@ -49,7 +49,12 @@ describe('DailyReflectionRepository — participant limit', () => {
     const resubmit = await repository.submitReflection(
       submission('participant-a', 'A', 'a different follow-up thought'),
     );
-    expect(resubmit).toMatchObject({ ok: true, alreadySubmitted: true });
+    expect(resubmit).toMatchObject({ ok: true, alreadySubmitted: true, updated: true });
+    if (first.ok && resubmit.ok) {
+      expect(resubmit.reflection.id).toBe(first.reflection.id);
+      expect(resubmit.reflection.submittedAt).toEqual(first.reflection.submittedAt);
+      expect(resubmit.reflection.content).toBe('a different follow-up thought');
+    }
 
     const second = await repository.submitReflection(submission('participant-b', 'B'));
     expect(second).toMatchObject({ ok: true, alreadySubmitted: false });

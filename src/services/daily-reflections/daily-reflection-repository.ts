@@ -1,6 +1,6 @@
 import { and, eq, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { reflections, studyDays } from '../../db/schema.js';
+import { reflections, studyDayComparisons, studyDays } from '../../db/schema.js';
 import type * as schema from '../../db/schema.js';
 import type {
   DailyReflectionRepository,
@@ -15,6 +15,19 @@ import type {
 type Db = NodePgDatabase<typeof schema>;
 
 const MAX_PARTICIPANTS_PER_DAY = 2;
+
+function toReflectionRow(row: typeof reflections.$inferSelect): ReflectionRow {
+  return {
+    id: row.id,
+    studyDate: row.studyDate,
+    participantKey: row.participantKey,
+    displayName: row.displayName,
+    content: row.content,
+    status: row.status,
+    submittedAt: row.submittedAt,
+    updatedAt: row.updatedAt,
+  };
+}
 
 /**
  * PostgreSQL-backed DailyReflectionRepository. Atomicity for
@@ -66,8 +79,12 @@ export class DrizzleDailyReflectionRepository implements DailyReflectionReposito
         throw new Error(`study_days row for ${input.studyDate} could not be created`);
       }
 
-      if (day.articleId !== input.article.id) {
-        return { ok: false, reason: 'article_mismatch' } as const;
+      const [comparison] = await tx
+        .select({ status: studyDayComparisons.status })
+        .from(studyDayComparisons)
+        .where(eq(studyDayComparisons.studyDate, input.studyDate));
+      if (comparison?.status === 'processing') {
+        return { ok: false, reason: 'comparison_in_progress' } as const;
       }
 
       const [existing] = await tx
@@ -81,9 +98,30 @@ export class DrizzleDailyReflectionRepository implements DailyReflectionReposito
         );
 
       if (existing) {
-        // Same participant re-submitting — idempotent, and content is
-        // never overwritten once submitted.
-        return { ok: true, submittedAt: existing.submittedAt, alreadySubmitted: true } as const;
+        if (existing.content === input.content) {
+          return {
+            ok: true,
+            reflection: toReflectionRow(existing),
+            alreadySubmitted: true,
+            updated: false,
+          } as const;
+        }
+        const [updated] = await tx
+          .update(reflections)
+          .set({ content: input.content, displayName: input.displayName, updatedAt: input.submittedAt })
+          .where(eq(reflections.id, existing.id))
+          .returning();
+        if (!updated) throw new Error(`reflection ${existing.id} could not be updated`);
+        return {
+          ok: true,
+          reflection: toReflectionRow(updated),
+          alreadySubmitted: true,
+          updated: true,
+        } as const;
+      }
+
+      if (day.articleId !== input.article.id) {
+        return { ok: false, reason: 'article_mismatch' } as const;
       }
 
       const [countRow] = await tx
@@ -117,7 +155,12 @@ export class DrizzleDailyReflectionRepository implements DailyReflectionReposito
         );
       }
 
-      return { ok: true, submittedAt: inserted.submittedAt, alreadySubmitted: false } as const;
+      return {
+        ok: true,
+        reflection: toReflectionRow(inserted),
+        alreadySubmitted: false,
+        updated: false,
+      } as const;
     });
   }
 
@@ -127,14 +170,7 @@ export class DrizzleDailyReflectionRepository implements DailyReflectionReposito
       .from(reflections)
       .where(eq(reflections.studyDate, studyDate));
 
-    return rows.map((row) => ({
-      studyDate: row.studyDate,
-      participantKey: row.participantKey,
-      displayName: row.displayName,
-      content: row.content,
-      status: row.status,
-      submittedAt: row.submittedAt,
-    }));
+    return rows.map(toReflectionRow);
   }
 
   async getStudyDayArticle(studyDate: string): Promise<StudyDayArticle | null> {

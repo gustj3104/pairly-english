@@ -64,6 +64,14 @@ export class DailyReflectionService {
     return this.repository.submitReflection(input);
   }
 
+  async getOwnReflection(
+    studyDate: string,
+    callerParticipantKey: string,
+  ): Promise<ReflectionRow | null> {
+    const rows = await this.repository.getReflectionsForDate(studyDate);
+    return rows.find((row) => row.participantKey === callerParticipantKey) ?? null;
+  }
+
   async getStatus(studyDate: string, callerParticipantKey: string): Promise<StudyDayStatus> {
     const rows = await this.repository.getReflectionsForDate(studyDate);
     const partnerParticipantKey = getPartnerParticipantKey(callerParticipantKey);

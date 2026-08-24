@@ -27,6 +27,7 @@ export type ComparisonReadResult =
   | { status: 'not_started' }
   | { status: 'processing' }
   | { status: 'completed'; result: ReflectionComparisonResult }
+  | { status: 'stale' }
   | { status: 'failed'; errorCode: string | null }
   | { status: 'reconciliation_pending' }
   /** A stored 'completed' row's result no longer validates against the schema. */
@@ -118,11 +119,22 @@ export class ComparisonService {
   }
 
   async getComparison(studyDate: string): Promise<ComparisonReadResult> {
-    const row = await this.repository.getByDate(studyDate);
+    const snapshot = await this.repository.getReadSnapshot(
+      studyDate,
+      ({ articleId, reflections }) => computeInputFingerprint(articleId, reflections),
+    );
+    const row = snapshot.comparison;
     if (!row) return { status: 'not_started' };
     if (row.status === 'processing') return { status: 'processing' };
     if (row.status === 'reconciliation_pending') return { status: 'reconciliation_pending' };
     if (row.status === 'failed') return { status: 'failed', errorCode: row.errorCode };
+
+    if (
+      snapshot.currentInputFingerprint === null ||
+      row.inputFingerprint !== snapshot.currentInputFingerprint
+    ) {
+      return { status: 'stale' };
+    }
 
     // 'completed' — read-side validation, independent of the write-side
     // check in completeWithResult above.

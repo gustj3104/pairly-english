@@ -260,6 +260,29 @@ describe('POST /api/v1/study-days/:date/compare — first generation', () => {
 
     await app.close();
   });
+
+  it('marks a completed result stale after an edit and regenerates only on explicit Compare', async () => {
+    let callCount = 0;
+    const app = buildTestApp({ mindlogicClient: successfulMindlogicClient(() => callCount++) });
+    await submitBoth(app);
+    expect((await post(app, '/compare', 'hyunji')).statusCode).toBe(200);
+    expect(callCount).toBe(1);
+
+    await submit(
+      app,
+      'hyunji',
+      validBody({ reflection: `${VALID_REFLECTION} This is an edited ending.` }),
+    );
+    const staleForMine = await get(app, '/comparison', 'hyunji');
+    const staleForPartner = await get(app, '/comparison', 'hyeonseo');
+    expect(staleForMine.json()).toEqual({ status: 'stale' });
+    expect(staleForPartner.json()).toEqual({ status: 'stale' });
+    expect(callCount).toBe(1);
+
+    expect((await post(app, '/compare', 'hyeonseo')).statusCode).toBe(200);
+    expect(callCount).toBe(2);
+    await app.close();
+  });
 });
 
 describe('POST /api/v1/study-days/:date/compare — in-flight (processing)', () => {

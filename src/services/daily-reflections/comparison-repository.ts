@@ -23,6 +23,11 @@ export interface StudyDayComparisonRow {
   updatedAt: Date;
 }
 
+export interface ComparisonReadSnapshot {
+  comparison: StudyDayComparisonRow | null;
+  currentInputFingerprint: string | null;
+}
+
 export type ComputeFingerprint = (input: {
   articleId: string;
   reflections: FingerprintReflectionInput[];
@@ -82,6 +87,12 @@ export interface ComparisonRepository {
 
   /** Read-only lookup for GET /study-days/:date/comparison. */
   getByDate(studyDate: string): Promise<StudyDayComparisonRow | null>;
+
+  /** Consistent read-side view used to detect a result made stale by edited reflections. */
+  getReadSnapshot(
+    studyDate: string,
+    computeFingerprint: ComputeFingerprint,
+  ): Promise<ComparisonReadSnapshot>;
 
   /**
    * Claims retry rights on a 'failed' row via its own short,
@@ -203,11 +214,9 @@ export class DrizzleComparisonRepository implements ComparisonRepository {
         if (existing.inputFingerprint === fingerprint) {
           return { outcome: 'cached', result: existing.result } as const;
         }
-        // Defensive-only, effectively unreachable: reflections are
-        // immutable once submitted, so the fingerprint for a given date
-        // can never legitimately change. If it somehow does, the stored
-        // result no longer corresponds to the current inputs — treat the
-        // same as "no row" and overwrite with a fresh claim.
+        // A reflection was edited after this result completed. GET reports
+        // that row as stale; only this explicit POST /compare path replaces
+        // it with a fresh processing claim.
         const requestId = randomUUID();
         await tx
           .update(studyDayComparisons)
@@ -289,6 +298,41 @@ export class DrizzleComparisonRepository implements ComparisonRepository {
       .from(studyDayComparisons)
       .where(eq(studyDayComparisons.studyDate, studyDate));
     return row ? toRow(row) : null;
+  }
+
+  async getReadSnapshot(
+    studyDate: string,
+    computeFingerprint: ComputeFingerprint,
+  ): Promise<ComparisonReadSnapshot> {
+    return this.db.transaction(async (tx) => {
+      const [day] = await tx
+        .select()
+        .from(studyDays)
+        .where(eq(studyDays.studyDate, studyDate))
+        .for('share');
+      const [comparison] = await tx
+        .select()
+        .from(studyDayComparisons)
+        .where(eq(studyDayComparisons.studyDate, studyDate));
+      if (!day) return { comparison: comparison ? toRow(comparison) : null, currentInputFingerprint: null };
+      const reflectionRows = await tx
+        .select()
+        .from(reflections)
+        .where(eq(reflections.studyDate, studyDate));
+      if (reflectionRows.length !== 2) {
+        return { comparison: comparison ? toRow(comparison) : null, currentInputFingerprint: null };
+      }
+      return {
+        comparison: comparison ? toRow(comparison) : null,
+        currentInputFingerprint: computeFingerprint({
+          articleId: day.articleId,
+          reflections: reflectionRows.map((row) => ({
+            participantKey: row.participantKey,
+            content: row.content,
+          })),
+        }),
+      };
+    });
   }
 
   async claimRetry(studyDate: string): Promise<ClaimRetryOutcome> {

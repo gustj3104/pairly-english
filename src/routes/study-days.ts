@@ -324,6 +324,16 @@ export async function studyDaysRoutes(
     };
 
     if (!result.ok) {
+      if (result.reason === 'comparison_in_progress') {
+        reply.code(409);
+        return {
+          error: {
+            message: 'The reflection cannot be changed while comparison is in progress',
+            code: 'COMPARISON_IN_PROGRESS',
+            requestId: request.id,
+          },
+        };
+      }
       if (result.reason === 'article_mismatch') {
         request.log.warn(
           { ...logFields, success: false },
@@ -354,7 +364,38 @@ export async function studyDaysRoutes(
 
     request.log.info({ ...logFields, success: true }, 'daily reflection submitted');
     reply.code(200);
-    return { studyDate: date, submitted: true, submittedAt: result.submittedAt.toISOString() };
+    return {
+      studyDate: date,
+      id: result.reflection.id,
+      content: result.reflection.content,
+      status: result.reflection.status,
+      submitted: true,
+      submittedAt: result.reflection.submittedAt.toISOString(),
+      updatedAt: result.reflection.updatedAt.toISOString(),
+      updated: result.updated,
+    };
+  });
+
+  app.get('/study-days/:date/reflection', { preHandler: sessionGate }, async (request, reply) => {
+    const date = validateDateParam(request, reply, options.maxFutureDays, now);
+    if (date === undefined) return;
+    const session = requireSession(request, reply);
+    if (session === undefined) return;
+    const participantKey = normalizeParticipantKey(session.name);
+    const reflection = await app.dailyReflectionService.getOwnReflection(date, participantKey);
+    reply.code(200);
+    return reflection
+      ? {
+          studyDate: date,
+          reflection: {
+            id: reflection.id,
+            content: reflection.content,
+            status: reflection.status,
+            submittedAt: reflection.submittedAt.toISOString(),
+            updatedAt: reflection.updatedAt.toISOString(),
+          },
+        }
+      : { studyDate: date, reflection: null };
   });
 
   app.get('/study-days/:date/status', { preHandler: sessionGate }, async (request, reply) => {
@@ -622,6 +663,9 @@ export async function studyDaysRoutes(
       case 'completed':
         reply.code(200);
         return { status: 'completed', result: result.result };
+      case 'stale':
+        reply.code(200);
+        return { status: 'stale' };
       case 'failed':
         reply.code(200);
         return { status: 'failed', code: result.errorCode };

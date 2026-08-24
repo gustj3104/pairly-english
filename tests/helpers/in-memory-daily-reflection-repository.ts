@@ -50,7 +50,20 @@ export class InMemoryDailyReflectionRepository implements DailyReflectionReposit
     const existingRows = this.reflectionsByDate.get(input.studyDate) ?? [];
     const existing = existingRows.find((row) => row.participantKey === input.participantKey);
     if (existing) {
-      return { ok: true, submittedAt: existing.submittedAt, alreadySubmitted: true };
+      if (existing.content === input.content) {
+        return { ok: true, reflection: existing, alreadySubmitted: true, updated: false };
+      }
+      const updated = {
+        ...existing,
+        displayName: input.displayName,
+        content: input.content,
+        updatedAt: input.submittedAt,
+      };
+      this.reflectionsByDate.set(
+        input.studyDate,
+        existingRows.map((row) => (row.id === existing.id ? updated : row)),
+      );
+      return { ok: true, reflection: updated, alreadySubmitted: true, updated: true };
     }
 
     if (existingRows.length >= MAX_PARTICIPANTS_PER_DAY) {
@@ -58,16 +71,18 @@ export class InMemoryDailyReflectionRepository implements DailyReflectionReposit
     }
 
     const row: ReflectionRow = {
+      id: crypto.randomUUID(),
       studyDate: input.studyDate,
       participantKey: input.participantKey,
       displayName: input.displayName,
       content: input.content,
       status: 'submitted',
       submittedAt: input.submittedAt,
+      updatedAt: input.submittedAt,
     };
     this.reflectionsByDate.set(input.studyDate, [...existingRows, row]);
 
-    return { ok: true, submittedAt: row.submittedAt, alreadySubmitted: false };
+    return { ok: true, reflection: row, alreadySubmitted: false, updated: false };
   }
 
   async getReflectionsForDate(studyDate: string): Promise<ReflectionRow[]> {
