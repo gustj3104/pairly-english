@@ -21,6 +21,11 @@ import { DAILY_NEWS_JSON_SCHEMA, dailyNewsModelResponseSchema } from './schema.j
 import type { GeneratedDailyNews } from './schema.js';
 import { DAILY_NEWS_SYSTEM_PROMPT, buildDailyNewsUserMessage } from './prompt.js';
 import { validateSourceUrl } from './source-url.js';
+import {
+  extractSearchResultCandidates,
+  findMatchingSearchResult,
+  titleCorrelatesWithArticle,
+} from './source-match.js';
 import { topicForStudyDate } from './weekday-topics.js';
 
 const FEATURE = 'daily_news' as const;
@@ -32,18 +37,23 @@ const FEATURE = 'daily_news' as const;
  * article schema, drifting off-topic, or failing the source-allowlist
  * check (see source-url.ts).
  *
- * The source check is split into three distinct reasons — previously all
- * three collapsed into one `source_not_allowlisted` value, which made it
- * impossible to tell from production logs alone which of three very
- * different problems actually occurred:
+ * The source check is split into four distinct reasons so production logs alone can tell which
+ * of four very different problems occurred. Selection is anchored to the provider's own
+ * `search_results` (`{title, url}` pairs Perplexity itself returned), never to the model's
+ * free-text `sourceUrl`/`citations` alone — see source-match.ts for why a flat citations list
+ * (a URL merely appearing somewhere in it) is not sufficient evidence the model's declared
+ * source actually backs the generated content:
  *  - `source_not_allowlisted` — the model's own structured `sourceUrl`
  *    field fails the allowlist (wrong host, not https, etc).
- *  - `source_citation_missing` — `sourceUrl` itself is allowlisted, but
- *    the completion carried no usable `citations` array at all (e.g. the
- *    gateway didn't pass the Perplexity extension through).
- *  - `source_citation_mismatch` — `sourceUrl` is allowlisted and
- *    `citations` is present, but no citation normalizes to the exact same
- *    URL as `sourceUrl`.
+ *  - `source_results_missing` — `sourceUrl` itself is allowlisted, but the completion carried
+ *    no usable `search_results` array at all (e.g. the gateway didn't pass the Perplexity
+ *    extension through).
+ *  - `source_results_mismatch` — `sourceUrl` is allowlisted and `search_results` is present,
+ *    but no entry's `url` normalizes to the exact same URL as `sourceUrl`.
+ *  - `source_title_uncorrelated` — a `search_results` entry's `url` does match `sourceUrl`
+ *    exactly, but that entry's real `title` has no meaningful word overlap with the generated
+ *    article — i.e. a real, allowlisted, cited URL that just isn't about the story that was
+ *    actually written (the "hearing aids article, robotaxi source URL" production case).
  */
 export type DailyNewsSchemaErrorReason =
   | 'missing_usage'
@@ -51,8 +61,9 @@ export type DailyNewsSchemaErrorReason =
   | 'schema_invalid'
   | 'topic_mismatch'
   | 'source_not_allowlisted'
-  | 'source_citation_missing'
-  | 'source_citation_mismatch'
+  | 'source_results_missing'
+  | 'source_results_mismatch'
+  | 'source_title_uncorrelated'
   | 'invalid_published_at';
 
 /**
@@ -76,29 +87,29 @@ function summarizeSchemaIssues(error: z.ZodError): DailyNewsSchemaIssue[] {
 }
 
 /**
- * Safe diagnostic detail for a `source_not_allowlisted` /
- * `source_citation_missing` / `source_citation_mismatch` outcome —
- * hostnames and counts only, never a full URL (which could carry a query
- * string or path segment echoing article content). Lets an operator tell
- * from sanitized logs alone which of the three source-check branches
- * actually fired, without ever needing the raw model response.
+ * Safe diagnostic detail for a `source_not_allowlisted` / `source_results_missing` /
+ * `source_results_mismatch` / `source_title_uncorrelated` outcome — hostnames and counts only,
+ * never a full URL or any candidate's title (either could carry a query string or article
+ * content). Lets an operator tell from sanitized logs alone which of the four source-check
+ * branches actually fired, without ever needing the raw model response.
  */
 export interface DailyNewsSourceDiagnostics {
   /** Hostname of the model's declared `sourceUrl`, or null if it wasn't even a parseable URL. */
   sourceHostname: string | null;
   /** Whether `sourceUrl` itself passed the allowlist (validateSourceUrl). */
   sourceAllowlisted: boolean;
-  /** Whether the completion carried a `citations` array at all. */
-  citationsPresent: boolean;
-  /** Number of entries in `citations`, if present. */
-  citationCount: number;
-  /** Deduplicated, capped hostnames parsed from `citations` — domain names only. */
-  citationHostnames: string[];
-  /** How many `citations` entries independently pass the allowlist. */
-  citationAllowlistedCount: number;
+  /** Whether the completion carried a `search_results` array with at least one well-formed
+   * {title, url} entry. */
+  searchResultsPresent: boolean;
+  /** Number of well-formed {title, url} entries in `search_results`. */
+  searchResultCount: number;
+  /** Deduplicated, capped hostnames parsed from `search_results[].url` — domain names only. */
+  searchResultHostnames: string[];
+  /** How many `search_results` entries independently pass the allowlist. */
+  searchResultAllowlistedCount: number;
 }
 
-const MAX_CITATION_HOSTNAMES_CAPTURED = 10;
+const MAX_SEARCH_RESULT_HOSTNAMES_CAPTURED = 10;
 
 function hostnameOf(value: string): string | null {
   try {
@@ -110,26 +121,25 @@ function hostnameOf(value: string): string | null {
 
 function summarizeSourceDiagnostics(
   sourceUrl: string,
-  citations: unknown,
+  searchResults: unknown,
 ): DailyNewsSourceDiagnostics {
-  const citationList = Array.isArray(citations) ? citations : [];
-  const citationHostnames = new Set<string>();
-  let citationAllowlistedCount = 0;
-  for (const citation of citationList) {
-    if (typeof citation !== 'string') continue;
-    const hostname = hostnameOf(citation);
-    if (hostname && citationHostnames.size < MAX_CITATION_HOSTNAMES_CAPTURED) {
-      citationHostnames.add(hostname);
+  const candidates = extractSearchResultCandidates(searchResults);
+  const searchResultHostnames = new Set<string>();
+  let searchResultAllowlistedCount = 0;
+  for (const candidate of candidates) {
+    const hostname = hostnameOf(candidate.url);
+    if (hostname && searchResultHostnames.size < MAX_SEARCH_RESULT_HOSTNAMES_CAPTURED) {
+      searchResultHostnames.add(hostname);
     }
-    if (validateSourceUrl(citation)) citationAllowlistedCount += 1;
+    if (validateSourceUrl(candidate.url)) searchResultAllowlistedCount += 1;
   }
   return {
     sourceHostname: hostnameOf(sourceUrl),
     sourceAllowlisted: validateSourceUrl(sourceUrl) !== null,
-    citationsPresent: Array.isArray(citations),
-    citationCount: citationList.length,
-    citationHostnames: [...citationHostnames],
-    citationAllowlistedCount,
+    searchResultsPresent: candidates.length > 0,
+    searchResultCount: candidates.length,
+    searchResultHostnames: [...searchResultHostnames],
+    searchResultAllowlistedCount,
   };
 }
 
@@ -281,29 +291,47 @@ export async function generateDailyNews(
     return { status: 'upstream_schema_error', requestId, reason: 'topic_mismatch' };
   }
   const source = validateSourceUrl(checked.data.sourceUrl);
-  const citations = completion.citations;
+  const searchResults = completion.search_results;
   if (!source) {
     return {
       status: 'upstream_schema_error',
       requestId,
       reason: 'source_not_allowlisted',
-      sourceDiagnostics: summarizeSourceDiagnostics(checked.data.sourceUrl, citations),
+      sourceDiagnostics: summarizeSourceDiagnostics(checked.data.sourceUrl, searchResults),
     };
   }
-  if (!Array.isArray(citations)) {
+  const candidates = extractSearchResultCandidates(searchResults);
+  if (candidates.length === 0) {
     return {
       status: 'upstream_schema_error',
       requestId,
-      reason: 'source_citation_missing',
-      sourceDiagnostics: summarizeSourceDiagnostics(checked.data.sourceUrl, citations),
+      reason: 'source_results_missing',
+      sourceDiagnostics: summarizeSourceDiagnostics(checked.data.sourceUrl, searchResults),
     };
   }
-  if (!citations.some((citation) => validateSourceUrl(citation)?.href === source.href)) {
+  // Selection is a verified {title, url} pair from the provider's own search_results — never a
+  // URL picked out of the flat `citations` list, and never a title the model wrote itself.
+  const matched = findMatchingSearchResult(candidates, source);
+  if (!matched) {
     return {
       status: 'upstream_schema_error',
       requestId,
-      reason: 'source_citation_mismatch',
-      sourceDiagnostics: summarizeSourceDiagnostics(checked.data.sourceUrl, citations),
+      reason: 'source_results_mismatch',
+      sourceDiagnostics: summarizeSourceDiagnostics(checked.data.sourceUrl, searchResults),
+    };
+  }
+  if (
+    !titleCorrelatesWithArticle(matched.title, {
+      title: checked.data.title,
+      summary: checked.data.summary,
+      content: checked.data.content,
+    })
+  ) {
+    return {
+      status: 'upstream_schema_error',
+      requestId,
+      reason: 'source_title_uncorrelated',
+      sourceDiagnostics: summarizeSourceDiagnostics(checked.data.sourceUrl, searchResults),
     };
   }
   const publishedAt = new Date(checked.data.publishedAt);

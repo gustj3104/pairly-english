@@ -46,29 +46,37 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
-/** Sentinel default for mindlogicClientFor's `citations` param — `undefined` itself is a valid, meaningful value (a completion with no `citations` field at all), so it can't double as "use the default". */
-const CITATIONS_MATCHING_SOURCE = Symbol('citations-matching-source-url');
+/** Sentinel default for mindlogicClientFor's `searchResults` param — `undefined` itself is a valid, meaningful value (a completion with no `search_results` field at all), so it can't double as "use the default". */
+const SEARCH_RESULTS_MATCHING_SOURCE = Symbol('search-results-matching-source-url');
 
-/** Completion envelope: article body plus top-level `citations` the daily-news generator checks separately. */
-function completion(body: Record<string, unknown>, citations: unknown) {
+// Word-overlaps with articleBody()'s default content ("advance climate energy research global
+// project future benefit"), so it satisfies the generator's title-correlation check.
+const MATCHING_SEARCH_RESULT_TITLE = 'Global research project drives advance in energy';
+
+/** Completion envelope: article body plus top-level `search_results` the daily-news generator
+ * checks separately — provider-supplied {title, url} pairs, not the model's own free text. */
+function completion(body: Record<string, unknown>, searchResults: unknown) {
   return {
     id: 'chatcmpl-1',
     model: 'sonar-pro',
     choices: [{ message: { role: 'assistant', content: JSON.stringify(body) } }],
     usage: { prompt_tokens: 100, completion_tokens: 200, total_tokens: 300 },
-    citations,
+    search_results: searchResults,
   };
 }
 
 function mindlogicClientFor(
   body: Record<string, unknown>,
-  citations: unknown = CITATIONS_MATCHING_SOURCE,
+  searchResults: unknown = SEARCH_RESULTS_MATCHING_SOURCE,
 ) {
-  const resolvedCitations = citations === CITATIONS_MATCHING_SOURCE ? [body.sourceUrl] : citations;
+  const resolvedSearchResults =
+    searchResults === SEARCH_RESULTS_MATCHING_SOURCE
+      ? [{ title: MATCHING_SEARCH_RESULT_TITLE, url: body.sourceUrl }]
+      : searchResults;
   let calls = 0;
   const fetchImpl = async () => {
     calls++;
-    return jsonResponse(200, completion(body, resolvedCitations));
+    return jsonResponse(200, completion(body, resolvedSearchResults));
   };
   const client = new MindlogicClient({
     apiKey: 'test-fake-mindlogic-key',
@@ -192,14 +200,13 @@ describe('GET /api/v1/study-days/:date/article — source allowlist failures fai
     expect(logOutput).toContain('"sourceHostname":"www.cnn.com"');
   });
 
-  it('rejects with source_citation_missing when the completion carries no citations array', async () => {
+  it('rejects with source_results_missing when the completion carries no search_results array', async () => {
     const body = articleBody();
-    // `null`, not `undefined` — a bare `undefined` argument would fall
-    // through to mindlogicClientFor's own default (CITATIONS_MATCHING_SOURCE),
-    // since JS substitutes a parameter default for an explicit `undefined`
-    // argument too. `null` survives as the real citations value, round-trips
-    // through JSON unchanged, and — like a genuinely absent field — fails
-    // `Array.isArray`, exercising the same source_citation_missing branch.
+    // `null`, not `undefined` — a bare `undefined` argument would fall through to
+    // mindlogicClientFor's own default (SEARCH_RESULTS_MATCHING_SOURCE), since JS substitutes a
+    // parameter default for an explicit `undefined` argument too. `null` survives as the real
+    // search_results value, round-trips through JSON unchanged, and — like a genuinely absent
+    // field — fails `Array.isArray`, exercising the same source_results_missing branch.
     const { client } = mindlogicClientFor(body, null);
     const logStream = new PassThrough();
     let logOutput = '';
@@ -211,13 +218,15 @@ describe('GET /api/v1/study-days/:date/article — source allowlist failures fai
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(response.statusCode).toBe(502);
-    expect(logOutput).toContain('"reason":"source_citation_missing"');
-    expect(logOutput).toContain('"citationsPresent":false');
+    expect(logOutput).toContain('"reason":"source_results_missing"');
+    expect(logOutput).toContain('"searchResultsPresent":false');
   });
 
-  it('rejects with source_citation_mismatch when citations are present but none match sourceUrl', async () => {
+  it('rejects with source_results_mismatch when search_results are present but none match sourceUrl', async () => {
     const body = articleBody();
-    const { client } = mindlogicClientFor(body, ['https://www.bbc.com/news/other']);
+    const { client } = mindlogicClientFor(body, [
+      { title: 'Unrelated story', url: 'https://www.bbc.com/news/other' },
+    ]);
     const logStream = new PassThrough();
     let logOutput = '';
     logStream.on('data', (chunk: Buffer) => (logOutput += chunk.toString('utf8')));
@@ -228,8 +237,28 @@ describe('GET /api/v1/study-days/:date/article — source allowlist failures fai
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(response.statusCode).toBe(502);
-    expect(logOutput).toContain('"reason":"source_citation_mismatch"');
-    expect(logOutput).toContain('"citationHostnames":["www.bbc.com"]');
+    expect(logOutput).toContain('"reason":"source_results_mismatch"');
+    expect(logOutput).toContain('"searchResultHostnames":["www.bbc.com"]');
+  });
+
+  it('rejects with source_title_uncorrelated when sourceUrl matches a real, allowlisted search_results entry about a different story (same domain is not enough)', async () => {
+    const body = articleBody();
+    const { client } = mindlogicClientFor(body, [
+      // A real, allowlisted, same-domain result — its url matches sourceUrl exactly — but its
+      // title has no correlation with the generated article's own content.
+      { title: 'Pony.ai and Uber deploy robotaxis in Europe', url: body.sourceUrl },
+    ]);
+    const logStream = new PassThrough();
+    let logOutput = '';
+    logStream.on('data', (chunk: Buffer) => (logOutput += chunk.toString('utf8')));
+
+    const app = buildTestApp(client, { loggerStream: logStream });
+    const response = await getArticle(app);
+    await app.close();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(response.statusCode).toBe(502);
+    expect(logOutput).toContain('"reason":"source_title_uncorrelated"');
   });
 
   it('never logs the Mindlogic API key, an Authorization header, or the full article content', async () => {

@@ -2,7 +2,7 @@ import { eq, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type * as schema from '../../db/schema.js';
 import { dailyNewsArticles } from '../../db/schema.js';
-import { generatedDailyNewsSchema } from './schema.js';
+import { generatedDailyNewsSchema, stripCitationMarkers } from './schema.js';
 import type { DailyNewsArticle, GeneratedDailyNews } from './schema.js';
 import { validateSourceUrl } from './source-url.js';
 
@@ -20,13 +20,16 @@ export function mapRow(row: typeof dailyNewsArticles.$inferSelect): DailyNewsArt
   return {
     id: row.id,
     studyDate: row.studyDate,
-    title: row.title,
+    // Stripped again at read time (not just at generation time): a row written before this
+    // fix could still carry a literal "[5]"/"[10]" citation-index marker in stored prose, and
+    // this makes it disappear from every response without needing a data migration or rewrite.
+    title: stripCitationMarkers(row.title),
     sourceName: row.sourceName,
     sourceUrl,
     publishedAt: row.publishedAt.toISOString(),
     generatedAt: row.generatedAt.toISOString(),
-    summary: row.summary,
-    content: row.content,
+    summary: stripCitationMarkers(row.summary),
+    content: stripCitationMarkers(row.content),
     vocabulary,
   };
 }

@@ -65,3 +65,18 @@ describe('mapRow — sourceUrl re-validated on every read', () => {
     expect(article.vocabulary).toHaveLength(8);
   });
 });
+
+describe('mapRow — legacy citation-index markers stripped on every read', () => {
+  it('strips a stored [5]/[10]-style marker from title, summary, and content without a data migration', () => {
+    const article = mapRow(
+      row({
+        title: 'Science news [5]',
+        summary: 'Summary[3, 5]',
+        content: `${VOCAB_WORDS.join(' ')}[10]`,
+      }),
+    );
+    expect(article.title).toBe('Science news');
+    expect(article.summary).toBe('Summary');
+    expect(article.content).toBe(VOCAB_WORDS.join(' '));
+  });
+});

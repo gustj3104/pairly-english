@@ -43,14 +43,18 @@ function client(response: object, onCall = vi.fn<(requestBody: unknown) => void>
     onCall,
   };
 }
-/** `extra` overrides top-level completion fields (e.g. `citations`), not the article body. */
+// A search_results title that word-overlaps with `body`'s own title/summary/content (via the
+// shared vocabulary words), so it satisfies titleCorrelatesWithArticle by construction.
+const matchingSearchResultTitle = 'Global energy research project shows advance';
+
+/** `extra` overrides top-level completion fields (e.g. `search_results`), not the article body. */
 function success(extra: object = {}) {
   return {
     id: 'x',
     model: 'sonar-pro',
     choices: [{ message: { role: 'assistant', content: JSON.stringify(body) } }],
     usage: { prompt_tokens: 100, completion_tokens: 200, total_tokens: 300 },
-    citations: [body.sourceUrl],
+    search_results: [{ title: matchingSearchResultTitle, url: body.sourceUrl }],
     ...extra,
   };
 }
@@ -63,12 +67,12 @@ function successWithBody(bodyOverrides: object) {
     model: 'sonar-pro',
     choices: [{ message: { role: 'assistant', content: JSON.stringify(overriddenBody) } }],
     usage: { prompt_tokens: 100, completion_tokens: 200, total_tokens: 300 },
-    citations: [overriddenBody.sourceUrl],
+    search_results: [{ title: matchingSearchResultTitle, url: overriddenBody.sourceUrl }],
   };
 }
 
 describe('generateDailyNews', () => {
-  it('accepts a strict response only when sourceUrl appears in citations', async () => {
+  it('accepts a strict response only when sourceUrl matches a verified, title-correlated search_results entry', async () => {
     const { client: mindlogicClient } = client(success());
     const result = await generateDailyNews('2026-08-18', {
       creditService: new CreditService(new InMemoryCreditRepository(), 5000),
@@ -77,9 +81,11 @@ describe('generateDailyNews', () => {
     });
     expect(result.status).toBe('ok');
   });
-  it('fails closed with source_citation_mismatch when citations are present but do not match sourceUrl', async () => {
+  it('fails closed with source_results_mismatch when search_results are present but no entry matches sourceUrl', async () => {
     const { client: mindlogicClient } = client(
-      success({ citations: ['https://www.bbc.com/news/other'] }),
+      success({
+        search_results: [{ title: 'Unrelated story', url: 'https://www.bbc.com/news/other' }],
+      }),
     );
     const result = await generateDailyNews('2026-08-18', {
       creditService: new CreditService(new InMemoryCreditRepository(), 5000),
@@ -88,20 +94,20 @@ describe('generateDailyNews', () => {
     });
     expect(result.status).toBe('upstream_schema_error');
     if (result.status === 'upstream_schema_error') {
-      expect(result.reason).toBe('source_citation_mismatch');
+      expect(result.reason).toBe('source_results_mismatch');
       expect(result.sourceDiagnostics).toEqual({
         sourceHostname: 'www.reuters.com',
         sourceAllowlisted: true,
-        citationsPresent: true,
-        citationCount: 1,
-        citationHostnames: ['www.bbc.com'],
-        citationAllowlistedCount: 1,
+        searchResultsPresent: true,
+        searchResultCount: 1,
+        searchResultHostnames: ['www.bbc.com'],
+        searchResultAllowlistedCount: 1,
       });
     }
   });
 
-  it('fails closed with source_citation_missing when the completion carries no citations array', async () => {
-    const { client: mindlogicClient } = client(success({ citations: undefined }));
+  it('fails closed with source_results_missing when the completion carries no usable search_results array', async () => {
+    const { client: mindlogicClient } = client(success({ search_results: undefined }));
     const result = await generateDailyNews('2026-08-18', {
       creditService: new CreditService(new InMemoryCreditRepository(), 5000),
       mindlogicClient,
@@ -109,9 +115,31 @@ describe('generateDailyNews', () => {
     });
     expect(result.status).toBe('upstream_schema_error');
     if (result.status === 'upstream_schema_error') {
-      expect(result.reason).toBe('source_citation_missing');
-      expect(result.sourceDiagnostics?.citationsPresent).toBe(false);
+      expect(result.reason).toBe('source_results_missing');
+      expect(result.sourceDiagnostics?.searchResultsPresent).toBe(false);
       expect(result.sourceDiagnostics?.sourceAllowlisted).toBe(true);
+    }
+  });
+
+  it('fails closed with source_title_uncorrelated when the matched search_results entry is a real, allowlisted, same-domain result about a different story', async () => {
+    // The exact production bug (2026-08-24): the model's own sourceUrl is a real Reuters URL
+    // that genuinely appears in search_results — just not the one about the story it wrote.
+    const { client: mindlogicClient } = client(
+      success({
+        search_results: [
+          { title: matchingSearchResultTitle, url: 'https://www.reuters.com/world/other-story' },
+          { title: 'A completely unrelated story about something else', url: body.sourceUrl },
+        ],
+      }),
+    );
+    const result = await generateDailyNews('2026-08-18', {
+      creditService: new CreditService(new InMemoryCreditRepository(), 5000),
+      mindlogicClient,
+      now,
+    });
+    expect(result.status).toBe('upstream_schema_error');
+    if (result.status === 'upstream_schema_error') {
+      expect(result.reason).toBe('source_title_uncorrelated');
     }
   });
 
@@ -132,10 +160,10 @@ describe('generateDailyNews', () => {
       expect(result.sourceDiagnostics).toEqual({
         sourceHostname: 'www.cnn.com',
         sourceAllowlisted: false,
-        citationsPresent: true,
-        citationCount: 1,
-        citationHostnames: ['www.cnn.com'],
-        citationAllowlistedCount: 0,
+        searchResultsPresent: true,
+        searchResultCount: 1,
+        searchResultHostnames: ['www.cnn.com'],
+        searchResultAllowlistedCount: 0,
       });
     }
   });
@@ -148,6 +176,93 @@ describe('generateDailyNews', () => {
     });
     expect(result.status).toBe('limit_exceeded');
     expect(onCall).not.toHaveBeenCalled();
+  });
+});
+
+// Regression fixture for the exact production incident (2026-08-24): the served article was a
+// Sonova AI-hearing-aid story but its Source link pointed at an unrelated Pony.ai/Uber robotaxi
+// story — a real, allowlisted, same-domain (reuters.com) URL, just not the one behind the
+// article's own content. Both search results below are real reuters.com URLs on purpose: the
+// fix must reject based on story correlation, never merely "different hostname".
+describe('generateDailyNews — Sonova/Pony.ai same-domain, wrong-story regression (2026-08-24)', () => {
+  const sonovaSourceUrl = 'https://www.reuters.com/technology/sonova-ai-hearing-aids-2026-08-14/';
+  const ponyaiSourceUrl =
+    'https://www.reuters.com/technology/chinas-ponyai-uber-jointly-deploy-over-2000-robotaxis-europe-2026-08-14/';
+  const sonovaSearchResult = {
+    title: 'Sonova launches AI-powered hearing aids',
+    url: sonovaSourceUrl,
+  };
+  const ponyaiSearchResult = {
+    title: 'Pony.ai and Uber deploy robotaxis in Europe',
+    url: ponyaiSourceUrl,
+  };
+  const sonovaWords = [
+    'sonova',
+    'unveiled',
+    'advanced',
+    'hearing',
+    'devices',
+    'research',
+    'global',
+    'demand',
+  ];
+  const sonovaBody = {
+    title: 'AI-powered hearing aids show how everyday health devices are becoming smarter',
+    sourceName: 'Reuters',
+    sourceUrl: sonovaSourceUrl,
+    publishedAt: '2026-08-14T10:00:00Z',
+    summary:
+      'Swiss hearing-aid maker Sonova has launched its third hearing-aid platform using real-time artificial intelligence, aiming to strengthen its market position by offering smarter, more responsive devices.',
+    content:
+      'Sonova unveiled advanced hearing devices research showing global demand for smarter health platform technology continues rising steadily worldwide.',
+    vocabulary: sonovaWords.map((word) => ({ word, definition: word, example: word })),
+    topic: 'Business & Economy',
+  };
+
+  function sonovaCompletion(bodyOverrides: object, searchResults: object[]) {
+    const overridden = { ...sonovaBody, ...bodyOverrides };
+    return {
+      id: 'x',
+      model: 'sonar-pro',
+      choices: [{ message: { role: 'assistant', content: JSON.stringify(overridden) } }],
+      usage: { prompt_tokens: 100, completion_tokens: 200, total_tokens: 300 },
+      search_results: searchResults,
+    };
+  }
+
+  it('accepts the Sonova article when sourceUrl is the verified, correlated Sonova search result', async () => {
+    const { client: mindlogicClient } = client(
+      sonovaCompletion({}, [sonovaSearchResult, ponyaiSearchResult]),
+    );
+    const result = await generateDailyNews('2026-08-18', {
+      creditService: new CreditService(new InMemoryCreditRepository(), 5000),
+      mindlogicClient,
+      now,
+    });
+    expect(result.status).toBe('ok');
+    if (result.status === 'ok') {
+      expect(result.article.sourceUrl).toBe(sonovaSourceUrl);
+    }
+  });
+
+  it('rejects the Sonova article when sourceUrl is the real but unrelated Pony.ai/Uber robotaxi URL — same domain is not enough', async () => {
+    const { client: mindlogicClient } = client(
+      // Sonova content unchanged; only the declared sourceUrl is swapped to the wrong (but
+      // real, allowlisted, reuters.com) search result — exactly the production failure mode.
+      sonovaCompletion({ sourceUrl: ponyaiSourceUrl }, [sonovaSearchResult, ponyaiSearchResult]),
+    );
+    const result = await generateDailyNews('2026-08-18', {
+      creditService: new CreditService(new InMemoryCreditRepository(), 5000),
+      mindlogicClient,
+      now,
+    });
+    expect(result.status).toBe('upstream_schema_error');
+    if (result.status === 'upstream_schema_error') {
+      expect(result.reason).toBe('source_title_uncorrelated');
+      // Both are reuters.com — proves the rejection isn't merely a hostname mismatch.
+      expect(result.sourceDiagnostics?.sourceHostname).toBe('www.reuters.com');
+      expect(result.sourceDiagnostics?.sourceAllowlisted).toBe(true);
+    }
   });
 });
 

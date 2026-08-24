@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { dailyNewsModelResponseSchema, generatedDailyNewsSchema } from './schema.js';
+import {
+  dailyNewsModelResponseSchema,
+  generatedDailyNewsSchema,
+  stripCitationMarkers,
+} from './schema.js';
 
 const words = [
   'advance',
@@ -65,4 +69,40 @@ describe('dailyNewsModelResponseSchema', () => {
     ));
   it('rejects a response missing the topic field', () =>
     expect(dailyNewsModelResponseSchema.safeParse(valid()).success).toBe(false));
+  it('strips unresolved citation-index markers like [5]/[10] from title, summary, and content', () => {
+    const value = valid();
+    value.title = `${value.title} [5]`;
+    value.summary = `${value.summary}[3, 5]`;
+    value.content = value.content.replace('learners', 'learners[10] a');
+    const result = dailyNewsModelResponseSchema.safeParse({ ...value, topic: 'Science' });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.title).not.toMatch(/\[\d/);
+      expect(result.data.summary).not.toMatch(/\[\d/);
+      expect(result.data.content).not.toMatch(/\[\d/);
+    }
+  });
+});
+
+describe('stripCitationMarkers', () => {
+  it('removes a single bracketed citation index', () => {
+    expect(stripCitationMarkers('a story about aid[5] and more')).toBe(
+      'a story about aid and more',
+    );
+  });
+  it('removes a comma-separated group and adjacent brackets', () => {
+    expect(stripCitationMarkers('the market position[3, 5] by offering[8][10] devices.')).toBe(
+      'the market position by offering devices.',
+    );
+  });
+  it('removes a trailing marker before end-of-sentence punctuation without leaving a stray space', () => {
+    expect(stripCitationMarkers('devices are becoming smarter [12].')).toBe(
+      'devices are becoming smarter.',
+    );
+  });
+  it('never removes a non-numeric bracketed annotation like [sic]', () => {
+    expect(stripCitationMarkers('a quoted phrase [sic] stays intact')).toBe(
+      'a quoted phrase [sic] stays intact',
+    );
+  });
 });

@@ -106,7 +106,9 @@ describe('DailyNewsService.getOrGenerate — cache miss', () => {
       model: 'sonar-pro',
       choices: [{ message: { role: 'assistant', content: JSON.stringify(body) } }],
       usage: { prompt_tokens: 100, completion_tokens: 200, total_tokens: 300 },
-      citations: [body.sourceUrl],
+      search_results: [
+        { title: 'Global energy research project shows advance', url: body.sourceUrl },
+      ],
     });
     const repository = new FakeDailyNewsRepository(null);
     const service = new DailyNewsService(

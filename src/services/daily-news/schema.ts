@@ -11,11 +11,30 @@ const safeText = (max: number) =>
       message: 'HTML is not allowed',
     });
 
+/**
+ * sonar-pro (Perplexity) sometimes leaves unresolved citation-index markers like `[5]`,
+ * `[3, 5]`, or `[3][5]` in generated prose — a footnote reference to its own internal search
+ * results that this app never resolves or displays as footnotes. Left in place they show up as
+ * meaningless bracketed numbers in the learner-facing article. Only a bracketed group of pure
+ * digits/commas/spaces is stripped — `[sic]` or any other non-numeric bracket content is real
+ * text and is left untouched.
+ */
+export function stripCitationMarkers(text: string): string {
+  return text
+    .replace(/\[\s*\d+(?:\s*,\s*\d+)*\s*\]/g, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/[ \t]+([.,!?;:])/g, '$1')
+    .trim();
+}
+
+/** Generated learner-facing prose: safeText plus citation-marker stripping (see above). */
+const safeGeneratedText = (max: number) => safeText(max).transform(stripCitationMarkers);
+
 export const vocabularyItemSchema = z
   .object({
     word: safeText(60),
-    definition: safeText(300),
-    example: safeText(500),
+    definition: safeGeneratedText(300),
+    example: safeGeneratedText(500),
   })
   .strict();
 
@@ -23,12 +42,12 @@ export const vocabularyItemSchema = z
 export const dailyNewsTopicSchema = z.enum(DAILY_NEWS_TOPICS);
 
 const dailyNewsArticleFields = {
-  title: safeText(240),
+  title: safeGeneratedText(240),
   sourceName: safeText(120),
   sourceUrl: z.string().max(2048),
   publishedAt: z.string().datetime({ offset: true }),
-  summary: safeText(1200),
-  content: safeText(8000),
+  summary: safeGeneratedText(1200),
+  content: safeGeneratedText(8000),
   vocabulary: z.array(vocabularyItemSchema).length(8),
 };
 
