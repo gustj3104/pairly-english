@@ -90,6 +90,15 @@ export async function dictionaryRoutes(
       return await app.dictionaryService.save(participant(request), word, body.data);
     } catch (caught) {
       if (!(caught instanceof VocabularyError)) throw caught;
+      request.log.warn(
+        {
+          feature: 'saved_vocabulary',
+          failureStage: 'save_validation',
+          internalErrorCode: caught.code,
+          httpStatus: caught.statusCode,
+        },
+        'vocabulary save rejected',
+      );
       return error(reply, request, caught.statusCode, caught.code);
     }
   });

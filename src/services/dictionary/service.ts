@@ -103,21 +103,23 @@ export class DictionaryService {
     if (!sense) throw new VocabularyError('INVALID_SENSE_ID', 400);
     let articleId: string | null = null;
     let contextSentence: string | null = null;
-    if (input.articleId || input.contextSentence) {
-      if (!input.articleId || !input.contextSentence) {
-        throw new VocabularyError('INVALID_ARTICLE_CONTEXT', 400);
-      }
-      const parsedContext = contextSentenceSchema.safeParse(input.contextSentence);
-      if (!parsedContext.success) throw new VocabularyError('INVALID_ARTICLE_CONTEXT', 400);
+    if (input.contextSentence && !input.articleId) {
+      throw new VocabularyError('INVALID_ARTICLE_CONTEXT', 400);
+    }
+    if (input.articleId) {
       const article = await this.repository.findArticle(input.articleId);
       if (!article) throw new VocabularyError('ARTICLE_NOT_FOUND', 404);
-      contextSentence = normalizedSpaces(parsedContext.data);
-      const content = normalizedSpaces(article.content);
-      if (!content.includes(contextSentence)) {
-        throw new VocabularyError('CONTEXT_NOT_IN_ARTICLE', 400);
-      }
-      if (!containsWord(contextSentence, word)) {
-        throw new VocabularyError('WORD_NOT_IN_CONTEXT', 400);
+      if (input.contextSentence) {
+        const parsedContext = contextSentenceSchema.safeParse(input.contextSentence);
+        if (!parsedContext.success) throw new VocabularyError('INVALID_ARTICLE_CONTEXT', 400);
+        contextSentence = normalizedSpaces(parsedContext.data);
+        const content = normalizedSpaces(article.content);
+        if (!content.includes(contextSentence)) {
+          throw new VocabularyError('CONTEXT_NOT_IN_ARTICLE', 400);
+        }
+        if (!containsWord(contextSentence, word)) {
+          throw new VocabularyError('WORD_NOT_IN_CONTEXT', 400);
+        }
       }
       articleId = article.id;
     }

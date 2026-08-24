@@ -419,6 +419,40 @@ describe('dictionary HTTP authentication and validation', () => {
 });
 
 describe('saved vocabulary — per-sense Korean translations', () => {
+  it('accepts an article-linked save without requiring an optional context sentence', async () => {
+    const repository = new MemoryDictionaryRepository();
+    repository.entries.set('humanoid', entry({ query: 'humanoid', normalizedWord: 'humanoid' }));
+    repository.articles.set('11111111-1111-4111-8111-111111111111', {
+      id: '11111111-1111-4111-8111-111111111111',
+      title: 'Robots',
+      content: 'A humanoid robot was unveiled.',
+    });
+    const dictionaryService = new DictionaryService(
+      repository,
+      fakeAiLookup(async () => entry()),
+      () => NOW,
+    );
+    const app = buildApp({
+      checkDatabaseConnection: async () => true,
+      dictionaryService,
+      studyDaysRoutesOptions: { sessionSecret: SECRET, maxFutureDays: 1 },
+    });
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/v1/vocabulary/humanoid',
+      headers: { cookie: sessionCookie('hyunji') },
+      payload: {
+        senseId: 'a'.repeat(64),
+        articleId: '11111111-1111-4111-8111-111111111111',
+      },
+    });
+    const saved = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(saved.articleId).toBe('11111111-1111-4111-8111-111111111111');
+    expect(saved.contextSentence).toBeNull();
+  });
+
   it('saves only the selected sense translations and keeps them on later retrieval', async () => {
     const repository = new MemoryDictionaryRepository();
     const aiLookup = fakeAiLookup(async (word) => entry({ query: word, normalizedWord: word }));
