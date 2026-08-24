@@ -1,6 +1,6 @@
 {
-  "id": "92cbfc0d-d557-46ec-96c8-3c029d2d9d37",
-  "prevId": "f658187c-5d1e-4bf4-8ba9-dc47e93038f6",
+  "id": "8da1ba20-f4c8-4c58-ae40-7032415412e8",
+  "prevId": "1fd37e34-5d09-4608-9e36-ca316cd47d50",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -322,6 +322,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'[]'::jsonb"
+        },
+        "korean_translation_attempted_at": {
+          "name": "korean_translation_attempted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         },
         "pronunciation": {
           "name": "pronunciation",
@@ -691,12 +697,13 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "saved_vocabulary_participant_word_unique": {
-          "name": "saved_vocabulary_participant_word_unique",
+        "saved_vocabulary_participant_word_sense_unique": {
+          "name": "saved_vocabulary_participant_word_sense_unique",
           "nullsNotDistinct": false,
           "columns": [
             "participant_key",
-            "normalized_word"
+            "normalized_word",
+            "sense_id"
           ]
         }
       },

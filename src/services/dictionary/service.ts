@@ -17,12 +17,14 @@ export interface SavedVocabularyItem {
   word: string;
   normalizedWord: string;
   pronunciation: string | null;
+  audioUrl: null;
   partOfSpeech: string;
   definition: string;
   // Nullable: a row saved before the AI-only redesign can have a null example. See
   // SavedVocabularyItemRow's comment in repository.ts.
   example: string | null;
   koreanTranslations: string[];
+  senseId: string;
   articleId: string | null;
   articleTitle: string | null;
   contextSentence: string | null;
@@ -35,10 +37,12 @@ function mapSaved(row: SavedVocabularyRow): SavedVocabularyItem {
     word: row.item.word,
     normalizedWord: row.item.normalizedWord,
     pronunciation: row.item.pronunciation,
+    audioUrl: null,
     partOfSpeech: row.item.partOfSpeech,
     definition: row.item.definition,
     example: row.item.example,
     koreanTranslations: row.item.koreanTranslations,
+    senseId: row.item.senseId,
     articleId: row.item.articleId,
     articleTitle: row.articleTitle,
     contextSentence: row.item.contextSentence,
@@ -79,7 +83,9 @@ export class DictionaryService {
       query: result.entry.query,
       normalizedWord: result.entry.normalizedWord,
       pronunciation: result.entry.pronunciation,
+      audioUrl: null,
       koreanTranslations: result.entry.koreanTranslations,
+      koreanTranslationStatus: 'available',
       meanings: result.entry.meanings,
       cached: result.cached,
       stale: result.stale,
@@ -115,7 +121,7 @@ export class DictionaryService {
       }
       articleId = article.id;
     }
-    const existing = await this.repository.findSaved(participantKey, word);
+    const existing = await this.repository.findSaved(participantKey, word, sense.senseId);
     if (
       existing &&
       existing.item.senseId === sense.senseId &&
@@ -133,7 +139,7 @@ export class DictionaryService {
       partOfSpeech: sense.partOfSpeech,
       definition: sense.definition,
       example: sense.example,
-      koreanTranslations: entry.koreanTranslations,
+      koreanTranslations: sense.koreanTranslations,
       articleId,
       contextSentence,
       savedAt: this.now(),
@@ -145,7 +151,7 @@ export class DictionaryService {
     return (await this.repository.listVocabulary(participantKey)).map(mapSaved);
   }
 
-  delete(participantKey: string, word: string): Promise<boolean> {
-    return this.repository.deleteVocabulary(participantKey, word);
+  delete(participantKey: string, word: string, senseId?: string): Promise<boolean> {
+    return this.repository.deleteVocabulary(participantKey, word, senseId);
   }
 }

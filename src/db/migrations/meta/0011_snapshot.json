@@ -1,6 +1,6 @@
 {
-  "id": "92cbfc0d-d557-46ec-96c8-3c029d2d9d37",
-  "prevId": "f658187c-5d1e-4bf4-8ba9-dc47e93038f6",
+  "id": "1fd37e34-5d09-4608-9e36-ca316cd47d50",
+  "prevId": "92cbfc0d-d557-46ec-96c8-3c029d2d9d37",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -322,6 +322,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'[]'::jsonb"
+        },
+        "korean_translation_attempted_at": {
+          "name": "korean_translation_attempted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         },
         "pronunciation": {
           "name": "pronunciation",

@@ -21,7 +21,7 @@ import {
   type DictionaryServiceLogger,
 } from './types.js';
 
-const FEATURE = 'dictionary_translation' as const;
+const FEATURE = 'dictionary_generation' as const;
 const HANGUL = /[가-힣]/;
 const URL_PATTERN = /(?:https?:\/\/|www\.)/i;
 const MARKDOWN_PATTERN = /(?:```|`|\*\*|__|^\s{0,3}#{1,6}\s|\[[^\]]+\]\([^)]*\))/m;
@@ -73,6 +73,7 @@ const safeShortText = (max: number) =>
 const meaningSchema = z
   .object({
     partOfSpeech: safeShortText(40),
+    koreanTranslations: z.array(koreanTranslationItem).min(1).max(5),
     definition: safeShortText(300),
     example: safeShortText(200),
   })
@@ -94,7 +95,6 @@ export const dictionaryLookupAiResponseSchema = z
       .string()
       .max(240)
       .transform((value) => value.normalize('NFKC').trim()),
-    koreanTranslations: z.array(koreanTranslationItem).min(1).max(5),
     meanings: z.array(meaningSchema).min(1).max(3),
   })
   .strict()
@@ -104,10 +104,15 @@ export const dictionaryLookupAiResponseSchema = z
       data.pronunciation.length > 0 && !containsUnsafeText(data.pronunciation)
         ? data.pronunciation
         : null,
-    koreanTranslations: data.koreanTranslations.filter(
-      (value, index, values) => values.indexOf(value) === index,
-    ),
-    meanings: data.meanings,
+    meanings: data.meanings.map((meaning) => ({
+      ...meaning,
+      koreanTranslations: meaning.koreanTranslations.filter(
+        (value, index, values) => values.indexOf(value) === index,
+      ),
+    })),
+    koreanTranslations: data.meanings
+      .flatMap((meaning) => meaning.koreanTranslations)
+      .filter((value, index, values) => values.indexOf(value) === index),
   }))
   .refine((data) => data.koreanTranslations.length > 0);
 
@@ -119,16 +124,10 @@ export const DICTIONARY_LOOKUP_RESPONSE_FORMAT = {
     schema: {
       type: 'object',
       additionalProperties: false,
-      required: ['word', 'pronunciation', 'koreanTranslations', 'meanings'],
+      required: ['word', 'pronunciation', 'meanings'],
       properties: {
         word: { type: 'string', minLength: 1, maxLength: 60 },
         pronunciation: { type: 'string', maxLength: 240 },
-        koreanTranslations: {
-          type: 'array',
-          minItems: 1,
-          maxItems: 5,
-          items: { type: 'string', minLength: 1, maxLength: 30 },
-        },
         meanings: {
           type: 'array',
           minItems: 1,
@@ -136,9 +135,15 @@ export const DICTIONARY_LOOKUP_RESPONSE_FORMAT = {
           items: {
             type: 'object',
             additionalProperties: false,
-            required: ['partOfSpeech', 'definition', 'example'],
+            required: ['partOfSpeech', 'koreanTranslations', 'definition', 'example'],
             properties: {
               partOfSpeech: { type: 'string', minLength: 1, maxLength: 40 },
+              koreanTranslations: {
+                type: 'array',
+                minItems: 1,
+                maxItems: 5,
+                items: { type: 'string', minLength: 1, maxLength: 30 },
+              },
               definition: { type: 'string', minLength: 1, maxLength: 300 },
               example: { type: 'string', minLength: 1, maxLength: 200 },
             },
@@ -156,7 +161,7 @@ const SYSTEM_PROMPT =
   '각 의미(meanings)는 실제 품사(partOfSpeech), 영어로 된 명확한 정의(definition), ' +
   '그 단어를 사용한 짧고 자연스러운 영어 예문(example)을 포함하며 최대 3개까지 담는다. ' +
   '발음(pronunciation)은 국제음성기호(IPA)를 정확히 아는 경우에만 적고, 확신할 수 없으면 빈 문자열로 남긴다. ' +
-  'koreanTranslations에는 학습자가 이해하기 쉬운 짧은 한국어 단어 뜻을 1개 이상 5개 이하로 담는다. ' +
+  '각 meaning의 koreanTranslations에는 바로 그 영어 정의에 대응하는 짧은 한국어 뜻만 1개 이상 5개 이하로 담고, 다른 meaning의 뜻을 섞지 않는다. ' +
   '요청된 JSON 스키마 이외의 텍스트, 설명, 머리말, 마크다운은 절대 포함하지 않는다.';
 
 export function buildDictionaryLookupMessages(word: string): ChatMessage[] {

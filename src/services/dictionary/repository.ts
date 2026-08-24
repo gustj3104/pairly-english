@@ -33,7 +33,13 @@ export const AI_GENERATED_ATTRIBUTION: DictionaryAttributionJson = {
  */
 const PENDING_LOOKUP_CACHE_SCHEMA_VERSION = 1;
 const PENDING_SENTINEL_MEANINGS: DictionaryMeaningJson[] = [
-  { senseId: '0'.repeat(64), partOfSpeech: 'pending', definition: 'pending', example: 'pending' },
+  {
+    senseId: '0'.repeat(64),
+    partOfSpeech: 'pending',
+    koreanTranslations: [],
+    definition: 'pending',
+    example: 'pending',
+  },
 ];
 
 function mapEntry(row: typeof dictionaryEntries.$inferSelect): DictionaryEntry {
@@ -45,6 +51,7 @@ function mapEntry(row: typeof dictionaryEntries.$inferSelect): DictionaryEntry {
     meanings: row.meanings.map((meaning) => ({
       senseId: meaning.senseId,
       partOfSpeech: meaning.partOfSpeech,
+      koreanTranslations: meaning.koreanTranslations,
       definition: meaning.definition,
       example: meaning.example,
     })),
@@ -114,10 +121,18 @@ export interface DictionaryRepository {
   ): Promise<CachedLookup>;
   findEntry(word: string): Promise<DictionaryEntry | null>;
   findArticle(id: string): Promise<{ id: string; title: string; content: string } | null>;
-  findSaved(participantKey: string, normalizedWord: string): Promise<SavedVocabularyRow | null>;
+  findSaved(
+    participantKey: string,
+    normalizedWord: string,
+    senseId: string,
+  ): Promise<SavedVocabularyRow | null>;
   saveVocabulary(input: SaveVocabularyInput): Promise<SavedVocabularyRow>;
   listVocabulary(participantKey: string): Promise<SavedVocabularyRow[]>;
-  deleteVocabulary(participantKey: string, normalizedWord: string): Promise<boolean>;
+  deleteVocabulary(
+    participantKey: string,
+    normalizedWord: string,
+    senseId?: string,
+  ): Promise<boolean>;
 }
 
 /**
@@ -165,7 +180,7 @@ export class DrizzleDictionaryRepository implements DictionaryRepository {
     create: () => Promise<DictionaryEntry>,
     options: GetOrRefreshOptions = {},
   ): Promise<CachedLookup> {
-    return this.db.transaction(async (tx) => {
+    const result = await this.db.transaction<CachedLookup | DictionaryError>(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`dictionary:${word}`}))`);
       const existing = await tx.query.dictionaryEntries.findFirst({
         where: eq(dictionaryEntries.normalizedWord, word),
@@ -187,7 +202,7 @@ export class DrizzleDictionaryRepository implements DictionaryRepository {
       ) {
         // No usable entry yet (never succeeded, or pre-AI legacy data) and a lookup was already
         // attempted recently — report unavailable instead of spending another Mindlogic call.
-        throw new DictionaryError('DICTIONARY_AI_UNAVAILABLE', 503);
+        return new DictionaryError('DICTIONARY_AI_UNAVAILABLE', 503);
       }
 
       try {
@@ -244,10 +259,16 @@ export class DrizzleDictionaryRepository implements DictionaryRepository {
               // path (e.g. a since-fixed bug) — never clobber real data with the pending sentinel.
               .onConflictDoNothing({ target: dictionaryEntries.normalizedWord });
           }
+          if (existing?.cacheSchemaVersion === AI_DICTIONARY_CACHE_SCHEMA_VERSION) {
+            return { entry: mapEntry(existing), cached: true, stale: true };
+          }
+          return error;
         }
         throw error;
       }
     });
+    if (result instanceof DictionaryError) throw result;
+    return result;
   }
 
   async findArticle(id: string) {
@@ -280,7 +301,11 @@ export class DrizzleDictionaryRepository implements DictionaryRepository {
         savedAt: rest.savedAt,
       })
       .onConflictDoUpdate({
-        target: [savedVocabulary.participantKey, savedVocabulary.normalizedWord],
+        target: [
+          savedVocabulary.participantKey,
+          savedVocabulary.normalizedWord,
+          savedVocabulary.senseId,
+        ],
         set: {
           word: rest.word,
           senseId: rest.senseId,
@@ -306,6 +331,7 @@ export class DrizzleDictionaryRepository implements DictionaryRepository {
   async findSaved(
     participantKey: string,
     normalizedWord: string,
+    senseId: string,
   ): Promise<SavedVocabularyRow | null> {
     const [row] = await this.db
       .select({ item: savedVocabulary, articleTitle: dailyNewsArticles.title })
@@ -315,6 +341,7 @@ export class DrizzleDictionaryRepository implements DictionaryRepository {
         and(
           eq(savedVocabulary.participantKey, participantKey),
           eq(savedVocabulary.normalizedWord, normalizedWord),
+          eq(savedVocabulary.senseId, senseId),
         ),
       )
       .limit(1);
@@ -331,15 +358,24 @@ export class DrizzleDictionaryRepository implements DictionaryRepository {
     return rows.map((row) => ({ item: mapSavedItem(row.item), articleTitle: row.articleTitle }));
   }
 
-  async deleteVocabulary(participantKey: string, normalizedWord: string): Promise<boolean> {
-    const rows = await this.db
-      .delete(savedVocabulary)
-      .where(
-        and(
+  async deleteVocabulary(
+    participantKey: string,
+    normalizedWord: string,
+    senseId?: string,
+  ): Promise<boolean> {
+    const condition = senseId
+      ? and(
           eq(savedVocabulary.participantKey, participantKey),
           eq(savedVocabulary.normalizedWord, normalizedWord),
-        ),
-      )
+          eq(savedVocabulary.senseId, senseId),
+        )
+      : and(
+          eq(savedVocabulary.participantKey, participantKey),
+          eq(savedVocabulary.normalizedWord, normalizedWord),
+        );
+    const rows = await this.db
+      .delete(savedVocabulary)
+      .where(condition)
       .returning({ id: savedVocabulary.id });
     return rows.length > 0;
   }

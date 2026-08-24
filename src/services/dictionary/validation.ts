@@ -30,6 +30,7 @@ const lookupMeaningSchema = z
   .object({
     senseId: z.string().regex(/^[a-f0-9]{64}$/),
     partOfSpeech: z.string(),
+    koreanTranslations: z.array(z.string()).min(1),
     definition: z.string(),
     example: z.string(),
   })
@@ -40,7 +41,9 @@ export const dictionaryLookupResponseSchema = z
     query: z.string(),
     normalizedWord: z.string(),
     pronunciation: z.string().nullable(),
+    audioUrl: z.null(),
     koreanTranslations: z.array(z.string()).min(1),
+    koreanTranslationStatus: z.literal('available'),
     meanings: z.array(lookupMeaningSchema).min(1).max(3),
     cached: z.boolean(),
     stale: z.boolean(),

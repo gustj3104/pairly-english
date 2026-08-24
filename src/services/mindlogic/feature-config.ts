@@ -49,6 +49,10 @@ export const FEATURE_MODEL_CONFIG: Partial<Record<CreditFeature, FeatureModelCon
     // ai-lookup.ts's 'invalid_json' outcome) — a tiny fraction of the monthly credit cap either way.
     maxOutputTokens: 800,
   },
+  dictionary_generation: {
+    model: 'gpt-5.6-luna',
+    maxOutputTokens: 800,
+  },
   // Minimal bare-messages diagnostic call — see scripts/mindlogic-contract-check.ts.
   provider_contract_check: {
     model: 'claude-haiku-4-5-20251001',

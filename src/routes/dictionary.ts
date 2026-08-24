@@ -98,8 +98,14 @@ export async function dictionaryRoutes(
     const word = normalizeLookupWord(
       (request.params as { normalizedWord?: unknown }).normalizedWord,
     );
-    if (!word) return error(reply, request, 400, 'VALIDATION_ERROR');
-    await app.dictionaryService.delete(participant(request), word);
+    const senseId = (request.query as { senseId?: unknown }).senseId;
+    if (
+      !word ||
+      (senseId !== undefined && (typeof senseId !== 'string' || !/^[a-f0-9]{64}$/.test(senseId)))
+    ) {
+      return error(reply, request, 400, 'VALIDATION_ERROR');
+    }
+    await app.dictionaryService.delete(participant(request), word, senseId);
     reply.code(204).send();
   });
 }

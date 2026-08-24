@@ -13,10 +13,10 @@ const NOW = new Date('2026-08-24T00:00:00.000Z');
 const validResponse = (overrides: Record<string, unknown> = {}) => ({
   word: 'robot',
   pronunciation: '/ˈroʊbɑːt/',
-  koreanTranslations: ['로봇', '자동 기계'],
   meanings: [
     {
       partOfSpeech: 'noun',
+      koreanTranslations: ['로봇', '자동 기계'],
       definition: 'A machine that can perform tasks automatically.',
       example: 'The robot cleaned the floor.',
     },
@@ -27,7 +27,11 @@ const validResponse = (overrides: Record<string, unknown> = {}) => ({
 describe('dictionaryLookupAiResponseSchema', () => {
   it('accepts a valid response, normalizes pronunciation, and dedupes Korean translations', () => {
     const parsed = dictionaryLookupAiResponseSchema.parse(
-      validResponse({ koreanTranslations: [' 로봇 ', '로봇', '자동 기계'] }),
+      validResponse({
+        meanings: [
+          { ...validResponse().meanings[0], koreanTranslations: [' 로봇 ', '로봇', '자동 기계'] },
+        ],
+      }),
     );
     expect(parsed.pronunciation).toBe('/ˈroʊbɑːt/');
     expect(parsed.koreanTranslations).toEqual(['로봇', '자동 기계']);
@@ -43,21 +47,43 @@ describe('dictionaryLookupAiResponseSchema', () => {
   it('strips a trailing sentence-ending mark from each Korean gloss', () => {
     expect(
       dictionaryLookupAiResponseSchema.parse(
-        validResponse({ koreanTranslations: ['로봇.', '기계!'] }),
+        validResponse({
+          meanings: [{ ...validResponse().meanings[0], koreanTranslations: ['로봇.', '기계!'] }],
+        }),
       ).koreanTranslations,
     ).toEqual(['로봇', '기계']);
   });
 
   it.each([
-    ['empty koreanTranslations', validResponse({ koreanTranslations: [] })],
-    ['no Hangul in a Korean gloss', validResponse({ koreanTranslations: ['robot'] })],
-    ['HTML in a Korean gloss', validResponse({ koreanTranslations: ['<b>로봇</b>'] })],
+    [
+      'empty koreanTranslations',
+      validResponse({ meanings: [{ ...validResponse().meanings[0], koreanTranslations: [] }] }),
+    ],
+    [
+      'no Hangul in a Korean gloss',
+      validResponse({
+        meanings: [{ ...validResponse().meanings[0], koreanTranslations: ['robot'] }],
+      }),
+    ],
+    [
+      'HTML in a Korean gloss',
+      validResponse({
+        meanings: [{ ...validResponse().meanings[0], koreanTranslations: ['<b>로봇</b>'] }],
+      }),
+    ],
     ['too many meanings', validResponse({ meanings: Array(4).fill(validResponse().meanings[0]) })],
     ['no meanings', validResponse({ meanings: [] })],
     [
       'HTML in a definition',
       validResponse({
-        meanings: [{ partOfSpeech: 'noun', definition: '<b>bad</b>', example: 'x y' }],
+        meanings: [
+          {
+            partOfSpeech: 'noun',
+            koreanTranslations: ['나쁨'],
+            definition: '<b>bad</b>',
+            example: 'x y',
+          },
+        ],
       }),
     ],
     ['unexpected extra field', { ...validResponse(), extra: true }],
@@ -103,7 +129,7 @@ describe('DictionaryAiLookup credit lifecycle', () => {
     expect(entry.koreanTranslations).toEqual(['로봇', '자동 기계']);
     expect(entry.meanings).toHaveLength(1);
     expect(entry.meanings[0]?.senseId).toMatch(/^[a-f0-9]{64}$/);
-    expect(entry.cacheSchemaVersion).toBe(4);
+    expect(entry.cacheSchemaVersion).toBe(5);
     expect(reserveCredits).toHaveBeenCalledTimes(1);
     expect(createChatCompletion).toHaveBeenCalledTimes(1);
     expect(commitCredits).toHaveBeenCalledTimes(1);
@@ -210,7 +236,7 @@ describe('DictionaryAiLookup credit lifecycle', () => {
     expect(markReconciliationPending).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(
       expect.objectContaining({
-        feature: 'dictionary_translation',
+        feature: 'dictionary_generation',
         outcome: 'upstream_failed',
         upstreamCode: 'rate_limited',
         upstreamStatus: 429,
@@ -257,7 +283,7 @@ describe('DictionaryAiLookup credit lifecycle', () => {
       expect.any(Number),
     );
     expect(warn).toHaveBeenCalledWith(
-      expect.objectContaining({ feature: 'dictionary_translation', outcome: 'invalid_json' }),
+      expect.objectContaining({ feature: 'dictionary_generation', outcome: 'invalid_json' }),
       'dictionary lookup failed',
     );
   });
@@ -273,7 +299,7 @@ describe('DictionaryAiLookup credit lifecycle', () => {
     });
     expect(commitCredits).toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(
-      expect.objectContaining({ feature: 'dictionary_translation', outcome: 'schema_invalid' }),
+      expect.objectContaining({ feature: 'dictionary_generation', outcome: 'schema_invalid' }),
       'dictionary lookup failed',
     );
   });

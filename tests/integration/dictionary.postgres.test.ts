@@ -27,6 +27,7 @@ const entry = (): DictionaryEntry => ({
     {
       senseId: 'a'.repeat(64),
       partOfSpeech: 'noun',
+      koreanTranslations: ['로봇', '자동 기계'],
       definition: 'A machine that can perform tasks automatically.',
       example: 'The robot cleaned the floor.',
     },
@@ -88,7 +89,7 @@ describe('dictionary PostgreSQL cache', () => {
     await testDb.pool.query(
       `insert into dictionary_entries
         (query_word, normalized_word, meanings, source_url, cache_schema_version, fetched_at, expires_at, updated_at)
-       values ('robot', 'robot', $1::jsonb, 'https://en.wiktionary.org/wiki/robot', 2, $2, $3, $2)`,
+       values ('robot', 'robot', $1::jsonb, 'https://en.wiktionary.org/wiki/robot', 4, $2, $3, $2)`,
       [
         JSON.stringify([
           {
@@ -205,6 +206,44 @@ describe('saved vocabulary PostgreSQL constraints', () => {
     expect(await repository.listVocabulary('bob')).toHaveLength(1);
     expect(await repository.deleteVocabulary('alice', 'robot')).toBe(true);
     expect(await repository.listVocabulary('bob')).toHaveLength(1);
+  });
+
+  it('stores different senses independently and rejects a duplicate sense row', async () => {
+    await repository.getOrRefresh('robot', now, async () => entry());
+    const base = {
+      participantKey: 'alice',
+      word: 'robot',
+      normalizedWord: 'robot',
+      pronunciation: null,
+      partOfSpeech: 'noun',
+      example: 'The robot moved.',
+      articleId: null,
+      contextSentence: null,
+      savedAt: now,
+    };
+    await repository.saveVocabulary({
+      ...base,
+      senseId: 'a'.repeat(64),
+      definition: 'An automatic machine.',
+      koreanTranslations: ['로봇'],
+    });
+    await repository.saveVocabulary({
+      ...base,
+      senseId: 'b'.repeat(64),
+      definition: 'A humanlike machine.',
+      koreanTranslations: ['인간형 기계'],
+    });
+    await repository.saveVocabulary({
+      ...base,
+      senseId: 'a'.repeat(64),
+      definition: 'An automatic machine.',
+      koreanTranslations: ['로봇'],
+    });
+    expect(await repository.listVocabulary('alice')).toHaveLength(2);
+    await repository.deleteVocabulary('alice', 'robot', 'a'.repeat(64));
+    const remaining = await repository.listVocabulary('alice');
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]?.item.senseId).toBe('b'.repeat(64));
   });
 
   it('enforces the dictionary foreign key and nonblank checks', async () => {

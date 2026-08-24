@@ -17,6 +17,7 @@ export type CreditFeature =
   // this is a Postgres enum (credit_feature) and adding a new value requires a migration that
   // can't be applied via Render Shell in production. See src/services/dictionary/ai-lookup.ts.
   | 'dictionary_translation'
+  | 'dictionary_generation'
   | 'grammar_feedback'
   | 'vocabulary_extraction'
   | 'news_processing'

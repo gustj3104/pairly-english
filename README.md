@@ -1365,11 +1365,11 @@ Reusing the existing enum value avoids that migration entirely — the feature n
 lookup, not just translation, but the stored value, credit-ledger rows, and any operator tooling
 keyed on it are unaffected.
 
-### DB cache reuse — no new migration
+### DB cache reuse and sense-aware saves
 
-The existing `dictionary_entries` table is reused as-is; **no migration was added.** A new
-`cacheSchemaVersion` (`AI_DICTIONARY_CACHE_SCHEMA_VERSION = 4`) marks a row as a real single-call
-AI result. Any stored row below that version — every pre-AI FreeDictionaryAPI/Wiktionary row,
+The existing `dictionary_entries` table is reused as-is. A new
+`cacheSchemaVersion` (`AI_DICTIONARY_CACHE_SCHEMA_VERSION = 5`) marks a row as a real single-call
+AI result with Korean translations attached to each meaning. Any stored row below that version — including version 4 word-level AI rows and every pre-AI FreeDictionaryAPI/Wiktionary row,
 regardless of whether its `korean_translations` was ever populated — is always treated as stale
 and regenerated via AI on its next lookup rather than served, which is also how a legacy `robot`
 row's "serf" first-sense problem gets fixed the next time anyone looks it up up. This reuses the

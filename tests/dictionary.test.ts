@@ -35,6 +35,7 @@ function entry(overrides: Partial<DictionaryEntry> = {}): DictionaryEntry {
       {
         senseId: 'a'.repeat(64),
         partOfSpeech: 'noun',
+        koreanTranslations: ['로봇', '자동 기계'],
         definition: 'A machine that can perform tasks automatically.',
         example: 'The robot cleaned the floor.',
       },
@@ -107,15 +108,15 @@ class MemoryDictionaryRepository implements DictionaryRepository {
     return this.articles.get(id) ?? null;
   }
 
-  async findSaved(participantKey: string, normalizedWord: string) {
-    return this.saved.get(`${participantKey}:${normalizedWord}`) ?? null;
+  async findSaved(participantKey: string, normalizedWord: string, senseId: string) {
+    return this.saved.get(`${participantKey}:${normalizedWord}:${senseId}`) ?? null;
   }
 
   async saveVocabulary(input: SaveVocabularyInput): Promise<SavedVocabularyRow> {
     const article = input.articleId ? (this.articles.get(input.articleId) ?? null) : null;
     const row: SavedVocabularyRow = {
       item: {
-        id: `${input.participantKey}:${input.normalizedWord}`,
+        id: `${input.participantKey}:${input.normalizedWord}:${input.senseId}`,
         word: input.word,
         normalizedWord: input.normalizedWord,
         senseId: input.senseId,
@@ -130,7 +131,7 @@ class MemoryDictionaryRepository implements DictionaryRepository {
       },
       articleTitle: article?.title ?? null,
     };
-    this.saved.set(`${input.participantKey}:${input.normalizedWord}`, row);
+    this.saved.set(`${input.participantKey}:${input.normalizedWord}:${input.senseId}`, row);
     return row;
   }
 
@@ -140,8 +141,14 @@ class MemoryDictionaryRepository implements DictionaryRepository {
     );
   }
 
-  async deleteVocabulary(participantKey: string, normalizedWord: string) {
-    return this.saved.delete(`${participantKey}:${normalizedWord}`);
+  async deleteVocabulary(participantKey: string, normalizedWord: string, senseId?: string) {
+    if (senseId) return this.saved.delete(`${participantKey}:${normalizedWord}:${senseId}`);
+    let deleted = false;
+    for (const key of this.saved.keys()) {
+      if (key.startsWith(`${participantKey}:${normalizedWord}:`))
+        deleted = this.saved.delete(key) || deleted;
+    }
+    return deleted;
   }
 }
 
@@ -152,7 +159,7 @@ function fakeAiLookup(impl: (word: string) => Promise<DictionaryEntry>) {
 
 describe('Mindlogic model configuration', () => {
   it('pins the dictionary lookup feature to gpt-5.6-luna, not gpt-5.4-mini', () => {
-    expect(getFeatureModelConfig('dictionary_translation').model).toBe('gpt-5.6-luna');
+    expect(getFeatureModelConfig('dictionary_generation').model).toBe('gpt-5.6-luna');
   });
 });
 
@@ -183,6 +190,7 @@ describe('DictionaryService — single-call AI lookup', () => {
           {
             senseId: 'b'.repeat(64),
             partOfSpeech: 'noun',
+            koreanTranslations: ['문제'],
             definition: 'A matter that needs to be resolved.',
             example: 'We solved the problem.',
           },
@@ -205,6 +213,7 @@ describe('DictionaryService — single-call AI lookup', () => {
           {
             senseId: 'c'.repeat(64),
             partOfSpeech: 'noun',
+            koreanTranslations: ['의사소통'],
             definition: 'The exchange of information.',
             example: 'Good communication matters.',
           },
@@ -314,7 +323,7 @@ describe('DictionaryService — single-call AI lookup', () => {
     const service = new DictionaryService(repository, aiLookup, () => NOW);
     const result = await service.lookup('robot');
     expect(result).not.toHaveProperty('source');
-    expect(result).not.toHaveProperty('audioUrl');
+    expect(result.audioUrl).toBeNull();
     expect(JSON.stringify(result)).not.toMatch(/wiktionary|CC BY-SA|freedictionaryapi/i);
   });
 });
@@ -409,8 +418,8 @@ describe('dictionary HTTP authentication and validation', () => {
   });
 });
 
-describe('saved vocabulary — word-level Korean translations', () => {
-  it('snapshots the word-level koreanTranslations independently of the selected sense, and keeps them on later retrieval', async () => {
+describe('saved vocabulary — per-sense Korean translations', () => {
+  it('saves only the selected sense translations and keeps them on later retrieval', async () => {
     const repository = new MemoryDictionaryRepository();
     const aiLookup = fakeAiLookup(async (word) => entry({ query: word, normalizedWord: word }));
     const dictionaryService = new DictionaryService(repository, aiLookup, () => NOW);
@@ -446,6 +455,47 @@ describe('saved vocabulary — word-level Korean translations', () => {
     ]);
   });
 
+  it('stores two senses of one word independently, blocks duplicate senses, and deletes only the selected sense', async () => {
+    const repository = new MemoryDictionaryRepository();
+    repository.entries.set(
+      'robot',
+      entry({
+        meanings: [
+          {
+            senseId: 'a'.repeat(64),
+            partOfSpeech: 'noun',
+            koreanTranslations: ['로봇', '자동 기계'],
+            definition: 'A machine that can perform tasks automatically.',
+            example: 'The robot cleaned the floor.',
+          },
+          {
+            senseId: 'b'.repeat(64),
+            partOfSpeech: 'noun',
+            koreanTranslations: ['인간형 기계'],
+            definition: 'A machine designed to look or act like a human.',
+            example: 'The robot waved to the children.',
+          },
+        ],
+      }),
+    );
+    const service = new DictionaryService(
+      repository,
+      fakeAiLookup(async () => entry()),
+      () => NOW,
+    );
+    const first = await service.save('hyunji', 'robot', { senseId: 'a'.repeat(64) });
+    const duplicate = await service.save('hyunji', 'robot', { senseId: 'a'.repeat(64) });
+    const second = await service.save('hyunji', 'robot', { senseId: 'b'.repeat(64) });
+    expect(first.id).toBe(duplicate.id);
+    expect(first.koreanTranslations).toEqual(['로봇', '자동 기계']);
+    expect(second.koreanTranslations).toEqual(['인간형 기계']);
+    expect(await service.list('hyunji')).toHaveLength(2);
+    await service.delete('hyunji', 'robot', 'a'.repeat(64));
+    expect(await service.list('hyunji')).toEqual([
+      expect.objectContaining({ senseId: 'b'.repeat(64) }),
+    ]);
+  });
+
   it('still serves a pre-AI-redesign saved row (null example, empty koreanTranslations) without breaking the whole list', async () => {
     // Deploy compatibility: a word saved under the old FreeDictionaryAPI-backed flow could have a
     // null example and an empty koreanTranslations array — the new backend must keep reading
@@ -453,7 +503,7 @@ describe('saved vocabulary — word-level Korean translations', () => {
     const repository = new MemoryDictionaryRepository();
     const aiLookup = fakeAiLookup(async (word) => entry({ query: word, normalizedWord: word }));
     const dictionaryService = new DictionaryService(repository, aiLookup, () => NOW);
-    repository.saved.set('hyunji:legacyword', {
+    repository.saved.set(`hyunji:legacyword:${'b'.repeat(64)}`, {
       item: {
         id: 'hyunji:legacyword',
         word: 'legacyword',

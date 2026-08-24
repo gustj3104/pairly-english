@@ -6,11 +6,12 @@
  * array (or a first-meaning problem like "robot" surfacing medieval serfdom before the machine)
  * gets replaced with a real AI result the next time anyone looks the word up.
  */
-export const AI_DICTIONARY_CACHE_SCHEMA_VERSION = 4;
+export const AI_DICTIONARY_CACHE_SCHEMA_VERSION = 5;
 
 export interface DictionaryMeaning {
   senseId: string;
   partOfSpeech: string;
+  koreanTranslations: string[];
   definition: string;
   example: string;
 }
@@ -30,7 +31,9 @@ export interface DictionaryLookupResponse {
   query: string;
   normalizedWord: string;
   pronunciation: string | null;
+  audioUrl: null;
   koreanTranslations: string[];
+  koreanTranslationStatus: 'available';
   meanings: DictionaryMeaning[];
   cached: boolean;
   stale: boolean;

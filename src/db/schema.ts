@@ -60,6 +60,7 @@ export const creditFeatureEnum = pgEnum('credit_feature', [
   'reflection_comparison',
   'daily_news',
   'dictionary_translation',
+  'dictionary_generation',
   'grammar_feedback',
   'vocabulary_extraction',
   'news_processing',
@@ -86,13 +87,14 @@ export const dailyNewsArticles = pgTable('daily_news_articles', {
 export interface DictionaryMeaningJson {
   senseId: string;
   partOfSpeech: string;
+  koreanTranslations: string[];
   definition: string;
   example: string;
 }
 
 /**
  * Legacy column, kept only so pre-AI (FreeDictionaryAPI/Wiktionary) rows still satisfy the
- * table's NOT NULL constraint without a migration. Current (cacheSchemaVersion >= 4, AI-only)
+ * table's NOT NULL constraint without a migration. Current (cacheSchemaVersion >= 5, AI-only)
  * rows write a fixed internal sentinel here (see AI_GENERATED_ATTRIBUTION in
  * src/services/dictionary/repository.ts) — never a real external source — and this field is
  * never returned by the public API or shown in the UI. See "Dictionary lookup" in the README.
@@ -107,7 +109,7 @@ export interface DictionaryAttributionJson {
 const LEGACY_FREEDICTIONARYAPI_ATTRIBUTION_DEFAULT = sql`'{"provider":"FreeDictionaryAPI.com","name":"Wiktionary","license":"CC BY-SA 4.0","licenseUrl":"https://creativecommons.org/licenses/by-sa/4.0/"}'::jsonb`;
 
 /**
- * Bounded, cached dictionary lookup results. cacheSchemaVersion >= 4 (see
+ * Bounded, cached dictionary lookup results. cacheSchemaVersion >= 5 (see
  * AI_DICTIONARY_CACHE_SCHEMA_VERSION in repository.ts) means a single-call Mindlogic AI result;
  * anything lower is a pre-AI (FreeDictionaryAPI/Wiktionary) row that always gets regenerated on
  * its next lookup rather than served. Mindlogic response bodies are never persisted verbatim.
@@ -120,15 +122,15 @@ export const dictionaryEntries = pgTable(
     normalizedWord: varchar('normalized_word', { length: 60 }).notNull().unique(),
     meanings: jsonb('meanings').$type<DictionaryMeaningJson[]>().notNull(),
     koreanTranslations: jsonb('korean_translations').$type<string[]>().notNull().default([]),
+    koreanTranslationAttemptedAt: timestamp('korean_translation_attempted_at', {
+      withTimezone: true,
+    }),
     // Set every time an AI lookup attempt finishes (success or failure), never left untouched on
     // a failure. Lets getOrRefresh() throttle automatic re-attempts for a word whose lookup keeps
     // failing, without ever permanently caching the failure itself as a successful entry (only a
     // real success bumps cacheSchemaVersion to AI_DICTIONARY_CACHE_SCHEMA_VERSION). Column name
     // predates the single-call AI redesign (see repository.ts) but is reused as-is to avoid a
     // migration.
-    koreanTranslationAttemptedAt: timestamp('korean_translation_attempted_at', {
-      withTimezone: true,
-    }),
     pronunciation: varchar('pronunciation', { length: 240 }),
     // Legacy column from the removed FreeDictionaryAPI/dictionaryapi.dev providers. AI lookups
     // never produce audio and always write null; kept only so old rows still read back cleanly.
@@ -200,9 +202,10 @@ export const savedVocabulary = pgTable(
     savedAt: timestamp('saved_at', { withTimezone: true }).notNull(),
   },
   (table) => [
-    unique('saved_vocabulary_participant_word_unique').on(
+    unique('saved_vocabulary_participant_word_sense_unique').on(
       table.participantKey,
       table.normalizedWord,
+      table.senseId,
     ),
     index('saved_vocabulary_participant_saved_at_idx').on(table.participantKey, table.savedAt),
     check('saved_vocabulary_participant_non_blank', sql`length(trim(${table.participantKey})) > 0`),
