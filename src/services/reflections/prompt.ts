@@ -17,9 +17,10 @@ Rules you must follow exactly:
 3. Do not exaggerate, soften, distort, or reinterpret either person's opinions. Represent each person's stance faithfully.
 4. For every item in "commonGround" and every item in "differences", ground it in a short, faithful quote or close paraphrase taken from that specific person's own reflection — never a fabricated quote.
 5. Never evaluate, grade, rank, or declare one person's reflection more correct, more sophisticated, or better than the other's. You are a neutral comparison tool, not a judge.
-6. Generate exactly 3 discussion questions, written in English, each with a one-sentence reason that connects it to a specific point of agreement or disagreement you identified above.
-7. Write all text in your response — points, quotes, stances, reasons, and discussion questions — in English.
-8. Output ONLY a single JSON object that conforms exactly to the provided JSON Schema. Do not include Markdown code fences, commentary, or any text outside the JSON object.`;
+6. Generate exactly 3 distinct discussion topics, written in English, each with a one-sentence reason that connects it to a specific point of agreement or disagreement you identified above.
+7. For every topic, generate a discussionGuide with exactly one openingQuestion and exactly 3 distinct followUpQuestions. Each guide must directly address that topic and the article, reflect relevant agreement or disagreement in the two reflections, be natural and easy to speak aloud, and introduce no facts absent from the supplied data. Do not put participant names in questions unless using the supplied displayName exactly.
+8. Write all text in your response — points, quotes, stances, reasons, and discussion questions — in English.
+9. Output ONLY a single JSON object that conforms exactly to the provided JSON Schema. Do not include Markdown code fences, commentary, or any text outside the JSON object.`;
 
 /**
  * Builds the user-message content as an explicit, labeled JSON data block
@@ -114,11 +115,25 @@ export const REFLECTION_COMPARISON_RESPONSE_FORMAT: JsonSchemaResponseFormat = {
           items: {
             type: 'object',
             additionalProperties: false,
-            required: ['question', 'reason', 'difficulty'],
+            required: ['question', 'reason', 'difficulty', 'discussionGuide'],
             properties: {
               question: { type: 'string', maxLength: 300 },
               reason: { type: 'string', maxLength: 400 },
               difficulty: { type: 'string', enum: ['Intermediate', 'Advanced'] },
+              discussionGuide: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['openingQuestion', 'followUpQuestions'],
+                properties: {
+                  openingQuestion: { type: 'string', maxLength: 400 },
+                  followUpQuestions: {
+                    type: 'array',
+                    minItems: 3,
+                    maxItems: 3,
+                    items: { type: 'string', maxLength: 400 },
+                  },
+                },
+              },
             },
           },
         },

@@ -127,6 +127,20 @@ describe('compareReflectionsRequestSchema', () => {
 });
 
 describe('reflectionComparisonSchema (Mindlogic response re-validation)', () => {
+  it('accepts and validates a topic-specific discussion guide', () => {
+    const comparison = validComparison();
+    Object.assign(comparison.topics[0]!, {
+      discussionGuide: {
+        openingQuestion: 'What could keep services-sector growth strong?',
+        followUpQuestions: [
+          'How could consumer demand affect that growth?',
+          'What role might employment play?',
+          'Which risk seems most important, and why?',
+        ],
+      },
+    });
+    expect(reflectionComparisonSchema.safeParse(comparison).success).toBe(true);
+  });
   function validComparison() {
     return {
       commonGround: [{ point: 'p', mine: 'm', partner: 'p2' }],

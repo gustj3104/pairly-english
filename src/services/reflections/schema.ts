@@ -48,6 +48,7 @@ const POINT_MAX_LENGTH = 300;
 const TOPIC_LABEL_MAX_LENGTH = 200;
 const QUESTION_MAX_LENGTH = 300;
 const REASON_MAX_LENGTH = 400;
+const GUIDE_QUESTION_MAX_LENGTH = 400;
 
 export const DISCUSSION_DIFFICULTIES = ['Intermediate', 'Advanced'] as const;
 
@@ -79,6 +80,13 @@ const discussionTopicSchema = z
     question: z.string().min(1).max(QUESTION_MAX_LENGTH),
     reason: z.string().min(1).max(REASON_MAX_LENGTH),
     difficulty: z.enum(DISCUSSION_DIFFICULTIES),
+    discussionGuide: z
+      .object({
+        openingQuestion: z.string().min(1).max(GUIDE_QUESTION_MAX_LENGTH),
+        followUpQuestions: z.array(z.string().min(1).max(GUIDE_QUESTION_MAX_LENGTH)).length(3),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
