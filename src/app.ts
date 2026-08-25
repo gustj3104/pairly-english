@@ -28,6 +28,12 @@ import { dictionaryRoutes } from './routes/dictionary.js';
 import { DictionaryService } from './services/dictionary/service.js';
 import { DrizzleDictionaryRepository } from './services/dictionary/repository.js';
 import { DictionaryAiLookup } from './services/dictionary/ai-lookup.js';
+import {
+  discussionFeedbackRoutes,
+  type DiscussionFeedbackRoutesOptions,
+} from './routes/discussion-feedback.js';
+import { DiscussionFeedbackService } from './services/discussion-feedback/discussion-feedback-service.js';
+import { DrizzleDiscussionFeedbackRepository } from './services/discussion-feedback/discussion-feedback-repository.js';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -38,6 +44,7 @@ declare module 'fastify' {
     comparisonService: ComparisonService;
     dailyNewsService: DailyNewsService;
     dictionaryService: DictionaryService;
+    discussionFeedbackService: DiscussionFeedbackService;
   }
   interface FastifyRequest {
     /**
@@ -61,7 +68,9 @@ export interface BuildAppOptions {
   comparisonService?: ComparisonService;
   dailyNewsService?: DailyNewsService;
   dictionaryService?: DictionaryService;
+  discussionFeedbackService?: DiscussionFeedbackService;
   studyDaysRoutesOptions?: StudyDaysRoutesOptions;
+  discussionFeedbackRoutesOptions?: DiscussionFeedbackRoutesOptions;
   /** Test-only: redirect Pino output somewhere inspectable instead of silent/stdout. */
   loggerStream?: NodeJS.WritableStream;
 }
@@ -136,6 +145,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         () => new Date(),
       ),
   );
+  app.decorate(
+    'discussionFeedbackService',
+    options.discussionFeedbackService ??
+      new DiscussionFeedbackService(new DrizzleDiscussionFeedbackRepository(db)),
+  );
 
   app.register(healthRoutes);
   app.register(usageRoutes, { prefix: '/api/v1' });
@@ -162,6 +176,13 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.register(dictionaryRoutes, {
     prefix: '/api/v1',
     sessionSecret: options.studyDaysRoutesOptions?.sessionSecret ?? env.SESSION_SECRET,
+  });
+  app.register(discussionFeedbackRoutes, {
+    prefix: '/api/v1',
+    ...(options.discussionFeedbackRoutesOptions ?? {
+      sessionSecret: env.SESSION_SECRET,
+      maxFutureDays: env.STUDY_DAY_MAX_FUTURE_DAYS,
+    }),
   });
 
   return app;

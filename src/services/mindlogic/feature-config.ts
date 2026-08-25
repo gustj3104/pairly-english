@@ -59,6 +59,16 @@ export const FEATURE_MODEL_CONFIG: Partial<Record<CreditFeature, FeatureModelCon
     model: 'gpt-5.6-luna',
     maxOutputTokens: 800,
   },
+  // Discussion-transcript feedback: one call returns an overall summary,
+  // a topic-coverage score/comment, and per-participant strengths/
+  // improvements/useful expressions for both participants — needs enough
+  // headroom to cover two full participant sections plus shared tips.
+  // Same supported low-cost tier as reflection_comparison and the
+  // dictionary features above.
+  grammar_feedback: {
+    model: 'gpt-5.6-luna',
+    maxOutputTokens: 2000,
+  },
   // Minimal bare-messages diagnostic call — see scripts/mindlogic-contract-check.ts.
   provider_contract_check: {
     model: 'claude-haiku-4-5-20251001',
