@@ -393,3 +393,94 @@ export const studyDayComparisons = pgTable(
     ),
   ],
 );
+
+/** One segment of a client-transcribed (browser Whisper) discussion transcript. Raw audio never reaches the server — only this text. */
+export interface DiscussionTranscriptSegmentJson {
+  id: string;
+  startMs: number;
+  endMs: number;
+  text: string;
+  speakerKey: 'hyeonseo' | 'hyunji' | null;
+}
+
+export interface DiscussionTranscriptJson {
+  segments: DiscussionTranscriptSegmentJson[];
+}
+
+export interface DiscussionFeedbackImprovementJson {
+  original: string;
+  suggested: string;
+  explanation: string;
+}
+
+export interface DiscussionFeedbackParticipantJson {
+  participantKey: 'hyeonseo' | 'hyunji';
+  displayName: string;
+  strengths: string[];
+  improvements: DiscussionFeedbackImprovementJson[];
+  usefulExpressions: string[];
+  speakingShare?: number;
+}
+
+export interface DiscussionFeedbackResultJson {
+  overallSummary: string;
+  topicCoverage: { score: number; comment: string };
+  participants: [DiscussionFeedbackParticipantJson, DiscussionFeedbackParticipantJson];
+  sharedDiscussionTips: string[];
+  nextQuestion: string;
+}
+
+/**
+ * One row per calendar day: the shared in-person discussion's
+ * client-transcribed (browser Whisper) transcript, plus AI-generated
+ * per-participant feedback on it. Additive table — never modifies
+ * study_day_comparisons or its result shape. Raw audio never reaches the
+ * server; only text (see DiscussionTranscriptJson) is ever stored here.
+ *
+ * feedback_* columns mirror study_day_comparisons' claim/settle shape
+ * exactly (same comparison_status enum, same "completed requires a
+ * result" CHECK constraint) — see
+ * src/services/discussion-feedback/discussion-feedback-repository.ts for
+ * the claim/generate locking, which mirrors ComparisonRepository's.
+ */
+export const studyDayDiscussions = pgTable(
+  'study_day_discussions',
+  {
+    studyDate: date('study_date', { mode: 'string' })
+      .primaryKey()
+      .references(() => studyDays.studyDate),
+    transcript: jsonb('transcript').$type<DiscussionTranscriptJson>(),
+    transcriptUpdatedAt: timestamp('transcript_updated_at', { withTimezone: true }),
+    transcriptUpdatedBy: text('transcript_updated_by'),
+    // SHA-256 hex digest of a canonical JSON serialization of the
+    // transcript's segments — see
+    // src/services/discussion-feedback/fingerprint.ts. Recomputed on every
+    // save; compared against feedback_input_fingerprint to report stale
+    // feedback after a transcript edit.
+    transcriptFingerprint: text('transcript_fingerprint'),
+    topicIndex: integer('topic_index'),
+    requestId: uuid('feedback_request_id').unique(),
+    status: comparisonStatusEnum('feedback_status'),
+    model: text('feedback_model'),
+    // SHA-256 hex digest over the exact inputs a feedback generation used
+    // (article id, selected topic question/guide, transcript fingerprint,
+    // sorted participant keys) — see
+    // src/services/discussion-feedback/fingerprint.ts.
+    inputFingerprint: text('feedback_input_fingerprint'),
+    result: jsonb('feedback_result').$type<DiscussionFeedbackResultJson>(),
+    errorCode: text('feedback_error_code'),
+    startedAt: timestamp('feedback_started_at', { withTimezone: true }),
+    completedAt: timestamp('feedback_completed_at', { withTimezone: true }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // Mirrors study_day_comparisons_completed_has_result exactly, scoped
+    // to the feedback_* columns only — a completed feedback status always
+    // has a result; a non-completed (or never-started, NULL) one never
+    // does.
+    check(
+      'study_day_discussions_completed_has_result',
+      sql`(${table.status} = 'completed') = (${table.result} IS NOT NULL)`,
+    ),
+  ],
+);
