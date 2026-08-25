@@ -50,6 +50,6 @@ export async function truncateCreditTables(pool: Pool): Promise<void> {
 /** Clears all daily-reflection + study-day-comparison tables between tests so each test starts from an empty state. */
 export async function truncateStudyDayTables(pool: Pool): Promise<void> {
   await pool.query(
-    'TRUNCATE TABLE study_day_comparisons, reflections, study_days RESTART IDENTITY CASCADE',
+    'TRUNCATE TABLE study_day_discussions, study_day_comparisons, reflections, study_days RESTART IDENTITY CASCADE',
   );
 }
