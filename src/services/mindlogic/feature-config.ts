@@ -21,7 +21,12 @@ export const FEATURE_MODEL_CONFIG: Partial<Record<CreditFeature, FeatureModelCon
   // model (see reflection-comparison-service.ts's retry policy, which is
   // scoped to the same model/request, not a model switch).
   reflection_comparison: {
-    model: 'gpt-5.4-mini',
+    // gpt-5.4-mini previously passed the structured-output smoke test but
+    // now returns a provider-backed 404/not_found in production. Use the
+    // currently supported low-cost tier already proven by the dictionary
+    // structured-output path. Failed comparisons remain explicit-retry
+    // only; this change never triggers a provider call by itself.
+    model: 'gpt-5.6-luna',
     maxOutputTokens: 1500,
   },
   daily_news: {
@@ -34,7 +39,8 @@ export const FEATURE_MODEL_CONFIG: Partial<Record<CreditFeature, FeatureModelCon
   // in production (see README "Dictionary lookup"). The model was gpt-5.4-mini until a
   // production 404 (upstreamCode: 'not_found') showed Mindlogic no longer serves it for this
   // call shape; gpt-5.6-luna is Mindlogic's currently supported low-cost tier and is now pinned
-  // here instead. gpt-5.4-mini itself is untouched and remains pinned for reflection_comparison.
+  // here instead. Reflection comparison now uses the same supported tier
+  // after its own production gpt-5.4-mini request returned not_found.
   dictionary_translation: {
     model: 'gpt-5.6-luna',
     // One call now returns pronunciation + up to 5 koreanTranslations (<=30 chars each) + up to

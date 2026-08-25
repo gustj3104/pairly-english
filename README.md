@@ -27,8 +27,10 @@ full history and guard files). Summary, oldest to newest:
 | Structured-output smoke test, round 2 (retry)                                                     | `claude-haiku-4-5-20251001` | Failed — Mindlogic rejected structured output with `400` |
 | Structured-output smoke test, round 3, after switching `reflection_comparison`'s configured model | `gpt-5.4-mini`              | Succeeded — `200`, valid schema                          |
 
-As a result, `MINDLOGIC_MODEL`/`feature-config.ts` now pins `reflection_comparison` to
-`gpt-5.4-mini`; `claude-haiku-4-5-20251001` remains only for the `provider_contract_check`
+That smoke-test history originally pinned `reflection_comparison` to `gpt-5.4-mini`. After the
+provider later returned a production `404/not_found` for that model, `feature-config.ts` moved
+the feature to the currently supported `gpt-5.6-luna` tier already used by the structured-output
+dictionary path. `claude-haiku-4-5-20251001` remains only for the `provider_contract_check`
 diagnostic (bare messages, no `response_format`), which it does support. Current provider usage
 (from `GET /api/v1/usage`, verified 2026-08-18): `usedCredits: 4`, `remainingCredits: 4996`,
 `limitCredits: 5000` — check that endpoint directly for the live figure rather than trusting a
@@ -631,7 +633,7 @@ difficulty: 'Intermediate' | 'Advanced' }[] (exactly 3) }`. Deliberately uses `m
   A response that fails `JSON.parse` (e.g. wrapped in ` ```json ` fences) or fails schema
   validation is treated as a genuine upstream error, **never silently patched or stripped**.
 - **Model / token ceiling**: fixed per-feature in `src/services/mindlogic/feature-config.ts` —
-  `gpt-5.4-mini`, `max_tokens: 1500`. The client cannot choose either. `claude-haiku-4-5-20251001`
+  `gpt-5.6-luna`, `max_tokens: 1500`. The client cannot choose either. `claude-haiku-4-5-20251001`
   stays in `MODEL_CREDIT_RATES` (used by the `provider_contract_check` diagnostic feature) but
   is not used by `reflection_comparison` and is never an automatic fallback for it.
 - **Input token estimate**: no real provider tokenizer is available server-side, so
@@ -1088,7 +1090,7 @@ reason)`, or an equivalent direct `UPDATE`) if it's safe to let a human-initiate
   ledger (`credit_periods` / `credit_usage_records`). No outbound Mindlogic call.
 - `GET /api/v1/study-days/:date/article` — session-gated daily English news. It uses the
   server-fixed `daily_news → sonar-pro` feature configuration (the existing
-  `reflection_comparison → gpt-5.4-mini` configuration is unchanged). Dates are interpreted in
+  `reflection_comparison → gpt-5.6-luna` configuration is independent). Dates are interpreted in
   `Asia/Seoul`; a validated article is cached once in `daily_news_articles`, so both learners
   receive the same article id and content for the date. A PostgreSQL transaction-scoped advisory
   lock serializes misses and is automatically released on rollback, connection loss, or process
@@ -1303,8 +1305,8 @@ Wiktionary's sense ordering is etymological, not "current usage" — e.g. lookin
 surfaced Karel Čapek's original "forced laborer/serf" sense before the machine sense any English
 learner actually wants; (2) `gpt-5.4-mini` started rejecting the Korean-translation call in
 production with `{"upstreamCode":"not_found","upstreamStatus":404}` — Mindlogic no longer serves
-that model for this call shape, even though it's still valid for `reflection_comparison`
-elsewhere in this codebase (untouched).
+that model for this call shape. Reflection comparison later received the same production
+`not_found` signal and now also uses the supported `gpt-5.6-luna` tier.
 
 Both are fixed by collapsing the whole lookup into **one** Mindlogic structured-output call
 (`src/services/dictionary/ai-lookup.ts`, model `gpt-5.6-luna`) that returns pronunciation,
@@ -1344,8 +1346,8 @@ violation — including an empty `koreanTranslations` array — is rejected outr
 
 **Model.** `FEATURE_MODEL_CONFIG.dictionary_translation` (the credit-feature key is unchanged —
 see below) now pins `model: 'gpt-5.6-luna'`, `maxOutputTokens: 800` (see the file's own comment
-for the token-budget breakdown). `gpt-5.4-mini` remains configured for `reflection_comparison`
-only; it is not referenced anywhere in the dictionary path any more.
+for the token-budget breakdown). Reflection comparison independently uses the same supported
+model with its own 1500-token output ceiling.
 
 **Credit rate.** Mindlogic publishes no per-model credit-rate table (`GET /credits/` only reports
 a running total, not a rate — see `src/services/mindlogic/credit-rates.ts`'s file-level note), and

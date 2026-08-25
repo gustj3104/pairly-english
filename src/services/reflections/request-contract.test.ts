@@ -62,7 +62,7 @@ describe('Mindlogic chat completion request contract (offline, no network call)'
     expect(Object.keys(request).sort()).toEqual(
       ['max_tokens', 'messages', 'model', 'response_format', 'stream'].sort(),
     );
-    expect(request.model).toBe('gpt-5.4-mini');
+    expect(request.model).toBe('gpt-5.6-luna');
     expect(request.max_tokens).toBe(1500);
     expect(request.stream).toBe(false);
     expect(request.messages).toHaveLength(2);
