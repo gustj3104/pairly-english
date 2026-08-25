@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq, lt } from 'drizzle-orm';
+import { and, eq, lt, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { reflections, studyDayComparisons, studyDays } from '../../db/schema.js';
 import type * as schema from '../../db/schema.js';
@@ -35,7 +35,7 @@ export type ComputeFingerprint = (input: {
 
 export type ClaimGenerationOutcome =
   | { outcome: 'partner_not_ready' }
-  | { outcome: 'claimed'; requestId: string; fingerprint: string }
+  | { outcome: 'claimed'; requestId: string; fingerprint: string; selectedTopicIndex?: number }
   /** Raw, unvalidated JSONB — see StudyDayComparisonRow.result. */
   | { outcome: 'cached'; result: unknown }
   | { outcome: 'in_progress' }
@@ -48,6 +48,14 @@ export type ClaimRetryOutcome =
   | { outcome: 'completed' }
   | { outcome: 'reconciliation_pending' }
   | { outcome: 'claimed'; requestId: string };
+
+export type DiscussionTopicOutcome =
+  | { outcome: 'not_found' }
+  | { outcome: 'forbidden' }
+  | { outcome: 'not_ready' }
+  | { outcome: 'stale' }
+  | { outcome: 'invalid_topic' }
+  | { outcome: 'ok'; result: unknown };
 
 /**
  * Storage-agnostic contract for the study-day-comparison caching/locking
@@ -94,6 +102,19 @@ export interface ComparisonRepository {
     computeFingerprint: ComputeFingerprint,
   ): Promise<ComparisonReadSnapshot>;
 
+  getDiscussionTopic(
+    studyDate: string,
+    participantKey: string,
+    computeFingerprint: ComputeFingerprint,
+  ): Promise<DiscussionTopicOutcome>;
+
+  setDiscussionTopic(
+    studyDate: string,
+    participantKey: string,
+    topicIndex: number,
+    computeFingerprint: ComputeFingerprint,
+  ): Promise<DiscussionTopicOutcome>;
+
   /**
    * Claims retry rights on a 'failed' row via its own short,
    * separately-locked transaction: re-checks the row is STILL 'failed'
@@ -104,6 +125,13 @@ export interface ComparisonRepository {
    * touched.
    */
   claimRetry(studyDate: string): Promise<ClaimRetryOutcome>;
+
+  /** Explicitly replaces only a legacy completed result that lacks guides. */
+  claimGuideRegeneration(
+    studyDate: string,
+    model: string,
+    computeFingerprint: ComputeFingerprint,
+  ): Promise<ClaimGenerationOutcome>;
 
   /**
    * Purely informational: finds rows stuck at status='processing' for
@@ -314,7 +342,8 @@ export class DrizzleComparisonRepository implements ComparisonRepository {
         .select()
         .from(studyDayComparisons)
         .where(eq(studyDayComparisons.studyDate, studyDate));
-      if (!day) return { comparison: comparison ? toRow(comparison) : null, currentInputFingerprint: null };
+      if (!day)
+        return { comparison: comparison ? toRow(comparison) : null, currentInputFingerprint: null };
       const reflectionRows = await tx
         .select()
         .from(reflections)
@@ -333,6 +362,81 @@ export class DrizzleComparisonRepository implements ComparisonRepository {
         }),
       };
     });
+  }
+
+  private async discussionTopicTransaction(
+    studyDate: string,
+    participantKey: string,
+    topicIndex: number | null,
+    computeFingerprint: ComputeFingerprint,
+  ): Promise<DiscussionTopicOutcome> {
+    return this.db.transaction(async (tx) => {
+      const [day] = await tx
+        .select()
+        .from(studyDays)
+        .where(eq(studyDays.studyDate, studyDate))
+        .for('share');
+      if (!day) return { outcome: 'not_found' } as const;
+      const reflectionRows = await tx
+        .select()
+        .from(reflections)
+        .where(eq(reflections.studyDate, studyDate));
+      if (!reflectionRows.some((row) => row.participantKey === participantKey))
+        return { outcome: 'forbidden' } as const;
+      const [comparison] = await tx
+        .select()
+        .from(studyDayComparisons)
+        .where(eq(studyDayComparisons.studyDate, studyDate))
+        .for('update');
+      if (!comparison || comparison.status !== 'completed' || reflectionRows.length !== 2)
+        return { outcome: 'not_ready' } as const;
+      const fingerprint = computeFingerprint({
+        articleId: day.articleId,
+        reflections: reflectionRows.map((row) => ({
+          participantKey: row.participantKey,
+          content: row.content,
+        })),
+      });
+      if (comparison.inputFingerprint !== fingerprint) return { outcome: 'stale' } as const;
+      const raw = comparison.result;
+      if (!raw || typeof raw !== 'object' || !Array.isArray((raw as { topics?: unknown }).topics))
+        return { outcome: 'not_ready' } as const;
+      const topics = (raw as { topics: unknown[] }).topics;
+      if (topicIndex !== null && (topicIndex < 0 || topicIndex >= topics.length))
+        return { outcome: 'invalid_topic' } as const;
+      if (topicIndex === null) return { outcome: 'ok', result: raw } as const;
+      const next = { ...(raw as Record<string, unknown>), selectedTopicIndex: topicIndex };
+      await tx
+        .update(studyDayComparisons)
+        .set({
+          result: sql`jsonb_set(${studyDayComparisons.result}, '{selectedTopicIndex}', ${JSON.stringify(topicIndex)}::jsonb, true)`,
+          updatedAt: new Date(),
+        })
+        .where(eq(studyDayComparisons.studyDate, studyDate));
+      return { outcome: 'ok', result: next } as const;
+    });
+  }
+
+  getDiscussionTopic(
+    studyDate: string,
+    participantKey: string,
+    computeFingerprint: ComputeFingerprint,
+  ) {
+    return this.discussionTopicTransaction(studyDate, participantKey, null, computeFingerprint);
+  }
+
+  setDiscussionTopic(
+    studyDate: string,
+    participantKey: string,
+    topicIndex: number,
+    computeFingerprint: ComputeFingerprint,
+  ) {
+    return this.discussionTopicTransaction(
+      studyDate,
+      participantKey,
+      topicIndex,
+      computeFingerprint,
+    );
   }
 
   async claimRetry(studyDate: string): Promise<ClaimRetryOutcome> {
@@ -377,6 +481,76 @@ export class DrizzleComparisonRepository implements ComparisonRepository {
         );
 
       return { outcome: 'claimed', requestId } as const;
+    });
+  }
+
+  async claimGuideRegeneration(
+    studyDate: string,
+    model: string,
+    computeFingerprint: ComputeFingerprint,
+  ): Promise<ClaimGenerationOutcome> {
+    return this.db.transaction(async (tx) => {
+      const [day] = await tx
+        .select()
+        .from(studyDays)
+        .where(eq(studyDays.studyDate, studyDate))
+        .for('update');
+      if (!day) return { outcome: 'partner_not_ready' } as const;
+      const reflectionRows = await tx
+        .select()
+        .from(reflections)
+        .where(eq(reflections.studyDate, studyDate));
+      if (reflectionRows.length !== 2) return { outcome: 'partner_not_ready' } as const;
+      const fingerprint = computeFingerprint({
+        articleId: day.articleId,
+        reflections: reflectionRows.map((row) => ({
+          participantKey: row.participantKey,
+          content: row.content,
+        })),
+      });
+      const [existing] = await tx
+        .select()
+        .from(studyDayComparisons)
+        .where(eq(studyDayComparisons.studyDate, studyDate))
+        .for('update');
+      if (!existing) return { outcome: 'partner_not_ready' } as const;
+      if (existing.status === 'processing') return { outcome: 'in_progress' } as const;
+      if (existing.status === 'reconciliation_pending')
+        return { outcome: 'reconciliation_pending' } as const;
+      if (existing.status === 'failed')
+        return { outcome: 'failed', errorCode: existing.errorCode } as const;
+      if (existing.inputFingerprint !== fingerprint)
+        return { outcome: 'failed', errorCode: 'COMPARISON_STALE' } as const;
+      const parsed = existing.result as { topics?: Array<{ discussionGuide?: unknown }> } | null;
+      if (parsed?.topics?.length === 3 && parsed.topics.every((topic) => topic.discussionGuide))
+        return { outcome: 'cached', result: existing.result } as const;
+      const requestId = randomUUID();
+      const now = new Date();
+      await tx
+        .update(studyDayComparisons)
+        .set({
+          requestId,
+          status: 'processing',
+          model,
+          result: null,
+          errorCode: null,
+          startedAt: now,
+          completedAt: null,
+          updatedAt: now,
+        })
+        .where(eq(studyDayComparisons.studyDate, studyDate));
+      return {
+        outcome: 'claimed',
+        requestId,
+        fingerprint,
+        ...(typeof (existing.result as { selectedTopicIndex?: unknown } | null)
+          ?.selectedTopicIndex === 'number'
+          ? {
+              selectedTopicIndex: (existing.result as { selectedTopicIndex: number })
+                .selectedTopicIndex,
+            }
+          : {}),
+      } as const;
     });
   }
 

@@ -12,6 +12,7 @@ import { compareReflections } from '../services/reflections/reflection-compariso
 import type { ReflectionComparisonOutcome } from '../services/reflections/reflection-comparison-service.js';
 import { mapReflectionComparisonFailureToHttp } from '../services/reflections/http-mapping.js';
 import { DailyNewsGenerationError } from '../services/daily-news/service.js';
+import { z } from 'zod';
 
 export interface StudyDaysRoutesOptions {
   sessionSecret: string;
@@ -145,6 +146,29 @@ export async function studyDaysRoutes(
 ): Promise<void> {
   const sessionGate = createSessionGate(options.sessionSecret);
   const now = options.now ?? (() => new Date());
+  const topicSelectionSchema = z.object({ topicIndex: z.number().int().min(0).max(2) }).strict();
+
+  const sendDiscussionTopicResult = (
+    result: Awaited<ReturnType<typeof app.comparisonService.getDiscussionTopic>>,
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ) => {
+    if (result.status === 'ok') {
+      reply.code(200);
+      return { selectedTopicIndex: result.selectedTopicIndex, topic: result.topic };
+    }
+    const mapping = {
+      not_found: [404, 'STUDY_DAY_NOT_FOUND'],
+      forbidden: [403, 'FORBIDDEN'],
+      not_ready: [409, 'COMPARISON_NOT_READY'],
+      stale: [409, 'COMPARISON_STALE'],
+      invalid_topic: [400, 'INVALID_TOPIC'],
+      corrupted: [500, 'CORRUPTED_RESULT'],
+    } as const;
+    const [statusCode, code] = mapping[result.status];
+    reply.code(statusCode);
+    return { error: { message: code, code, requestId: request.id } };
+  };
 
   app.get('/study-days/:date/article', { preHandler: sessionGate }, async (request, reply) => {
     const date = validateDateParam(request, reply, options.maxFutureDays, now);
@@ -249,6 +273,51 @@ export async function studyDaysRoutes(
       };
     }
   });
+
+  app.get(
+    '/study-days/:date/discussion/topic',
+    { preHandler: sessionGate },
+    async (request, reply) => {
+      const date = validateDateParam(request, reply, options.maxFutureDays, now);
+      const session = requireSession(request, reply);
+      if (date === undefined || session === undefined) return;
+      return sendDiscussionTopicResult(
+        await app.comparisonService.getDiscussionTopic(date, normalizeParticipantKey(session.name)),
+        request,
+        reply,
+      );
+    },
+  );
+
+  app.put(
+    '/study-days/:date/discussion/topic',
+    { preHandler: sessionGate },
+    async (request, reply) => {
+      const date = validateDateParam(request, reply, options.maxFutureDays, now);
+      const session = requireSession(request, reply);
+      if (date === undefined || session === undefined) return;
+      const parsed = topicSelectionSchema.safeParse(request.body);
+      if (!parsed.success) {
+        reply.code(400);
+        return {
+          error: {
+            message: 'topicIndex must be an integer from 0 to 2',
+            code: 'VALIDATION_ERROR',
+            requestId: request.id,
+          },
+        };
+      }
+      return sendDiscussionTopicResult(
+        await app.comparisonService.setDiscussionTopic(
+          date,
+          normalizeParticipantKey(session.name),
+          parsed.data.topicIndex,
+        ),
+        request,
+        reply,
+      );
+    },
+  );
 
   app.get(
     '/study-days/:date/article/status',
@@ -681,6 +750,94 @@ export async function studyDaysRoutes(
         return { status: 'failed', code: 'CORRUPTED_RESULT' };
     }
   });
+
+  app.post(
+    '/study-days/:date/discussion/guide',
+    { preHandler: sessionGate },
+    async (request, reply) => {
+      const date = validateDateParam(request, reply, options.maxFutureDays, now);
+      const session = requireSession(request, reply);
+      if (date === undefined || session === undefined) return;
+      const participantKey = normalizeParticipantKey(session.name);
+      const logFields = {
+        requestId: request.id,
+        studyDate: date,
+        participantKeyHash: hashForLogging(participantKey),
+      };
+      const claim = await app.comparisonService.claimGuideRegeneration(date);
+      if (claim.outcome === 'in_progress') {
+        reply.code(202);
+        return { status: 'processing' };
+      }
+      if (claim.outcome === 'cached') {
+        reply.code(200);
+        return { status: 'completed', cached: true, result: claim.result };
+      }
+      if (claim.outcome === 'cached_corrupted') {
+        reply.code(500);
+        return { status: 'failed', code: 'CORRUPTED_RESULT' };
+      }
+      if (claim.outcome === 'partner_not_ready') {
+        reply.code(409);
+        return { status: 'failed', code: 'PARTNER_NOT_READY' };
+      }
+      if (claim.outcome === 'reconciliation_pending') {
+        reply.code(409);
+        return { status: 'reconciliation_pending' };
+      }
+      if (claim.outcome === 'failed') {
+        reply.code(409);
+        return { status: 'failed', code: claim.errorCode };
+      }
+
+      const inputs = await app.dailyReflectionService.getComparisonInputs(date, participantKey);
+      if (!inputs.ok) {
+        await app.comparisonService.completeWithFailure(
+          date,
+          claim.requestId,
+          'partner_data_unavailable',
+        );
+        reply.code(500);
+        return { status: 'failed', code: 'partner_data_unavailable' };
+      }
+      const startedAt = Date.now();
+      const outcome = await compareReflections(
+        {
+          article: {
+            title: inputs.article.title,
+            sourceUrl: inputs.article.sourceUrl ?? undefined,
+            summary: inputs.article.summary ?? undefined,
+          },
+          mine: { displayName: inputs.mine.displayName, reflection: inputs.mine.content },
+          partner: { displayName: inputs.partner.displayName, reflection: inputs.partner.content },
+        },
+        {
+          creditService: app.creditService,
+          mindlogicClient: app.mindlogicClient,
+          maxRetries: options.maxRetries ?? env.MINDLOGIC_MAX_RETRIES,
+          now,
+          generateRequestId: () => claim.requestId,
+        },
+      );
+      const preservedOutcome =
+        outcome.status === 'ok' && claim.selectedTopicIndex !== undefined
+          ? {
+              ...outcome,
+              result: { ...outcome.result, selectedTopicIndex: claim.selectedTopicIndex },
+            }
+          : outcome;
+      return finalizeComparisonOutcome(
+        app,
+        preservedOutcome,
+        date,
+        claim.requestId,
+        request,
+        reply,
+        Date.now() - startedAt,
+        logFields,
+      );
+    },
+  );
 
   app.post(
     '/study-days/:date/comparison/retry',

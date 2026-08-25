@@ -75,9 +75,24 @@ function validComparisonBody() {
       { topic: 't', mine: { stance: 's1', quote: 'q1' }, partner: { stance: 's2', quote: 'q2' } },
     ],
     topics: [
-      { question: 'q1?', reason: 'r1', difficulty: 'Intermediate' },
-      { question: 'q2?', reason: 'r2', difficulty: 'Advanced' },
-      { question: 'q3?', reason: 'r3', difficulty: 'Intermediate' },
+      {
+        question: 'q1?',
+        reason: 'r1',
+        difficulty: 'Intermediate',
+        discussionGuide: { openingQuestion: 'o1?', followUpQuestions: ['f1?', 'f2?', 'f3?'] },
+      },
+      {
+        question: 'q2?',
+        reason: 'r2',
+        difficulty: 'Advanced',
+        discussionGuide: { openingQuestion: 'o2?', followUpQuestions: ['g1?', 'g2?', 'g3?'] },
+      },
+      {
+        question: 'q3?',
+        reason: 'r3',
+        difficulty: 'Intermediate',
+        discussionGuide: { openingQuestion: 'o3?', followUpQuestions: ['h1?', 'h2?', 'h3?'] },
+      },
     ],
   };
 }
@@ -201,6 +216,82 @@ function get(app: ReturnType<typeof buildApp>, path: string, name = 'hyunji') {
     headers: { cookie: sessionCookie(name) },
   });
 }
+
+function putTopic(app: ReturnType<typeof buildApp>, topicIndex: number, name = 'hyunji') {
+  return app.inject({
+    method: 'PUT',
+    url: `/api/v1/study-days/${STUDY_DATE}/discussion/topic`,
+    headers: { cookie: sessionCookie(name) },
+    payload: { topicIndex },
+  });
+}
+
+describe('shared discussion topic', () => {
+  it('shares last-committed valid selection across both sessions without AI or credit usage', async () => {
+    let calls = 0;
+    const app = buildTestApp({ mindlogicClient: successfulMindlogicClient(() => calls++) });
+    await submitBoth(app);
+    await post(app, '/compare');
+    expect(calls).toBe(1);
+    const creditsBefore = await testDb.db.select().from(creditUsageRecords);
+
+    expect((await putTopic(app, 1, 'hyunji')).json().topic.question).toBe('q2?');
+    expect((await get(app, '/discussion/topic', 'hyeonseo')).json().selectedTopicIndex).toBe(1);
+    expect((await putTopic(app, 2, 'hyeonseo')).statusCode).toBe(200);
+    expect((await get(app, '/discussion/topic', 'hyunji')).json().topic.question).toBe('q3?');
+
+    expect((await putTopic(app, 3, 'hyunji')).statusCode).toBe(400);
+    const unauthorized = await app.inject({
+      method: 'GET',
+      url: `/api/v1/study-days/${STUDY_DATE}/discussion/topic`,
+    });
+    expect(unauthorized.statusCode).toBe(401);
+    expect(calls).toBe(1);
+    expect(await testDb.db.select().from(creditUsageRecords)).toHaveLength(creditsBefore.length);
+    await app.close();
+  });
+
+  it('keeps one consistent valid winner under concurrent selections', async () => {
+    const app = buildTestApp();
+    await submitBoth(app);
+    await post(app, '/compare');
+    await Promise.all([putTopic(app, 0, 'hyunji'), putTopic(app, 2, 'hyeonseo')]);
+    const selected = (await get(app, '/discussion/topic')).json().selectedTopicIndex;
+    expect([0, 2]).toContain(selected);
+    await app.close();
+  });
+});
+
+describe('legacy discussion-guide regeneration', () => {
+  it('only an explicit guide request regenerates, and concurrent clicks call AI once', async () => {
+    let calls = 0;
+    const app = buildTestApp({ mindlogicClient: successfulMindlogicClient(() => calls++, 50) });
+    await submitBoth(app);
+    await post(app, '/compare');
+    await putTopic(app, 1);
+    await testDb.pool.query(
+      `update study_day_comparisons set result = jsonb_set(result, '{topics}', (select jsonb_agg(topic - 'discussionGuide') from jsonb_array_elements(result->'topics') topic)) where study_date = $1`,
+      [STUDY_DATE],
+    );
+    expect(calls).toBe(1);
+
+    const legacyRead = await get(app, '/comparison');
+    expect(legacyRead.statusCode).toBe(200);
+    expect(legacyRead.json().result.topics[0].discussionGuide).toBeUndefined();
+    expect(calls).toBe(1);
+
+    const responses = await Promise.all([
+      post(app, '/discussion/guide', 'hyunji'),
+      post(app, '/discussion/guide', 'hyeonseo'),
+    ]);
+    expect(responses.every((response) => [200, 202].includes(response.statusCode))).toBe(true);
+    expect(calls).toBe(2);
+    const shared = await get(app, '/discussion/topic', 'hyeonseo');
+    expect(shared.json().selectedTopicIndex).toBe(1);
+    expect(shared.json().topic.discussionGuide.followUpQuestions).toHaveLength(3);
+    await app.close();
+  });
+});
 
 describe('real concurrency: ~20 concurrent POST /compare for the same date', () => {
   it('the provider is called exactly once, and exactly one credit reservation exists for the winning request_id', async () => {

@@ -162,6 +162,57 @@ export class InMemoryComparisonRepository implements ComparisonRepository {
     return { comparison, currentInputFingerprint };
   }
 
+  private async discussionTopic(
+    studyDate: string,
+    participantKey: string,
+    topicIndex: number | null,
+    computeFingerprint: ComputeFingerprint,
+  ) {
+    const existing = this.rows.get(studyDate);
+    const article = await this.dailyReflectionRepository.getStudyDayArticle(studyDate);
+    if (!article) return { outcome: 'not_found' as const };
+    const reflectionRows = await this.dailyReflectionRepository.getReflectionsForDate(studyDate);
+    if (!reflectionRows.some((row) => row.participantKey === participantKey))
+      return { outcome: 'forbidden' as const };
+    if (!existing || existing.status !== 'completed' || reflectionRows.length !== 2)
+      return { outcome: 'not_ready' as const };
+    const fingerprint = computeFingerprint({
+      articleId: article.id,
+      reflections: reflectionRows.map((row) => ({
+        participantKey: row.participantKey,
+        content: row.content,
+      })),
+    });
+    if (fingerprint !== existing.inputFingerprint) return { outcome: 'stale' as const };
+    const raw = existing.result;
+    if (!raw || typeof raw !== 'object' || !Array.isArray((raw as { topics?: unknown }).topics))
+      return { outcome: 'not_ready' as const };
+    const topics = (raw as { topics: unknown[] }).topics;
+    if (topicIndex !== null && (topicIndex < 0 || topicIndex >= topics.length))
+      return { outcome: 'invalid_topic' as const };
+    if (topicIndex === null) return { outcome: 'ok' as const, result: raw };
+    const result = { ...(raw as Record<string, unknown>), selectedTopicIndex: topicIndex };
+    this.rows.set(studyDate, { ...existing, result, updatedAt: new Date() });
+    return { outcome: 'ok' as const, result };
+  }
+
+  getDiscussionTopic(
+    studyDate: string,
+    participantKey: string,
+    computeFingerprint: ComputeFingerprint,
+  ) {
+    return this.discussionTopic(studyDate, participantKey, null, computeFingerprint);
+  }
+
+  setDiscussionTopic(
+    studyDate: string,
+    participantKey: string,
+    topicIndex: number,
+    computeFingerprint: ComputeFingerprint,
+  ) {
+    return this.discussionTopic(studyDate, participantKey, topicIndex, computeFingerprint);
+  }
+
   async claimRetry(studyDate: string): Promise<ClaimRetryOutcome> {
     const existing = this.rows.get(studyDate);
     if (!existing) return { outcome: 'not_started' };
@@ -181,6 +232,57 @@ export class InMemoryComparisonRepository implements ComparisonRepository {
       updatedAt: now,
     });
     return { outcome: 'claimed', requestId };
+  }
+
+  async claimGuideRegeneration(
+    studyDate: string,
+    model: string,
+    computeFingerprint: ComputeFingerprint,
+  ): Promise<ClaimGenerationOutcome> {
+    const existing = this.rows.get(studyDate);
+    const article = await this.dailyReflectionRepository.getStudyDayArticle(studyDate);
+    const reflectionRows = await this.dailyReflectionRepository.getReflectionsForDate(studyDate);
+    if (!existing || !article || reflectionRows.length !== 2)
+      return { outcome: 'partner_not_ready' };
+    if (existing.status === 'processing') return { outcome: 'in_progress' };
+    if (existing.status === 'reconciliation_pending') return { outcome: 'reconciliation_pending' };
+    if (existing.status === 'failed') return { outcome: 'failed', errorCode: existing.errorCode };
+    const fingerprint = computeFingerprint({
+      articleId: article.id,
+      reflections: reflectionRows.map((row) => ({
+        participantKey: row.participantKey,
+        content: row.content,
+      })),
+    });
+    const parsed = existing.result as { topics?: Array<{ discussionGuide?: unknown }> } | null;
+    if (existing.inputFingerprint !== fingerprint)
+      return { outcome: 'failed', errorCode: 'COMPARISON_STALE' };
+    if (parsed?.topics?.length === 3 && parsed.topics.every((topic) => topic.discussionGuide))
+      return { outcome: 'cached', result: existing.result };
+    const requestId = randomUUID();
+    const now = new Date();
+    this.rows.set(studyDate, {
+      ...existing,
+      requestId,
+      status: 'processing',
+      model,
+      result: null,
+      errorCode: null,
+      startedAt: now,
+      completedAt: null,
+      updatedAt: now,
+    });
+    const selectedTopicIndex =
+      typeof (existing.result as { selectedTopicIndex?: unknown } | null)?.selectedTopicIndex ===
+      'number'
+        ? (existing.result as { selectedTopicIndex: number }).selectedTopicIndex
+        : undefined;
+    return {
+      outcome: 'claimed',
+      requestId,
+      fingerprint,
+      ...(selectedTopicIndex === undefined ? {} : { selectedTopicIndex }),
+    };
   }
 
   async findStaleProcessing(

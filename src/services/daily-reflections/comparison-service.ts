@@ -8,7 +8,7 @@ const FEATURE = 'reflection_comparison' as const;
 
 export type ComparisonClaimOutcome =
   | { outcome: 'partner_not_ready' }
-  | { outcome: 'claimed'; requestId: string }
+  | { outcome: 'claimed'; requestId: string; selectedTopicIndex?: number }
   | { outcome: 'cached'; result: ReflectionComparisonResult }
   /** A stored 'completed' row's result no longer validates against the schema. */
   | { outcome: 'cached_corrupted' }
@@ -32,6 +32,14 @@ export type ComparisonReadResult =
   | { status: 'reconciliation_pending' }
   /** A stored 'completed' row's result no longer validates against the schema. */
   | { status: 'corrupted' };
+
+export type DiscussionTopicResult =
+  | { status: 'not_found' | 'forbidden' | 'not_ready' | 'stale' | 'invalid_topic' | 'corrupted' }
+  | {
+      status: 'ok';
+      selectedTopicIndex: number | null;
+      topic: ReflectionComparisonResult['topics'][number] | null;
+    };
 
 /**
  * Thin service wrapping ComparisonRepository, mirroring DailyReflectionService's
@@ -59,7 +67,13 @@ export class ComparisonService {
       case 'partner_not_ready':
         return { outcome: 'partner_not_ready' };
       case 'claimed':
-        return { outcome: 'claimed', requestId: claim.requestId };
+        return {
+          outcome: 'claimed',
+          requestId: claim.requestId,
+          ...(claim.selectedTopicIndex === undefined
+            ? {}
+            : { selectedTopicIndex: claim.selectedTopicIndex }),
+        };
       case 'in_progress':
         return { outcome: 'in_progress' };
       case 'reconciliation_pending':
@@ -74,6 +88,31 @@ export class ComparisonService {
         return { outcome: 'cached', result: parsed.data };
       }
     }
+  }
+
+  async claimGuideRegeneration(studyDate: string): Promise<ComparisonClaimOutcome> {
+    const { model } = getFeatureModelConfig(FEATURE);
+    const claim = await this.repository.claimGuideRegeneration(
+      studyDate,
+      model,
+      ({ articleId, reflections }) => computeInputFingerprint(articleId, reflections),
+    );
+    if (claim.outcome === 'cached') {
+      const parsed = reflectionComparisonSchema.safeParse(claim.result);
+      return parsed.success
+        ? { outcome: 'cached', result: parsed.data }
+        : { outcome: 'cached_corrupted' };
+    }
+    if (claim.outcome === 'claimed')
+      return {
+        outcome: 'claimed',
+        requestId: claim.requestId,
+        ...(claim.selectedTopicIndex === undefined
+          ? {}
+          : { selectedTopicIndex: claim.selectedTopicIndex }),
+      };
+    if (claim.outcome === 'failed') return { outcome: 'failed', errorCode: claim.errorCode };
+    return claim;
   }
 
   /**
@@ -141,6 +180,48 @@ export class ComparisonService {
     const parsed = reflectionComparisonSchema.safeParse(row.result);
     if (!parsed.success) return { status: 'corrupted' };
     return { status: 'completed', result: parsed.data };
+  }
+
+  private parseDiscussionTopic(
+    outcome: Awaited<ReturnType<ComparisonRepository['getDiscussionTopic']>>,
+  ): DiscussionTopicResult {
+    if (outcome.outcome !== 'ok') return { status: outcome.outcome };
+    const parsed = reflectionComparisonSchema.safeParse(outcome.result);
+    if (!parsed.success) return { status: 'corrupted' };
+    const index = parsed.data.selectedTopicIndex ?? null;
+    return {
+      status: 'ok',
+      selectedTopicIndex: index,
+      topic: index === null ? null : (parsed.data.topics[index] ?? null),
+    };
+  }
+
+  async getDiscussionTopic(
+    studyDate: string,
+    participantKey: string,
+  ): Promise<DiscussionTopicResult> {
+    return this.parseDiscussionTopic(
+      await this.repository.getDiscussionTopic(
+        studyDate,
+        participantKey,
+        ({ articleId, reflections }) => computeInputFingerprint(articleId, reflections),
+      ),
+    );
+  }
+
+  async setDiscussionTopic(
+    studyDate: string,
+    participantKey: string,
+    topicIndex: number,
+  ): Promise<DiscussionTopicResult> {
+    return this.parseDiscussionTopic(
+      await this.repository.setDiscussionTopic(
+        studyDate,
+        participantKey,
+        topicIndex,
+        ({ articleId, reflections }) => computeInputFingerprint(articleId, reflections),
+      ),
+    );
   }
 
   async claimRetry(studyDate: string): Promise<ComparisonRetryClaimOutcome> {

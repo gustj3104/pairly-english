@@ -47,6 +47,15 @@ class StubRepository implements ComparisonRepository {
       currentInputFingerprint: this.byDate?.inputFingerprint ?? null,
     };
   }
+  async getDiscussionTopic() {
+    return { outcome: 'not_ready' as const };
+  }
+  async setDiscussionTopic() {
+    return { outcome: 'not_ready' as const };
+  }
+  async claimGuideRegeneration(): Promise<ClaimGenerationOutcome> {
+    return this.claimGenerationResult;
+  }
   async claimRetry(): Promise<ClaimRetryOutcome> {
     return this.claimRetryResult;
   }

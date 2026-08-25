@@ -100,6 +100,9 @@ export const reflectionComparisonSchema = z
     commonGround: z.array(commonGroundItemSchema).min(1).max(4),
     differences: z.array(differenceItemSchema).min(1).max(4),
     topics: z.array(discussionTopicSchema).length(3),
+    // Server-owned shared UI state. Mindlogic never emits this field; it is
+    // added later through the authenticated discussion-topic endpoint.
+    selectedTopicIndex: z.number().int().min(0).max(2).optional(),
   })
   .strict();
 
